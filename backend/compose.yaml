@@ -1,0 +1,17 @@
+services:
+  backend:
+    build: .
+    image: scan3d-backend
+    ports:
+      - "${PORT:-8000}:8000"
+    environment:
+      API_TOKEN: ${API_TOKEN:?set API_TOKEN in backend/.env}
+      MAX_IMAGE_SIZE: ${MAX_IMAGE_SIZE:-1600}
+    volumes:
+      - scan3d-data:/data
+    restart: unless-stopped
+    # Keep the host alive if a big scan needs more RAM than available; the job then fails with an OOM message.
+    mem_limit: ${MEM_LIMIT:-4g}
+
+volumes:
+  scan3d-data:
