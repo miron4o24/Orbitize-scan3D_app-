@@ -17,11 +17,11 @@ photogrammetry and returns a cleaned, watertight mesh (STL / 3MF / OBJ / GLB).
 
 | Dataset | Machine | Time |
 |---|---|---|
-| (filled in from real runs) | | |
+| Middlebury templeRing, 47 photos 640×480 | 8-core laptop, CPU, Docker | 279 s (47/47 photos placed) |
 
 ## Backend
 
-Requires Docker.
+Requires Docker. **Production setup on a Windows server, public over HTTPS: [docs/windows-server.md](docs/windows-server.md).**
 
 ```bash
 cd backend
