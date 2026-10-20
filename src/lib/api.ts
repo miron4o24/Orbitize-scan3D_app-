@@ -1,5 +1,5 @@
 import { fetch as expoFetch } from 'expo/fetch';
-import type { File } from 'expo-file-system';
+import { File } from 'expo-file-system';
 
 export const API_URL = (process.env.EXPO_PUBLIC_API_URL ?? '').replace(/\/$/, '');
 // shortcut: a token shipped in the app binary can be extracted; fine for a personal backend, use per-user auth before public release.
@@ -20,14 +20,39 @@ export type Job = {
   state: JobState;
   received: string[];
   error?: string;
-  report?: {
-    dimensions_mm: [number, number, number];
-    triangles: number;
-    watertight: boolean;
-  };
+  report?: Report | null;
+};
+
+export type Report = {
+  dimensions_mm: [number, number, number]; // at the default 100 mm longest side
+  triangles: number;
+  watertight: boolean;
+  photos_used?: number;
+  photos_total?: number;
+  seconds?: number;
 };
 
 export type ResultFormat = 'glb' | 'stl' | 'obj' | '3mf';
+
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public status: number,
+  ) {
+    super(message);
+  }
+}
+
+export const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+async function check(res: { ok: boolean; status: number; text(): Promise<string> }, what: string) {
+  if (res.ok) return;
+  let detail = await res.text();
+  try {
+    detail = JSON.parse(detail).detail ?? detail; // FastAPI error body
+  } catch {}
+  throw new ApiError(`${what}: ${detail || res.status}`, res.status);
+}
 
 const headers = (extra?: Record<string, string>) => ({
   Authorization: `Bearer ${API_TOKEN}`,
@@ -41,7 +66,7 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
     headers: headers(body ? { 'Content-Type': 'application/json' } : undefined),
     body: body ? JSON.stringify(body) : undefined,
   });
-  if (!res.ok) throw new Error(`${method} ${path}: ${res.status} ${await res.text()}`);
+  await check(res, `${method} ${path}`);
   return (await res.json()) as T;
 }
 
@@ -59,10 +84,11 @@ export async function uploadPhoto(jobId: string, file: File) {
     headers: headers({ 'Content-Type': 'image/jpeg' }),
     body: file,
   });
-  if (!res.ok) throw new Error(`upload ${file.name}: ${res.status} ${await res.text()}`);
+  await check(res, `upload ${file.name}`);
 }
 
 export const resultUrl = (jobId: string, format: ResultFormat, longestMm?: number) =>
   `${API_URL}/jobs/${jobId}/result.${format}${longestMm ? `?longest_mm=${longestMm}` : ''}`;
 
-export const authHeaders = () => headers();
+export const downloadResult = (jobId: string, format: ResultFormat, dest: File, longestMm?: number) =>
+  File.downloadFileAsync(resultUrl(jobId, format, longestMm), dest, { headers: headers(), idempotent: true });
