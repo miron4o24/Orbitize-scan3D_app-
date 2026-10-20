@@ -50,7 +50,9 @@
             "usesCleartextTraffic": true
           }
         }
-      ]
+      ],
+      "expo-asset",
+      "expo-sharing"
     ],
     "experiments": {
       "typedRoutes": true

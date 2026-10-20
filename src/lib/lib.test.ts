@@ -66,3 +66,26 @@ test('cells and auto-capture spacing', () => {
   assert.equal(isNewAngle(v, [v]), false);
   assert.equal(isNewAngle(viewDir({ alpha: 0, beta: tilt(120), gamma: 0 }), []), false); // aimed upward
 });
+
+test('print export: Y-up model becomes Z-up and is scaled to the requested size', async () => {
+  const { BoxGeometry, Mesh } = await import('three');
+  const { exportForPrint } = await import('./exportModel.ts');
+  const tall = new Mesh(new BoxGeometry(1, 4, 2)); // height on Y, like a glTF model
+  const stl = exportForPrint(tall, 'stl', 80) as Uint8Array;
+  const dv = new DataView(stl.buffer, stl.byteOffset, stl.byteLength);
+  const tris = dv.getUint32(80, true);
+  assert.equal(stl.byteLength, 84 + 50 * tris);
+  const min = [Infinity, Infinity, Infinity];
+  const max = [-Infinity, -Infinity, -Infinity];
+  for (let t = 0; t < tris; t++)
+    for (let v = 0; v < 3; v++)
+      for (let a = 0; a < 3; a++) {
+        const x = dv.getFloat32(84 + t * 50 + 12 + v * 12 + a * 4, true);
+        min[a] = Math.min(min[a], x);
+        max[a] = Math.max(max[a], x);
+      }
+  const ext = max.map((m, a) => m - min[a]);
+  assert.ok(Math.abs(ext[2] - 80) < 1e-3, `z extent ${ext[2]}`); // old Y (height) is now Z
+  assert.ok(Math.abs(ext[0] - 20) < 1e-3 && Math.abs(ext[1] - 40) < 1e-3, `${ext}`);
+  assert.match(exportForPrint(tall, 'obj', 80) as string, /^v /m);
+});

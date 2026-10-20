@@ -1,5 +1,7 @@
 import { Directory, File, Paths } from 'expo-file-system';
 
+import type { Report } from './api';
+
 // Scans live on disk only: Paths.document/scans/<id>/{scan.json, photos/, results}.
 export type ScanStatus =
   | 'capturing'
@@ -20,12 +22,15 @@ export type Scan = {
   jobId?: string;
   error?: string;
   longestMm?: number;
+  flatBase?: boolean;
+  report?: Report;
 };
 
 const root = new Directory(Paths.document, 'scans');
 
 export const scanDir = (id: string) => new Directory(root, id);
 export const photosDir = (id: string) => new Directory(scanDir(id), 'photos');
+export const modelFile = (id: string) => new File(scanDir(id), 'model.glb');
 const metaFile = (id: string) => new File(scanDir(id), 'scan.json');
 
 export function createScan(): Scan {
