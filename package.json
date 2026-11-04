@@ -55,6 +55,7 @@
     "test": "node --experimental-strip-types --no-warnings --test src/lib/*.test.ts"
   },
   "private": true,
+  "license": "GPL-3.0-only",
   "devDependencies": {
     "@types/react": "~19.3.0",
     "@types/three": "^0.186.0",
