@@ -1,6 +1,4 @@
-# Learn more https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files
-
-# dependencies
+# Зависимости
 node_modules/
 
 # Expo
@@ -9,7 +7,7 @@ dist/
 web-build/
 expo-env.d.ts
 
-# Native
+# Родни компилации и ключове за подписване
 .kotlin/
 *.orig.*
 *.jks
@@ -17,50 +15,43 @@ expo-env.d.ts
 *.p12
 *.key
 *.mobileprovision
+*.pem
 
 # Metro
 .metro-health-check*
 
-# debug
+# Дневници за отстраняване на грешки
 npm-debug.*
 yarn-debug.*
 yarn-error.*
+/*.log
 
 # macOS
 .DS_Store
-*.pem
 
-# local env files
-.env*.local
-
-# typescript
+# TypeScript
 *.tsbuildinfo
 
-# generated native folders
+# Генерирани родни папки
 /ios
 /android
 
-# backend
-backend/.venv/
-backend/.env
-scan3d-backend.zip
-backend/samples/
-backend/e2e-out/
-# Windows server: tools from setup-windows.ps1, server logs, scan data
-backend/tools/
-backend/logs/
-backend/data/
-__pycache__/
-.pytest_cache/
-
-# local Expo state and per-machine secrets (the API token)
-.expo/
+# Локални настройки и тайни
 .env*.local
-
-# Secrets for push and Play billing: never in the project's history
+backend/.env
 *service-account*.json
 firebase-adminsdk*.json
 
-# Stray tool logs and personal notes that are not part of the project
-/*.log
+# Сървър: инструменти, дневници, данни от сканирания и пакет за инсталиране
+backend/.venv/
+backend/samples/
+backend/e2e-out/
+backend/tools/
+backend/logs/
+backend/data/
+scan3d-backend.zip
+__pycache__/
+.pytest_cache/
+
+# Лични бележки извън проекта
 /VIDEOS/

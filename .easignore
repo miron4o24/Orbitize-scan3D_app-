@@ -1,4 +1,4 @@
-# Files EAS Build does not upload (it reads this instead of .gitignore). The app needs none of the backend.
+# Файлове, които EAS Build не качва (чете този файл вместо .gitignore). Приложението не се нуждае от сървърната част.
 node_modules/
 .expo/
 dist/
