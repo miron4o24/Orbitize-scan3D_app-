@@ -75,6 +75,10 @@ def central_part(m: np.ndarray, cx: float, cy: float) -> np.ndarray | None:
     return part
 
 
+LOCATE_EVERY = 3  # първият проход търси предмета във всеки толкова-ти кадър
+LOCATE_FROM = 16  # при по-малко кадри търси във всички
+
+
 def locate(m: np.ndarray) -> tuple[float, float, float] | None:
     """Център x, y и размер (по-голямата страна на кутията) на предмета, най-близък до средата на маска от първия
     проход, в пиксели на маската."""
@@ -149,9 +153,16 @@ def main(images: Path, out: Path, dense_masks: Path | None = None):
         with Image.open(f) as im:
             return locate(mask(sess, im))
 
-    found = PAR.each_model(session, first_pass, files)
+    # Местоположението се променя плавно между кадрите: стига всеки трети, а track() запълва останалите.
+    step = LOCATE_EVERY if len(files) >= LOCATE_FROM else 1
+    looked = list(range(0, len(files), step))
+    if looked[-1] != len(files) - 1:
+        looked.append(len(files) - 1)
+    found = [None] * len(files)
+    for i, where in zip(looked, PAR.each_model(session, first_pass, [files[i] for i in looked])):
+        found[i] = where
     crops = track(found)
-    print(f"first pass: object near the middle in {sum(c is not None for c in found)} of {len(files)} frames", flush=True)
+    print(f"first pass: object near the middle in {sum(c is not None for c in found)} of {len(looked)} frames", flush=True)
 
     def second_pass(sess, item):
         i, f = item

@@ -13,8 +13,8 @@ from typing import Callable, Iterable
 import numpy as np
 
 CPUS = os.cpu_count() or 1
-MODELS = max(1, CPUS // 4)  # 12 нишки (6 ядра): 3 кадъра наведнъж
-MODEL_THREADS = max(1, CPUS // 2 // MODELS)  # по 2 на модел: по една на ядро
+MODELS = max(1, CPUS // 2)  # 12 нишки (6 ядра): 6 кадъра наведнъж
+MODEL_THREADS = 1  # по една на ядро: на процесор така се обработват най-много кадри
 
 
 def each(work: Callable, items: Iterable, workers: int = CPUS) -> list:

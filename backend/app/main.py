@@ -5,17 +5,17 @@ import json
 import os
 import re
 import shutil
-from pathlib import Path
 import threading
 import time
 import zipfile
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Annotated, Literal
 
 import trimesh
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
-from pydantic import BaseModel, Field
 from PIL import Image, ImageOps
+from pydantic import BaseModel, Field
 
 from . import accounts as A
 from . import ai as AI
