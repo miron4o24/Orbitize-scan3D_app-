@@ -1,23 +1,20 @@
-"""The object's surface from the frames' depth maps fused in a volume, instead of Poisson on the dense points.
-
-OpenMVS's depth maps are noisy (striped, a few tenths of a percent of the distance) and empty on dark or plain parts
-(a drill's black handle). Its dense points inherit both: Poisson on them gave a crust of bumps, and the outline shape
-(lumpy) in the gaps. A frame's AI depth (app/depth.py) is smooth and complete but off in scale and gently bent. Fitted
-to the frame's own depth map (scale and offset in inverse depth, then a smooth correction field from what is left) it
-keeps the measured shape with the network's clean surface, and fills the gaps. Every frame then votes where the
-surface is, as a truncated signed distance averaged in a voxel grid (a TSDF), and the visual hull fills in where no
-frame looked (the underside). On a drill: flat panels, step edges and a round handle instead of lumps.
-
-A frame's mask counts only where the hull agrees (the masks' consensus), so background one mask took in stays out;
-and every measured depth outside the object (table, wall) still says the space in front of it is empty, which cuts
-away what the outlines could not (table under the object's edge, the gap between a handle and a battery).
-
-Runs as its own process (pipeline step "fusing depth"):
-    python fuse.py <dense dir> <inputs.npz> <crops.npz> <out.ply>
-dense dir: OpenMVS's depth maps (depth*.dmap). crops.npz: app/depth.py's depth crops. inputs.npz: names (n,) frame
-file names (crop i is frame i), to_up (3,3) world -> mesh coordinates, ground_z (nan: no table), hull_v, hull_f (the
-visual hull from the outlines, uncarved, mesh coordinates). Writes out.ply (mesh coordinates) and out.json (frames used of how many).
-"""
+"""Повърхността на предмета от картите на дълбочината на кадрите, слети в обем, вместо реконструкция на Поасон върху
+гъстите точки. Картите на OpenMVS са шумни (раирани, няколко десети от процента от разстоянието) и празни по тъмни или
+еднообразни части (черната дръжка на дрелка). Гъстите точки наследяват и двете: Поасон върху тях даваше кора от
+неравности, а в празнините формата от очертанията (на бучки). AI дълбочината на кадъра (app/depth.py) е гладка и
+пълна, но с грешен мащаб и леко огъната. Напасната към собствената карта на кадъра (мащаб и отместване в обратна
+дълбочина, после гладко корекционно поле от остатъка), тя запазва измерената форма с чистата повърхност на мрежата и
+запълва празнините. След това всеки кадър гласува къде е повърхността, като пресечено разстояние със знак, усреднено в
+мрежа от воксели (TSDF), а обвивката от очертанията запълва онова, което никой кадър не е видял (долната страна). При
+дрелка: плоски панели, стъпаловидни ръбове и кръгла дръжка вместо бучки. Маската на кадър се брои само където
+обвивката е съгласна (консенсусът на маските), така че фон, включен от една маска, остава извън, а всяка измерена
+дълбочина извън предмета (маса, стена) все така казва, че пространството пред нея е празно, което изрязва онова, което
+очертанията не могат (масата под ръба на предмета, процепа между дръжка и батерия). Работи като собствен процес
+(стъпка "fusing depth"): python fuse.py <папка dense> <inputs.npz> <crops.npz> <out.ply>. Папка dense: картите на
+дълбочината на OpenMVS (depth*.dmap). crops.npz: изрязванията с дълбочина от app/depth.py. inputs.npz: names (n,)
+имена на кадрите (изрязване i е кадър i), to_up (3,3) свят -> координати на мрежата, ground_z (nan: няма маса),
+hull_v, hull_f (обвивката от очертанията, неиздълбана, в координати на мрежата). Записва out.ply (координати на
+мрежата) и out.json (колко кадъра от колко са използвани)."""
 
 import json
 import struct
@@ -35,41 +32,41 @@ from skimage import measure
 if __package__:
     from . import depth as D
     from . import parallel as PAR
-else:  # run as a script: import the package by its path
+else:  # изпълнение като скрипт: импортира пакета по пътя му
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from app import depth as D
     from app import parallel as PAR
 
-# Of the object's size: the grid's cell. 0.25% (400 cells along it) keeps a 10 cm print's detail to about 0.5 mm after
-# the blur below; finer only added noise on a drill.
+# От размера на предмета: клетката на мрежата. 0,25% (400 клетки по него) пази детайла на отпечатък от 10 см до около
+# 0,5 мм след размазването по-долу; по-финото само добавяше шум при дрелка.
 VOXEL = 0.0025
-MAX_VOXELS = 60_000_000  # about 1.5 GB at the peak; bigger grids get coarser cells
-TRUNC = 6  # cells: the signed distance is cut off this far from the surface (depth noise is a few cells)
-MIN_CONF = 0.5  # OpenMVS's confidence below which a measured depth does not count (its median on a drill: 0.8)
-FIELD = 0.01  # of the crop's long side: how smooth the correction of the AI depth is (a drill: 10 pixels)
-AI_WEIGHT = 0.5  # a vote where only the AI saw the surface (measured pixels: 1)
-FREE_WEIGHT = 0.3  # a vote for empty space in front of the surface: carves, but one wrong frame cannot punch a hole
-AI_FREE = 0.3  # and of that, where only the AI saw the surface (a drill's handle got torn without it)
-HULL_WEIGHT = 0.3  # the visual hull's say, a fraction of one frame's
-OUTSIDE = 0.02  # of the size: beyond this outside the hull nothing is fused (the table and the room)
-FLOOR_BAND = 0.06  # of the size: how high above the table a sheet of it can reach (a soft cushion bulges)
-FLAP = 0.0125  # of the size: sheets there thinner than twice this are table, not object (see floor_sheet)
-HULL_POINTS = 1_000_000  # points inside the hull drawn into each frame to check its mask (see hull_view)
-BLUR = 1.5  # cells: the averaged volume smoothed before the surface is taken (without it: crumbs and flaps)
+MAX_VOXELS = 60_000_000  # около 1,5 GB при пика; по-големите мрежи получават по-груби клетки
+TRUNC = 6  # клетки: разстоянието със знак се пресича на това разстояние от повърхността (шумът на дълбочината е няколко клетки)
+MIN_CONF = 0.5  # увереността на OpenMVS, под която измерена дълбочина не се брои (медианата при дрелка: 0,8)
+FIELD = 0.01  # от дългата страна на изрязването: колко гладка е корекцията на AI дълбочината (при дрелка: 10 пиксела)
+AI_WEIGHT = 0.5  # глас, където само AI е видял повърхността (измерени пиксели: 1)
+FREE_WEIGHT = 0.3  # глас за празно пространство пред повърхността: издълбава, но един грешен кадър не може да пробие дупка
+AI_FREE = 0.3  # и от него, където само AI е видял повърхността (без това дръжката на дрелка се разкъсваше)
+HULL_WEIGHT = 0.3  # думата на обвивката от очертанията, част от тази на един кадър
+OUTSIDE = 0.02  # от размера: отвъд това извън обвивката нищо не се слива (масата и стаята)
+FLOOR_BAND = 0.06  # от размера: колко високо над масата може да стигне лист от нея (меката възглавница се издува)
+FLAP = 0.0125  # от размера: по-тънките от двойно това листове там са маса, а не предмет (вижте floor_sheet)
+HULL_POINTS = 1_000_000  # точки вътре в обвивката, нарисувани във всеки кадър за проверка на маската му (вижте hull_view)
+BLUR = 1.5  # клетки: осредненият обем се заглажда преди извличане на повърхността (без това: трохи и ръбове)
 FACES = 200_000
-# A frame's say on a surface falls with how obliquely it sees it (the cosine between its ray and the surface's normal,
-# never below FACING_MIN): at a grazing angle a pixel spans a long strip of surface and its depth error lies along
-# the surface. 0: off.
+# Думата на кадър за повърхност намалява с това колко косо я вижда (косинусът между лъча му и нормалата на
+# повърхността, никога под FACING_MIN): при плъзгащ ъгъл пиксел покрива дълга ивица повърхност и грешката на
+# дълбочината му лежи по повърхността. 0: изключено.
 FACING_MIN = 0.15
-# A second pass leaves out a frame's surface votes that disagree with the first pass's average by more than this (of
-# the truncation distance): one frame whose AI depth was fitted wrong (dark plastic, few measured pixels) otherwise
-# leaves a streak or lump. 0: one pass. On a drill (80 frames), with FACING_MIN: 19% of the surface votes left out,
-# the black handle's streaks mostly gone, mean bend between neighbouring faces 3.4° -> 3.1°, the dense points as close
-# to the surface as before (median 0.23% of the size). Smoothing the AI depth's correction more (FIELD 0.03-0.05)
-# also calmed the handle but bent the body out of shape (points 0.36-0.47% off): not done.
+# Втори проход пропуска гласове за повърхност на кадър, които се разминават със средното от първия с повече от това
+# (от разстоянието на пресичане): иначе един кадър с грешно напасната AI дълбочина (тъмна пластмаса, малко измерени
+# пиксели) оставя ивица или бучка. 0: един проход. При дрелка (80 кадъра) с FACING_MIN: 19% от гласовете отпадат,
+# ивиците по черната дръжка почти изчезват, средното огъване между съседни стени 3,4° -> 3,1°, а гъстите точки остават
+# толкова близо до повърхността (медиана 0,23% от размера). По-голямото заглаждане на корекцията (FIELD 0,03-0,05)
+# също успокояваше дръжката, но изкривяваше тялото (точките на 0,36-0,47%): не е направено.
 OUTLIER = 0.3
-PASSES = 2  # voting passes, each leaving out what disagrees with the one before (1: none left out)
-BLOCK = 500_000  # cells a thread works on at a time (see vote_block)
+PASSES = 2  # проходи за гласуване, всеки пропуска несъгласуваното с предишния (1: нищо не се пропуска)
+BLOCK = 500_000  # клетки, върху които една нишка работи наведнъж (вижте vote_block)
 
 
 def note(text: str) -> None:
@@ -78,21 +75,21 @@ def note(text: str) -> None:
 
 @dataclass
 class DepthMap:
-    image: str  # the frame's file name
+    image: str  # името на файла на кадъра
     image_size: tuple[int, int]  # (w, h)
-    K: np.ndarray  # for the depth map's resolution
-    R: np.ndarray  # world -> camera
-    C: np.ndarray  # camera centre
-    depth: np.ndarray  # (h, w), 0 = none
+    K: np.ndarray  # за разделителната способност на картата на дълбочината
+    R: np.ndarray  # свят -> камера
+    C: np.ndarray  # център на камерата
+    depth: np.ndarray  # (h, w), 0 = няма
     conf: np.ndarray | None
 
 
-HEADER = "<HBBIIIIff"  # name 'DR', flags, padding, image w, h, depth w, h, depth range
+HEADER = "<HBBIIIIff"  # име 'DR', флагове, допълване, изображение w, h, дълбочина w, h, диапазон на дълбочината
 HAS_NORMAL, HAS_CONF, HAS_VIEWS = 2, 4, 8
 
 
 def read_dmap(path: Path) -> DepthMap:
-    """OpenMVS's raw depth map (DepthMap.cpp, ExportDepthDataRaw)."""
+    """Суровата карта на дълбочината на OpenMVS (DepthMap.cpp, ExportDepthDataRaw)."""
     b = path.read_bytes()
     magic, flags, _, iw, ih, dw, dh, _, _ = struct.unpack_from(HEADER, b, 0)
     if magic != struct.unpack("<H", b"DR")[0]:
@@ -119,7 +116,8 @@ def read_dmap(path: Path) -> DepthMap:
 
 
 def at_image_size(dm: DepthMap) -> DepthMap:
-    """The depth map at its frame's resolution (the crops' pixels), if OpenMVS worked at a smaller one."""
+    """Картата на дълбочината при разделителната способност на кадъра (пикселите на изрязванията), ако OpenMVS е
+    работил при по-малка."""
     h, w = dm.depth.shape
     iw, ih = dm.image_size
     if (w, h) == (iw, ih):
@@ -134,11 +132,11 @@ def at_image_size(dm: DepthMap) -> DepthMap:
 
 
 def completed(dm: DepthMap, disp: np.ndarray, box, inner: np.ndarray, allowed: np.ndarray, core: np.ndarray):
-    """The frame's depth over its crop: the AI depth fitted to the measured one, on the object's pixels: its mask's
-    inside and the hull's (`core`: where the frame's mask missed a dark part, a drill's black trigger), but only where
-    the hull shows (`allowed`). Returns (depth, weight, free), 0 where nothing, or None if the two do not fit
-    together. free: the measured depth of the other pixels, which only shows empty space (in front of a pixel of the
-    object that is left out, it is empty all the same)."""
+    """Дълбочината на кадъра върху изрязването му: AI дълбочината, напасната към измерената, върху пикселите на
+    предмета: вътрешността на маската и на обвивката (`core`: където маската е пропуснала тъмна част, черен спусък
+    на дрелка), но само където обвивката се вижда (`allowed`). Връща (depth, weight, free), 0 където няма нищо, или
+    None, ако двете не пасват. free: измерената дълбочина на другите пиксели, която показва само празно
+    пространство (пред пропуснат пиксел от предмета пак е празно)."""
     x0, y0, x1, y1 = box
     dep = dm.depth[y0:y1, x0:x1]
     if dep.shape != disp.shape:
@@ -154,7 +152,8 @@ def completed(dm: DepthMap, disp: np.ndarray, box, inner: np.ndarray, allowed: n
     if a <= 0 or err > D.MAX_ERROR:
         return None
     base = a * disp + b
-    # What the scale and offset leave, smoothed into a field (the network bends surfaces gently); outliers left out.
+    # Каквото оставят мащабът и отместването, заглаждано в поле (мрежата леко огъва повърхностите); силно отклонените
+    # отпадат.
     r = np.where(on, inv - base, 0)
     med = np.median(r[on])
     mad = 1.4826 * np.median(np.abs(r[on] - med))
@@ -173,8 +172,8 @@ def completed(dm: DepthMap, disp: np.ndarray, box, inner: np.ndarray, allowed: n
 
 
 def facing(depth: np.ndarray, K: np.ndarray, box) -> np.ndarray:
-    """Per pixel of a crop's depth: the cosine between the camera's ray and the surface's normal (1: straight on).
-    Pixels without depth, or next to one, get 1 (they cast no surface vote anyway)."""
+    """За всеки пиксел от дълбочината на изрязване: косинусът между лъча на камерата и нормалата на повърхността (1:
+    право). Пиксели без дълбочина или до такъв получават 1 (така или иначе не гласуват за повърхност)."""
     x0, y0, x1, y1 = box
     z = depth.astype(np.float32)
     u = (np.arange(x0, x1, dtype=np.float32) - np.float32(K[0, 2])) / np.float32(K[0, 0])
@@ -189,10 +188,11 @@ def facing(depth: np.ndarray, K: np.ndarray, box) -> np.ndarray:
 
 
 def hull_view(points: np.ndarray, spacing: float, dm: DepthMap, box) -> tuple[np.ndarray, np.ndarray]:
-    """Where the visual hull shows in the crop (its inside's points, world, each drawn as wide as their spacing), and
-    its core away from the outline (as far in as app/depth.py keeps the masks' inside: depth blurs at the outline).
-    The hull is what most frames' masks agree on, so a piece of background one frame's mask took in (a chair behind a
-    drill's handle, a strip of the table, a poster) is outside it, and a part one mask missed is inside."""
+    """Къде се вижда обвивката в изрязването (точките от вътрешността ѝ, световни, всяка нарисувана широка колкото
+    разстоянието между тях) и ядрото ѝ далеч от очертанието (толкова навътре, колкото app/depth.py пази вътрешността
+    на маските: дълбочината се размазва при очертанието). Обвивката е това, за което маските на повечето кадри са
+    съгласни, така че парче фон, включено от маската на един кадър (стол зад дръжката на дрелка, ивица маса, плакат),
+    е извън нея, а част, пропусната от една маска, е вътре."""
     x0, y0, x1, y1 = box
     out = np.zeros((y1 - y0, x1 - x0), bool)
     x = PAR.turned(points - dm.C, dm.R)
@@ -206,13 +206,13 @@ def hull_view(points: np.ndarray, spacing: float, dm: DepthMap, box) -> tuple[np
     out[v[inb], u[inb]] = True
     r = int(np.ceil(spacing * dm.K[0, 0] / np.median(z[ok]))) + 1
     shown = ndimage.maximum_filter(out, size=2 * r + 1)
-    # The crop is the object's box grown by 20% on each side (app/depth.py predict).
+    # Изрязването е кутията на предмета, разширена с 20% от всяка страна (app/depth.py predict).
     edge = max(2, int(0.02 * max(out.shape) / 1.4))
     return shown, ndimage.binary_erosion(shown, iterations=r + edge)
 
 
 def hull_distance(hull: trimesh.Trimesh, lo: np.ndarray, shape, step: float) -> np.ndarray:
-    """Signed distance (world units) of the grid's cells to the hull: negative inside."""
+    """Разстояние със знак (световни единици) от клетките на мрежата до обвивката: отрицателно вътре."""
     vg = hull.voxelized(step).fill()
     inside = np.zeros(shape, bool)
     off = np.round((vg.transform[:3, 3] - lo) / step).astype(int)
@@ -225,11 +225,11 @@ def hull_distance(hull: trimesh.Trimesh, lo: np.ndarray, shape, step: float) -> 
 
 
 def floor_sheet(solid: np.ndarray, top: int, radius: float) -> np.ndarray | None:
-    """The cells of a thin sheet lying on the table and sticking out from the object (its first `top` layers), or
-    None. A red box on a red cushion took in a patch of the cushion: as surface as the box, inside every mask, but
-    thinner than anything the box has. Thin = gone after a morphological opening (a ball of `radius` cells); sticking
-    out = more than `radius` cells from what stays (the opening also rounds the object's own edges, by less). Not when
-    most of the object itself is that thin (a flat object)."""
+    """Клетките на тънък лист върху масата, стърчащ от предмета (първите му `top` слоя), или None. Червена кутия върху
+    червена възглавница включваше парче от възглавницата: повърхност като на кутията, вътре във всяка маска, но
+    по-тънка от всичко по кутията. Тънко = изчезва след морфологично отваряне (кълбо с радиус `radius` клетки);
+    стърчащо = на повече от `radius` клетки от оставащото (отварянето закръгля и ръбовете на предмета, но по-малко).
+    Не важи, когато по-голямата част от самия предмет е толкова тънка (плосък предмет)."""
     r = max(2.0, radius)
     sub = solid[:, :, : top + int(np.ceil(2 * r))]
     if top <= 0 or not sub.any():
@@ -247,9 +247,9 @@ def floor_sheet(solid: np.ndarray, top: int, radius: float) -> np.ndarray | None
 
 def vote_block(frames: list, world: np.ndarray, cells: np.ndarray, tsdf: np.ndarray, weight: np.ndarray,
                prev: np.ndarray | None, trunc: float) -> int:  # fmt: skip
-    """Every frame's votes for one block of the volume's cells (world: their centres; cells: their places in tsdf and
-    weight; no two blocks share a cell, so blocks go at once, and an average does not depend on the votes' order). With
-    `prev` (the pass before), surface votes far from it are left out. Returns how many."""
+    """Гласовете на всеки кадър за един блок от клетките на обема (world: центровете им; cells: местата им в tsdf и
+    weight; два блока нямат обща клетка, затова вървят едновременно, а средното не зависи от реда на гласовете). С
+    `prev` (предишния проход) гласовете за повърхност далеч от него отпадат. Връща колко."""
     dropped = 0
     for (R, C, K), box, depth, wmap, fmap in frames:
         x0, y0, x1, y1 = box
@@ -265,7 +265,8 @@ def vote_block(frames: list, world: np.ndarray, cells: np.ndarray, tsdf: np.ndar
         surface = depth[v, u] > 0
         dep = np.where(surface, depth[v, u], fmap[v, u])
         sd = dep - zc
-        # Object pixels vote near their surface and for empty space in front; other pixels only for the latter.
+        # Пикселите на предмета гласуват близо до повърхността си и за празно пространство отпред; другите пиксели
+        # само за второто.
         ok = (dep > 0) & (sd >= np.where(surface, -trunc, trunc))
         idx, sd, surface, w = idx[ok], sd[ok], surface[ok], wmap[v[ok], u[ok]]
         val = np.minimum(1.0, sd / trunc).astype(np.float32)
@@ -289,7 +290,7 @@ def fuse(dense: Path, inputs: Path, crops_file: Path, out: Path) -> None:
     ground_z = float(z["ground_z"])
     hull = trimesh.Trimesh(z["hull_v"], z["hull_f"], process=False)
     size = float(hull.extents.max())
-    step = (float(z["voxel"]) if "voxel" in z.files else VOXEL) * size  # express scans: coarser cells
+    step = (float(z["voxel"]) if "voxel" in z.files else VOXEL) * size  # експресни сканирания: по-груби клетки
     pad = max(OUTSIDE * size, TRUNC * step) + 3 * step
     lo = hull.bounds[0] - pad
     shape = np.ceil((hull.bounds[1] + pad - lo) / step).astype(int) + 1
@@ -337,7 +338,7 @@ def fuse(dense: Path, inputs: Path, crops_file: Path, out: Path) -> None:
             return None
         return ((dm.R.astype(np.float32), dm.C.astype(np.float32), dm.K), box, *got)
 
-    # Per usable frame: (pose, box, depth, weight, free), kept for the later passes.
+    # За всеки използваем кадър: (поза, кутия, дълбочина, тегло, празно), запазени за следващите проходи.
     frames = [f for f in PAR.each(prepare, todo) if f is not None]
     used = len(frames)
     note(f"{used} of {len(names)} frames have depth to fuse")
@@ -362,7 +363,7 @@ def fuse(dense: Path, inputs: Path, crops_file: Path, out: Path) -> None:
     vol = tsdf.reshape(tuple(shape))
     wv = np.minimum(weight, 50).reshape(tuple(shape))
     vol = ndimage.gaussian_filter(vol * wv, BLUR) / np.maximum(ndimage.gaussian_filter(wv, BLUR), 1e-6)
-    if np.isfinite(ground_z):  # nothing under the table: a flat, closed bottom
+    if np.isfinite(ground_z):  # нищо под масата: плоско затворено дъно
         zs = lo[2] + np.arange(shape[2]) * step
         vol[:, :, zs < ground_z] = 1.0
         flap = float(z["flap"]) if "flap" in z.files else FLAP
@@ -370,7 +371,7 @@ def fuse(dense: Path, inputs: Path, crops_file: Path, out: Path) -> None:
         if sheet is not None:
             vol[:, :, : sheet.shape[2]][sheet] = 1.0
             note(f"thin sheet on the table cut off: {sheet.sum() * step**3 / size**3:.2%} of the size cubed")
-    vol[[0, -1]] = vol[:, [0, -1]] = vol[:, :, [0, -1]] = 1.0  # closed at the grid's border
+    vol[[0, -1]] = vol[:, [0, -1]] = vol[:, :, [0, -1]] = 1.0  # затворено при границата на мрежата
     verts, faces, _, _ = measure.marching_cubes(vol, 0.0)
     mesh = trimesh.Trimesh(verts * step + lo, faces)
     mesh = max(mesh.split(only_watertight=False), key=lambda m: len(m.faces))
@@ -379,7 +380,7 @@ def fuse(dense: Path, inputs: Path, crops_file: Path, out: Path) -> None:
     note(f"surface: {len(mesh.faces)} triangles")
     ms = pymeshlab.MeshSet()
     ms.add_mesh(pymeshlab.Mesh(mesh.vertices, mesh.faces))
-    ms.apply_coord_taubin_smoothing(stepsmoothnum=5)  # the grid's stair steps
+    ms.apply_coord_taubin_smoothing(stepsmoothnum=5)  # стъпалата на мрежата
     if ms.current_mesh().face_number() > FACES:
         ms.meshing_decimation_quadric_edge_collapse(targetfacenum=FACES, preservenormal=True, preservetopology=True)
     m = ms.current_mesh()

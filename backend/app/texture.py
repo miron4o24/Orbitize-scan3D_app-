@@ -1,20 +1,16 @@
-"""A photo texture for the model: the frames themselves wrapped onto it (OpenMVS TextureMesh), so print on the object,
-down to small text, reads as in the frames. Vertex colours (mesh.paint) give one colour per point, a few millimetres
-apart on a 10 cm print: a drill's battery label was a grey smear; textured, "LI-ION 4.0Ah 18V" reads.
-
-The frames go in at full size (up to TEXTURE_SIDE), from their own undistortion: everything else works on frames of
-pipeline.MAX_FRAME_SIDE, which is enough for the shape and keeps dense matching affordable.
-
-TextureMesh's seam levelling (global and local) blacked out most of the texture with this OpenMVS build (a drill:
-12-19% of the atlas pure black, in blobs over the faces), so it is off, and `level` does the global part here: each
-patch of the texture comes from one frame, and frames differ in exposure and in the shine they catch, so without it
-a black handle came out in grey and black blotches. Faces no frame saw (in crevices) come out in EMPTY and are
-filled with their painted vertex colour instead. The atlas between the patches is filled with the nearest patch's
-colour (`fill`): left in EMPTY, it bled into the patches' edges on the phone (its mipmaps), a pink fringe.
-
-Kept in the job directory: textured.npz (per texture: vertices, normals, uv, faces, in the model's printed
-coordinates) and texture_<k>.jpg; mesh.glb_textured builds the GLB from them.
-"""
+"""Текстура от снимки за модела: самите кадри, нанесени върху него (OpenMVS TextureMesh), така че надписите върху
+предмета, дори дребни, да се четат както в кадрите. Цветовете на върховете (mesh.paint) дават по един цвят за точка,
+на няколко милиметра една от друга при отпечатък от 10 см: етикетът на батерия на дрелка беше сиво петно; с текстура
+"LI-ION 4.0Ah 18V" се чете. Кадрите влизат в пълен размер (до TEXTURE_SIDE) от собствената си корекция: всичко
+останало работи с кадри от pipeline.MAX_FRAME_SIDE, което стига за формата и пази гъстото съпоставяне достъпно.
+Изравняването на шевовете в TextureMesh (глобално и локално) почерняше голяма част от текстурата при тази версия на
+OpenMVS (дрелка: 12-19% от атласа чисто черни, на петна върху стените), затова е изключено и глобалната част прави
+`level` тук: всяка част от текстурата идва от един кадър, а кадрите се различават по експозиция и отблясък, затова без
+това черна дръжка излизаше на сиви и черни петна. Стени, невидени от никой кадър (в процепи), излизат в EMPTY и вместо
+това се запълват с цвета на върховете си. Атласът между частите се запълва с цвета на най-близката част (`fill`):
+оставен в EMPTY, той прониква в ръбовете на частите на телефона (мипмапите му), розова ивица. Пази се в папката на
+задачата: textured.npz (за всяка текстура: върхове, нормали, uv, стени, в координатите за печат) и texture_<k>.jpg;
+mesh.glb_textured изгражда GLB от тях."""
 
 import shutil
 from pathlib import Path
@@ -28,21 +24,21 @@ from scipy.ndimage import distance_transform_edt, uniform_filter
 from scipy.sparse.linalg import splu
 from scipy.spatial import cKDTree
 
-TEXTURE_SIDE = 3840  # frames up to 4K go in at full size
-MAX_TEXTURE = 4096  # per texture image: phones load 4096 x 4096 (64 MB); more is split into several
-EMPTY = (255, 0, 255)  # TextureMesh's colour for faces no frame sees: one that does not occur on real objects
-CELL = 4  # texels per side of an unseen face's own colour square (see paint_unseen)
+TEXTURE_SIDE = 3840  # кадри до 4K влизат в пълен размер
+MAX_TEXTURE = 4096  # за всяко изображение на текстура: телефоните зареждат 4096 x 4096 (64 MB); повече се разделя на няколко
+EMPTY = (255, 0, 255)  # цветът на TextureMesh за стени, невидени от никой кадър: такъв, който не се среща при реални предмети
+CELL = 4  # тексели на страна от собствения квадрат с цвят на невидена стена (вижте paint_unseen)
 NPZ = "textured.npz"
-# level: how much a patch's colour correction must stay smooth across the patch, against matching its neighbours at
-# the seams (Waechter et al. 2014, "Let There Be Color!", use 1/λ = 10).
+# level: колко гладка трябва да остане цветовата корекция на част спрямо съвпадането със съседите при шевовете
+# (Waechter и съавт. 2014, "Let There Be Color!", използват 1/λ = 10).
 SMOOTH = 10.0
-RASTER_BATCH = 2_000_000  # texel candidates per step of rasterize (memory: ~50 bytes each)
-# Frames blurrier than this share of the median sharpness (on the object) stay out of the texture: TextureMesh picks
-# each face's frame by how big and straight-on the face is in it, not how sharp, and a scan kept frames at a sixth of
-# the median. At most TEXTURE_DROP of the frames are left out, so every side still has frames.
+RASTER_BATCH = 2_000_000  # кандидати за тексели на стъпка от rasterize (памет: около 50 байта на всеки)
+# Кадри, по-размазани от този дял от медианната рязкост (върху предмета), остават извън текстурата: TextureMesh избира
+# кадъра на всяка стена по това колко голяма и пряка е стената в него, а не колко е рязък, а едно сканиране запази
+# кадри с една шеста от медианата. Отпадат най-много TEXTURE_DROP от кадрите, така че всяка страна да има кадри.
 TEXTURE_SHARP = 0.5
 TEXTURE_DROP = 0.3
-SHARPNESS_SIDE = 1280  # frames are measured at this size
+SHARPNESS_SIDE = 1280  # кадрите се измерват при този размер
 
 
 def texture_files(job: Path) -> list[Path]:
@@ -50,14 +46,14 @@ def texture_files(job: Path) -> list[Path]:
 
 
 def clear(job: Path) -> None:
-    """Removes a previous run's texture (a retried job)."""
+    """Премахва текстурата от предишно изпълнение (повторна задача)."""
     (job / NPZ).unlink(missing_ok=True)
     for p in texture_files(job):
         p.unlink(missing_ok=True)
 
 
 def parts(loaded) -> list[trimesh.Trimesh]:
-    """The textured meshes of an OBJ: one per material (texture image)."""
+    """Мрежите с текстура от OBJ: по една за материал (изображение на текстура)."""
     if isinstance(loaded, trimesh.Scene):
         return [g for g in loaded.dump() if isinstance(g, trimesh.Trimesh) and len(g.faces)]
     return [loaded]
@@ -72,22 +68,22 @@ def image_of(m: trimesh.Trimesh) -> Image.Image | None:
 
 
 def unseen_faces(a: np.ndarray, uv: np.ndarray) -> np.ndarray:
-    """The faces whose texture is EMPTY (no frame saw them). a: the atlas (H, W, 3); uv: (faces, 3, 2), v up."""
+    """Стените, чиято текстура е EMPTY (невидени от никой кадър). a: атласът (H, W, 3); uv: (стени, 3, 2), v нагоре."""
     H, W = a.shape[:2]
     centre = uv.mean(1)
     x = np.clip(np.round(centre[:, 0] * (W - 1)), 0, W - 1).astype(int)
     y = np.clip(np.round((1 - centre[:, 1]) * (H - 1)), 0, H - 1).astype(int)
-    return np.abs(a[y, x].astype(int) - EMPTY).sum(1) < 120  # JPEG shifts the colour a little
+    return np.abs(a[y, x].astype(int) - EMPTY).sum(1) < 120  # JPEG леко измества цвета
 
 
 def rasterize(uv: np.ndarray, W: int, H: int, faces: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Which of `faces` covers each texel's centre, and where in it: (H, W) face index (-1: none) and (H, W, 3)
-    barycentric weights. uv: (all faces, 3, 2), v up. Faces go in batches of similar size, each as a grid of its
-    bounding boxes."""
-    px = np.stack([uv[..., 0] * W, (1 - uv[..., 1]) * H], -1)[faces]  # (n, 3, 2) pixels, y down
+    """Коя от `faces` покрива центъра на всеки тексел и къде в нея: (H, W) индекс на стена (-1: няма) и (H, W, 3)
+    барицентрични тегла. uv: (всички стени, 3, 2), v нагоре. Стените вървят на порции с подобен размер, всяка като
+    мрежа от ограничаващите им кутии."""
+    px = np.stack([uv[..., 0] * W, (1 - uv[..., 1]) * H], -1)[faces]  # (n, 3, 2) пиксели, y надолу
     owner = np.full((H, W), -1, np.int32)
     bary = np.zeros((H, W, 3), np.float32)
-    lo = np.floor(px.min(1) - 0.5).astype(np.int64)  # texels whose centre (i + 0.5) may lie inside
+    lo = np.floor(px.min(1) - 0.5).astype(np.int64)  # тексели, чийто център (i + 0.5) може да е вътре
     hi = np.ceil(px.max(1) - 0.5).astype(np.int64)
     size = hi - lo + 1
     order = np.argsort(size[:, 0] * size[:, 1], kind="stable")
@@ -120,16 +116,16 @@ def rasterize(uv: np.ndarray, W: int, H: int, faces: np.ndarray) -> tuple[np.nda
 
 
 def nearest_covered(covered: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """For every texel, the nearest texel some face covers (its row and column)."""
+    """За всеки тексел най-близкият, покрит от някоя стена (ред и колона)."""
     iy, ix = distance_transform_edt(~covered, return_distances=False, return_indices=True)
     return iy, ix
 
 
 def level(a: np.ndarray, uv: np.ndarray, corner: np.ndarray, seen: np.ndarray) -> tuple[np.ndarray, np.ndarray, str]:
-    """Global seam levelling: a smooth colour correction per patch so that patches agree where they meet, while the
-    detail inside them stays. a: atlas (H, W, 3) uint8; uv: (faces, 3, 2); corner: (faces, 3) the model's vertex at
-    each corner; seen: the faces with a real texture. Returns the corrected atlas with the space between the patches
-    filled from the nearest patch, the covered texels (H, W) and a line for the log."""
+    """Глобално изравняване на шевовете: гладка цветова корекция за всяка част, така че частите да съвпадат там,
+    където се срещат, а детайлът в тях да се запази. a: атлас (H, W, 3) uint8; uv: (стени, 3, 2); corner: (стени,
+    3) върхът на модела при всеки ъгъл; seen: стените с истинска текстура. Връща коригирания атлас с пространството
+    между частите, запълнено от най-близката част, покритите тексели (H, W) и ред за дневника."""
     H, W = a.shape[:2]
     owner, bary = rasterize(uv, W, H, np.flatnonzero(seen))
     covered = owner >= 0
@@ -137,13 +133,14 @@ def level(a: np.ndarray, uv: np.ndarray, corner: np.ndarray, seen: np.ndarray) -
         return a, covered, "no texels covered"
     iy, ix = nearest_covered(covered)
     filled = a[iy, ix]
-    # Texture vertices: one per distinct (model vertex, uv); a model vertex on a seam has one per patch around it.
+    # Върхове на текстурата: по един за всяка различна двойка (връх на модела, uv); връх от модела върху шев има по
+    # един за всяка част около него.
     key = np.c_[corner.reshape(-1), np.round(uv.reshape(-1, 2) * 1e6)]
     _, tv = np.unique(key, axis=0, return_inverse=True)
     tv = tv.reshape(-1, 3)
     n = int(tv.max()) + 1
-    # The colour each patch has at each vertex: sampled a little inside its faces (towards that corner), on the atlas
-    # lightly blurred, averaged over the faces around it.
+    # Цветът на всяка част при всеки връх: взет малко навътре в стените ѝ (към този ъгъл), върху леко размазан атлас,
+    # осреднен за стените около него.
     soft = uniform_filter(filled.astype(np.float32), size=(3, 3, 1))
     w = np.array([[0.6, 0.2, 0.2], [0.2, 0.6, 0.2], [0.2, 0.2, 0.6]])
     pts = np.einsum("kc,fcd->fkd", w, uv[seen])
@@ -155,7 +152,7 @@ def level(a: np.ndarray, uv: np.ndarray, corner: np.ndarray, seen: np.ndarray) -
     np.add.at(count, tv[seen].reshape(-1), 1)
     known = count > 0
     f[known] /= count[known, None]
-    # Seams: neighbouring texture vertices of one model vertex, both seen.
+    # Шевове: съседни върхове на текстурата от един връх на модела, и двата видени.
     pairs = np.unique(np.c_[corner.reshape(-1), tv.reshape(-1)], axis=0)
     pairs = pairs[known[pairs[:, 1]]]
     same = pairs[1:, 0] == pairs[:-1, 0]
@@ -181,23 +178,24 @@ def level(a: np.ndarray, uv: np.ndarray, corner: np.ndarray, seen: np.ndarray) -
         yy, xx = np.unravel_index(t, (H, W))
         out[yy, xx] += np.einsum("tk,tkc->tc", bary[yy, xx], g[tv[owner[yy, xx]]])
     out = np.clip(np.round(out), 0, 255).astype(np.uint8)
-    out = out[iy, ix]  # the covered texels keep their own colour; the rest take their nearest's
+    out = out[iy, ix]  # покритите тексели пазят своя цвят; останалите взимат този на най-близкия
     note = f"{len(si)} seam points, colour step across seams {before:.1f} -> {after:.1f} of 255, mean change {np.abs(g).mean():.1f}"
     return out, covered, note
 
 
 def paint_unseen(img: Image.Image, uv: np.ndarray, colors: np.ndarray, empty: np.ndarray,
                  start: int) -> tuple[Image.Image, np.ndarray, float]:  # fmt: skip
-    """The `empty` faces (no frame saw them) in their painted colour. TextureMesh points all of them at one texel, so
-    each gets its own CELL-wide square in rows added from `start` (below the last patch, as TextureMesh packs from the
-    top), filled with the mean of its corners' colours. uv: (faces, 3, 2) per corner, v up; colors: (faces, 3, 3+)
-    per corner. Returns the image, the new uv and the share of such faces."""
+    """Стените `empty` (невидени от никой кадър) в цвета им. TextureMesh насочва всички към един тексел, затова всяка
+    получава собствен квадрат с ширина CELL в редове, добавени от `start` (под последната част, защото TextureMesh
+    подрежда отгоре), запълнен със средния цвят на ъглите ѝ. uv: (стени, 3, 2) за ъгъл, v нагоре; colors: (стени, 3,
+    3+) за ъгъл. Връща изображението, новите uv и дела на такива стени."""
     a = np.asarray(img.convert("RGB"))
     H, W = a.shape[:2]
     n = int(empty.sum())
     if not n:
         return img, uv, 0.0
-    # More rows are added if those below the patches are too few, but never past MAX_TEXTURE (smaller squares then).
+    # Добавят се още редове, ако тези под частите са твърде малко, но никога над MAX_TEXTURE (тогава квадратите са
+    # по-малки).
     for cell in (CELL, 2, 1):
         rows = int(np.ceil(n / (W // cell))) * cell
         if start + rows <= MAX_TEXTURE or cell == 1:
@@ -213,13 +211,13 @@ def paint_unseen(img: Image.Image, uv: np.ndarray, colors: np.ndarray, empty: np
         for dx in range(cell):
             out[cy + dy, cx + dx] = col
     uv = uv.copy()
-    uv[..., 1] = 1 - (1 - uv[..., 1]) * H / total  # the old image now fills the top H of `total` rows
+    uv[..., 1] = 1 - (1 - uv[..., 1]) * H / total  # старото изображение сега запълва горните H от `total` реда
     uv[empty] = np.stack([(cx + cell / 2) / W, 1 - (cy + cell / 2) / total], -1)[:, None, :]
     return Image.fromarray(out), uv, n / len(uv)
 
 
 def frame_sharpness(path: Path, mask: np.ndarray | None) -> float:
-    """Variance of the Laplacian over the object (its mask, any size), on the frame scaled to SHARPNESS_SIDE."""
+    """Дисперсия на лапласиана върху предмета (маската му, всякакъв размер), при кадър, мащабиран до SHARPNESS_SIDE."""
     with Image.open(path) as im:
         g = im.convert("L")
         if max(g.size) > SHARPNESS_SIDE:
@@ -236,7 +234,7 @@ def frame_sharpness(path: Path, mask: np.ndarray | None) -> float:
 
 
 def blurry_frames(photos: Path, names: list[str], masks: dict[str, np.ndarray]) -> list[str]:
-    """The frames to leave out of the texture (see TEXTURE_SHARP)."""
+    """Кадрите, които да отпаднат от текстурата (вижте TEXTURE_SHARP)."""
     if len(names) < 10:
         return []
     s = np.array([frame_sharpness(photos / n, masks.get(n)) for n in names])
@@ -247,10 +245,10 @@ def blurry_frames(photos: Path, names: list[str], masks: dict[str, np.ndarray]) 
 def texture_model(job: Path, work: Path, photos: Path, best: Path, model: trimesh.Trimesh, to_print: np.ndarray,
                   to_up: np.ndarray, sh: Callable[[str, list], None], colmap: str, threads: str,
                   names: list[str] = (), masks: dict[str, np.ndarray] | None = None) -> dict:  # fmt: skip
-    """Textures `model` (printed coordinates; to_print: 4x4 from the cloud's coordinates to them; to_up: world ->
-    cloud rotation) from the frames in `photos`, posed by the COLMAP model `best` (its frames: `names`; masks: the
-    object in each, for measuring sharpness). Writes textured.npz and the texture images into the job; returns a
-    summary for the log. Raises on failure (the caller keeps the vertex colours)."""
+    """Текстурира `model` (координати за печат; to_print: 4x4 от координатите на облака към тях; to_up: завъртане свят
+    -> облак) от кадрите в `photos`, разположени от модела `best` на COLMAP (кадрите му: `names`; masks: предметът
+    във всеки, за измерване на рязкостта). Записва textured.npz и изображенията на текстурата в задачата; връща
+    обобщение за дневника. Хвърля грешка при неуспех (извикващият запазва цветовете на върховете)."""
     tex = work / "texture"
     shutil.rmtree(tex, ignore_errors=True)
     blurry = blurry_frames(photos, list(names), masks or {})
@@ -264,13 +262,13 @@ def texture_model(job: Path, work: Path, photos: Path, best: Path, model: trimes
             sh("texturing", [colmap, "image_deleter", "--input_path", best, "--output_path", sharp,
                 "--image_names_path", work / "blurry.txt"])  # fmt: skip
             posed = sharp
-        except Exception:  # (pipeline.Failed) then all frames, as before
+        except Exception:  # (pipeline.Failed) тогава всички кадри, както преди
             blurry = []
     sh("texturing", [colmap, "image_undistorter", "--image_path", photos, "--input_path", posed, "--output_path", tex,
         "--output_type", "COLMAP", "--max_image_size", str(TEXTURE_SIDE)])  # fmt: skip
     sh("texturing", ["InterfaceCOLMAP", "-w", tex, "-i", tex, "-o", tex / "scene.mvs",
         "--image-folder", tex / "images"])  # fmt: skip
-    # Back from printed coordinates to the cameras' (world) ones.
+    # Обратно от координатите за печат към тези на камерите (свят).
     cloud = trimesh.transform_points(model.vertices, np.linalg.inv(to_print))
     trimesh.Trimesh(cloud @ to_up, model.faces, process=False).export(tex / "model.ply")
     empty = (EMPTY[0] << 16) | (EMPTY[1] << 8) | EMPTY[2]
@@ -291,21 +289,21 @@ def texture_model(job: Path, work: Path, photos: Path, best: Path, model: trimes
         if img is None or m.visual.uv is None:
             raise ValueError("TextureMesh wrote a mesh without texture")
         verts = trimesh.transform_points(m.vertices @ to_up.T, to_print)
-        _, near = tree.query(verts)  # the same points as the model's (TextureMesh keeps the surface)
-        corner = near[m.faces]  # (faces, 3): the model's vertex at each corner
+        _, near = tree.query(verts)  # същите точки като на модела (TextureMesh запазва повърхността)
+        corner = near[m.faces]  # (стени, 3): върхът на модела при всеки ъгъл
         uv = np.asarray(m.visual.uv, np.float64)[m.faces]
         a = np.asarray(img.convert("RGB"))
         empty = unseen_faces(a, uv)
         try:
             a, covered, note = level(a, uv, corner, ~empty)
-        except (RuntimeError, ValueError, MemoryError) as e:  # then the atlas as TextureMesh made it
+        except (RuntimeError, ValueError, MemoryError) as e:  # тогава атласът, както го е направил TextureMesh
             covered, note = np.abs(a.astype(int) - EMPTY).sum(2) >= 120, f"not levelled ({e})"
         levelled.append(note)
         rows = np.flatnonzero(covered.any(1))
         start = int(rows[-1]) + 3 if len(rows) else 0
         img, uv, share = paint_unseen(Image.fromarray(a), uv, colors[corner], empty, start)
         unseen.append(share * len(m.faces))
-        # One vertex per distinct (point, uv): TextureMesh writes three per face.
+        # По един връх за всяка различна двойка (точка, uv): TextureMesh записва по три за стена.
         corner, uv = corner.reshape(-1), uv.reshape(-1, 2)
         _, first, inverse = np.unique(np.c_[corner, np.round(uv * 1e6)], axis=0, return_index=True,
                                       return_inverse=True)  # fmt: skip
@@ -324,7 +322,8 @@ def texture_model(job: Path, work: Path, photos: Path, best: Path, model: trimes
 
 
 def load(job: Path) -> list[dict] | None:
-    """The kept texture: per image {vertices, normals, uv, faces, jpeg (bytes), size (w, h)}; None if there is none."""
+    """Запазената текстура: за всяко изображение {vertices, normals, uv, faces, jpeg (байтове), size (w, h)}; None,
+    ако няма."""
     path = job / NPZ
     if not path.exists():
         return None
