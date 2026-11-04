@@ -1,18 +1,15 @@
-"""Pro's text changes: the user writes what to change ("make it 15 cm tall and add a keychain loop"), and a new model is
-made from the old one; the old one stays as it was.
-
-The request becomes a list of operations (OPS). Plain requests are read by fixed rules (parse): exact, instant, and
-no guessing. A request the rules do not fully cover goes to a small language model on the server (app/edit_llm.py:
-Qwen2.5-1.5B-Instruct, Apache-2.0, on the CPU), whose answer is held to the same operations and limits (validate).
-What was done is listed in the new model's report, in Bulgarian, for the app.
-
-Sizes are the app's (the viewer's length, width and height): length is the longer side of the footprint, width the
-shorter, height up. The model is changed at its real size (the size the user gave in the app), in millimetres.
-
-Colours ("make the hair blue"): the part named is found by AI on pictures of the model (app/recolor.py) and its photo
-texture and vertex colours are turned to the new colour, shading kept. The photo texture stays with the new model
-when the shape changes only by moving, scaling, mirroring or hollowing (its outside unchanged); other changes leave
-it with its vertex colours, as before."""
+"""Текстовите промени на Pro: потребителят пише какво да се промени ("make it 15 cm tall and add a keychain loop") и
+от стария модел се създава нов; старият остава непроменен. Заявката става списък от операции (OPS). Простите заявки
+се разчитат с фиксирани правила (parse): точно, веднага и без предположения. Заявка, която правилата не покриват
+напълно, отива при малък езиков модел на сървъра (app/edit_llm.py: Qwen2.5-1.5B-Instruct, Apache-2.0, на
+процесора), чийто отговор се държи в същите операции и граници (validate). Направеното се изброява в отчета на
+новия модел на български за приложението. Размерите са тези от приложението (дължина, ширина и височина от екрана
+за преглед): дължината е по-дългата страна на стъпката, ширината по-късата, а височината е нагоре. Моделът се
+променя в реалния си размер (зададения в приложението), в милиметри. Цветове ("make the hair blue"): назованата
+част се намира с AI върху изображения на модела (app/recolor.py), а текстурата от снимки и цветовете на върховете ѝ
+се обръщат към новия цвят, със запазени сенки. Текстурата от снимки остава с новия модел, когато формата се променя
+само чрез преместване, мащабиране, огледално обръщане или издълбаване (външността ѝ е непроменена); другите промени
+го оставят с цветовете на върховете, както преди."""
 
 import io
 import json
@@ -33,16 +30,17 @@ from . import pipeline as P
 from . import recolor as RC
 from . import texture as TX
 
-SOURCE = "source.ply"  # in the new job's directory: the model it was made from, copied when the job was made
+SOURCE = "source.ply"  # в папката на новата задача: моделът, от който е създаден, копиран при създаването на задачата
 AXES = ("length", "width", "height")
 DIMENSIONS = ("longest", *AXES)
 
 
 class EditError(P.Failed):
-    """User-facing: the request cannot be done."""
+    """За потребителя: заявката не може да се изпълни."""
 
 
-# --- Operations: what each takes, and its limits ---------------------------------------------------------------------
+# --- Операции: какво приема всяка и какви са границите ѝ
+# -------------------------------------------------------------
 
 OPS: dict[str, dict] = {
     "resize": {"dimension": DIMENSIONS, "mm": (1.0, 2000.0)},
@@ -58,23 +56,23 @@ OPS: dict[str, dict] = {
     "loop": {"diameter_mm": (1.0, 200.0)},
     "smooth": {"strength": (1, 3)},
     "simplify": {"percent": (5.0, 95.0)},
-    "color": {},  # color: a name or #rrggbb (validate)
-    "thicken": {"mm": (-5.0, 5.0)},  # the surface pushed out (or in) along its normals
+    "color": {},  # color: име или #rrggbb (validate)
+    "thicken": {"mm": (-5.0, 5.0)},  # повърхността, изтласкана навън (или навътре) по нормалите си
 }
-# Operations that may work on a part of the model only ("part"): a few English words naming it ("hair"), HERE for the
-# spot the user tapped in the app, or "" for the whole model (hole and loop: where they go).
+# Операции, които могат да работят само върху част от модела ("part"): няколко английски думи, които я назовават
+# ("hair"), HERE за докоснатото в приложението място или "" за целия модел (hole и loop: къде отиват).
 REGIONAL = {"color", "smooth", "thicken", "hole", "loop"}
 HERE = "here"
 DEFAULTS = {"smooth": {"strength": 2}, "thicken": {"mm": 1.0}, "hole": {"diameter_mm": 5.0, "axis": "height"},
             "loop": {"diameter_mm": 5.0}}  # fmt: skip
-# The photo texture stays when the surface keeps its points (moved, mirrored, smoothed, thickened) or its outside
-# (hollowed): it is moved with them.
+# Текстурата от снимки остава, когато повърхността запазва точките си (преместена, огледална, заглаждана, удебелена)
+# или външността си (издълбана): премества се заедно с тях.
 KEEPS_TEXTURE = {"color", "resize", "scale", "grow", "stretch", "rotate", "mirror", "hollow", "smooth", "thicken"}
 AXIS_WORDS = {"vertical": "height", "z": "height", "up": "height", "tall": "height", "long": "length", "wide": "width"}
 
 
 def validate(raw: dict) -> dict:
-    """The operation with its values checked against OPS; EditError (in Bulgarian) when it is not one of them."""
+    """Операцията със стойности, проверени спрямо OPS; EditError (на български), когато не е сред тях."""
     name = str(raw.get("op", "")).strip().lower()
     if name == "colour":
         name = "color"
@@ -129,13 +127,13 @@ AROUND = {"length": "около дължината", "width": "около шир
 
 
 def where(op: dict) -> str:
-    """Where a part-wise change was made, for describe: "" for the whole model."""
+    """Къде е направена промяна по част, за describe: "" за целия модел."""
     part = op.get("part") or ""
     return "" if not part else " на посоченото място" if part == HERE else f" на „{part}“"
 
 
 def describe(op: dict) -> str:
-    """One line, in Bulgarian, for the app's list of what was done."""
+    """Един ред на български за списъка с направеното в приложението."""
     n = op["op"]
     if n == "resize":
         return f"Размер: {NAMES[op['dimension']]} {op['mm']:g} мм"
@@ -174,7 +172,8 @@ def describe(op: dict) -> str:
     return f"Опростяване до {op['percent']:g}% от триъгълниците"
 
 
-# --- Reading the request by fixed rules -------------------------------------------------------------------------------
+# --- Разчитане на заявката с фиксирани правила
+# -----------------------------------------------------------------------
 
 NUM = r"(\d+(?:[.,]\d+)?)"
 UNIT = r"\s*(mm|millimet(?:er|re)s?|cm|centimet(?:er|re)s?|m|met(?:er|re)s?|inch(?:es)?|\")?(?![a-z])"
@@ -188,7 +187,7 @@ def number(text: str) -> float:
 
 
 def unit_mm(unit: str | None) -> float:
-    """mm per unit; no unit: millimetres."""
+    """мм на единица; без единица: милиметри."""
     if not unit:
         return 1.0
     u = unit.lower()
@@ -203,7 +202,7 @@ def unit_mm(unit: str | None) -> float:
 
 
 def length_mm(clause: str) -> float | None:
-    """The first length in the clause, in mm (a bare number counts as mm); None if there is none."""
+    """Първата дължина в клаузата, в мм (само число се брои за мм); None, ако няма."""
     for m in re.finditer(NUM + UNIT, clause):
         after = clause[m.end() :].lstrip()
         if after.startswith(("%", "percent", "°", "deg", "x ", "times")):
@@ -226,7 +225,7 @@ def has(clause: str, pattern: str) -> bool:
     return re.search(pattern, clause) is not None
 
 
-COMPARE = {  # word: (axis, sign)
+COMPARE = {  # дума: (ос, знак)
     "taller": ("height", 1), "higher": ("height", 1), "shorter": ("height", -1), "lower": ("height", -1),
     "wider": ("width", 1), "narrower": ("width", -1), "thinner": ("width", -1),
     "longer": ("length", 1), "bigger": ("longest", 1), "larger": ("longest", 1), "smaller": ("longest", -1),
@@ -236,11 +235,11 @@ COMPARE = {  # word: (axis, sign)
 COLOUR_WORDS = re.compile(r"#[0-9a-f]{6}\b|\b(?:(?P<shade>light|pale|bright|dark|deep|lighter|paler|brighter|darker|deeper)"
                           r"\s+)?(?P<name>" + "|".join(sorted((re.escape(k) for k in RC.COLOURS), key=len, reverse=True))
                           + r")\b")  # fmt: skip
-# A clause with any of these (or a number) is a shape change: the other rules or the language model read it.
+# Клауза с някоя от тези думи (или число) е промяна на формата: чете я другите правила или езиковият модел.
 NOT_COLOUR = re.compile(r"\b(add|adding|holes?|loop|keyring|keychain|hook|hollow|cut|trim|chop|smooth\w*|simplif\w*|"
                         r"rotate|spin|tilt|mirror\w*|flip\w*|scale|resize|bigger|smaller|taller|wider|longer|shorter|"
                         r"higher|lower|thinner|narrower|upside)\b|\d")  # fmt: skip
-# Words around a colour that are not the part: "change the hair colour to blue" -> "hair".
+# Думи около цвят, които не са частта: "change the hair colour to blue" -> "hair".
 COLOUR_FILLER = set("""
 a an the it its it's his her their my your this that these those of to into in with and be is are should please pls
 can could would you i want like id d make made turn change changed set give paint painted colour color colours colors
@@ -249,10 +248,10 @@ only so model figure figurine object thing everything him them one
 """.split())  # fmt: skip
 WHOLE = {"", "model", "figure", "figurine", "object", "thing", "everything", "whole", "all", "it"}
 WHOLE_WORDS = WHOLE - {"", "it"} | {"entire"}
-# "make this red", "smooth here", "this part": the spot the user tapped in the app (HERE).
+# "make this red", "smooth here", "this part": докоснатото в приложението място (HERE).
 HERE_WORDS = {"here", "this", "that", "there", "selected", "marked", "tapped", "picked", "chosen", "pointed"}
 PLACE_WORDS = {"part", "area", "spot", "place", "bit", "piece", "region", "point", "section", "zone"}
-# Words in a part-wise change that are not the part: "smooth the hair a lot" -> "hair".
+# Думи в промяна по част, които не са частта: "smooth the hair a lot" -> "hair".
 REGION_FILLER = COLOUR_FILLER | set("""
 smooth smoother smoothen smoothed smoothing out very much lot more strong strongly slightly slight bit little lightly
 light gently gentle really thick thicker thicken thickened thin thinner fatter slimmer hole holes drill drilled through
@@ -262,8 +261,8 @@ millimetre millimetres cm centimeter centimeters centimetre centimetres diameter
 
 
 def part_name(text: str, filler: set[str] = COLOUR_FILLER) -> str:
-    """The part a change is for, as CLIPSeg is asked about it: a few lowercase English words; HERE for the spot the
-    user tapped ("this", "here", "this part"); "" for the whole model."""
+    """Частта, за която е промяната, както се пита CLIPSeg за нея: няколко английски думи с малки букви; HERE за
+    докоснатото място ("this", "here", "this part"); "" за целия модел."""
     words = re.findall(r"[a-z]+", text.lower().replace("'s", ""))
     here = bool(set(words) & HERE_WORDS) and not set(words) & WHOLE_WORDS
     rest = [w for w in words if w not in filler and w not in HERE_WORDS and not (here and w in PLACE_WORDS)]
@@ -281,7 +280,7 @@ def colour_rule(clause: str) -> dict | None:
     m = found[-1]
     rest = (clause[: m.start()] + " " + clause[m.end() :]).replace("'s", "")
     words = [w for w in re.findall(r"[a-z]+", rest) if w not in COLOUR_FILLER and w not in HERE_WORDS]
-    if len(words) > 3 or len(found) > 1:  # "blue hair with red stripes": the language model reads it
+    if len(words) > 3 or len(found) > 1:  # "blue hair with red stripes": чете го езиковият модел
         return None
     shade, name = m["shade"], m["name"]
     shade = {"lighter": "light", "paler": "pale", "brighter": "bright", "darker": "dark", "deeper": "deep"}.get(shade, shade)
@@ -293,8 +292,8 @@ REGION_OP = re.compile(r"\b(smooth\w*|thick(?:er|en)?|thin(?:ner)?|fatter|slimme
 
 
 def region_rule(clause: str) -> dict | None:
-    """A change to one part or to the tapped spot: "smooth the hair", "smooth here a lot", "make this 1 mm thicker",
-    "add a 3 mm hole here", "add a loop here". The whole model's ("smooth it") is left to rule()."""
+    """Промяна на една част или на докоснатото място: "smooth the hair", "smooth here a lot", "make this 1 mm
+    thicker", "add a 3 mm hole here", "add a loop here". Промяна на целия модел ("smooth it") е за rule()."""
     c = clause
     if not REGION_OP.search(c) or COLOUR_WORDS.search(c):
         return None
@@ -302,7 +301,7 @@ def region_rule(clause: str) -> dict | None:
     if not part:
         return None
     words = set(re.findall(r"[a-z]+", c)) - REGION_FILLER - HERE_WORDS - PLACE_WORDS
-    if len(words) > 3:  # more than a part's name: the language model reads it
+    if len(words) > 3:  # повече от името на част: чете го езиковият модел
         return None
     if has(c, r"\bholes?\b"):
         return {"op": "hole", "diameter_mm": length_mm(c) or 5.0, "axis": "height", "part": part}
@@ -318,7 +317,7 @@ def region_rule(clause: str) -> dict | None:
 
 
 def rule(clause: str) -> dict | None:
-    """One clause as one operation, or None when no rule covers it."""
+    """Една клауза като една операция или None, когато няма правило за нея."""
     c = clause
     if has(c, r"\bhollow\b"):
         m = re.search(NUM + UNIT + r"\s*(?:thick\s*)?walls?|walls?\s*(?:of\s*|thickness\s*(?:of\s*)?)?" + NUM + UNIT, c)
@@ -376,7 +375,7 @@ def rule(clause: str) -> dict | None:
 
 
 def size_rule(c: str) -> dict | None:
-    """Sizes: "15 cm tall", "scale to 150 %", "20 % bigger", "twice as big", "20 mm taller", "3x bigger"."""
+    """Размери: "15 cm tall", "scale to 150 %", "20 % bigger", "twice as big", "20 mm taller", "3x bigger"."""
     words = re.findall(r"[a-z]+", c)
     comparative = next((w for w in words if w in COMPARE), None)
     if has(c, r"\b(twice|double|doubled)\b") and not comparative in ("smaller",):
@@ -417,8 +416,8 @@ def size_rule(c: str) -> dict | None:
     return None
 
 
-# Every word the rules may meet in a clause they read. A clause with any other word ("make the ears bigger") is not
-# theirs: it may be about a part of the model, which the rules cannot see, so the language model reads the request.
+# Всяка дума, която правилата могат да срещнат в клауза, която четат. Клауза с друга дума ("make the ears bigger") не
+# е за тях: може да е за част от модела, която правилата не виждат, затова заявката чете езиковият модел.
 KNOWN = set("""
 a an the it its this that model object thing print please pls thanks thank you can could would will i want like id to
 d s ll me my make made making set change changing turn put give add adding create with and of by from in into on onto
@@ -450,8 +449,8 @@ SPLIT = re.compile(r"(?<!\d)[,;.](?!\d)|\s(?:and then|then|and|also|plus|after t
 
 
 def parse(prompt: str) -> list[dict] | None:
-    """The request as operations, if fixed rules cover every part of it; None otherwise (the language model reads it).
-    Each operation is validated (EditError when a value is out of its limits)."""
+    """Заявката като операции, ако фиксираните правила покриват всяка нейна част; иначе None (чете я езиковият модел).
+    Всяка операция се проверява (EditError, когато стойност е извън границите си)."""
     text = prompt.lower().replace("’", "'").replace("×", "x")
     ops = []
     for part in SPLIT.split(text):
@@ -466,12 +465,13 @@ def parse(prompt: str) -> list[dict] | None:
     return ops or None
 
 
-# --- Doing the operations -----------------------------------------------------------------------------------------
+# --- Изпълнение на операциите
+# ----------------------------------------------------------------------------------------
 
 
 class Model:
-    """The mesh being changed, at real size in mm (z up, standing on z = 0, centred), and the affine change so far of
-    the original surface (to colour the result from the original at the end)."""
+    """Променяната мрежа в реален размер в мм (z нагоре, стои върху z = 0, центрирана) и афинната промяна досега на
+    оригиналната повърхност (за оцветяване на резултата от оригинала накрая)."""
 
     def __init__(self, mesh: trimesh.Trimesh):
         self.mesh = mesh
@@ -486,7 +486,7 @@ class Model:
         self.transform(trimesh.transformations.translation_matrix([-(lo[0] + hi[0]) / 2, -(lo[1] + hi[1]) / 2, -lo[2]]))
 
     def axis(self, name: str) -> int:
-        """The mesh axis of the app's length, width or height."""
+        """Оста на мрежата за дължината, ширината или височината от приложението."""
         if name == "height":
             return 2
         ex = self.mesh.extents
@@ -498,8 +498,8 @@ class Model:
 
 
 def boolean(kind: str, a: trimesh.Trimesh, b: trimesh.Trimesh, what: str, note: Callable[[str], None]) -> trimesh.Trimesh:
-    """Union or difference by manifold3d. A union of a mesh with openings falls back to the two overlapping (slicers
-    print overlapping parts as one); a difference cannot."""
+    """Обединение или разлика с manifold3d. Обединение на мрежа с отвори преминава към двете припокрити (програмите за
+    печат печатат припокрити части като една); разликата не може."""
     try:
         if not a.is_volume:
             raise ValueError("not a closed solid")
@@ -515,7 +515,7 @@ def boolean(kind: str, a: trimesh.Trimesh, b: trimesh.Trimesh, what: str, note: 
 
 
 def axis_cylinder(radius: float, length: float, axis: int, centre: np.ndarray) -> trimesh.Trimesh:
-    cyl = trimesh.creation.cylinder(radius=radius, height=length, sections=96)  # along z
+    cyl = trimesh.creation.cylinder(radius=radius, height=length, sections=96)  # по z
     if axis == 0:
         cyl.apply_transform(trimesh.transformations.rotation_matrix(np.pi / 2, [0, 1, 0]))
     elif axis == 1:
@@ -525,17 +525,17 @@ def axis_cylinder(radius: float, length: float, axis: int, centre: np.ndarray) -
 
 
 def ring(major: float, minor: float) -> trimesh.Trimesh:
-    """A torus around the z axis (its tube's circle turned round)."""
+    """Тор около оста z (окръжността на тръбата му, завъртяна наоколо)."""
     t = np.linspace(0, 2 * np.pi, 48, endpoint=False)
     return M.revolve(np.c_[major + minor * np.cos(t), minor * np.sin(t)])
 
 
 def hollowed(mesh: trimesh.Trimesh, wall: float) -> trimesh.Trimesh:
-    """The mesh with a closed cavity at least WALL mm inside its surface everywhere, turned to face into the cavity.
-
-    The filled voxels' distance inward is only a first guess: it counts from the voxels on the surface, not the surface,
-    and left walls ~0.5 mm thin, near 0 in tight places. So the cavity's edge voxels are measured against the real
-    surface (dense samples of it) and peeled off while closer than the wall, then the result is measured once more."""
+    """Мрежата със затворена кухина поне на WALL мм навътре от повърхността ѝ навсякъде, обърната да гледа към
+    кухината. Разстоянието навътре на запълнените воксели е само първо предположение: брои се от вокселите на
+    повърхността, а не от самата повърхност, и оставяше стени с дебелина около 0,5 мм, близо до 0 на тесни места.
+    Затова крайните воксели на кухината се измерват спрямо истинската повърхност (гъсти проби от нея) и се махат,
+    докато са по-близо от стената, а след това резултатът се измерва още веднъж."""
     from skimage import measure
 
     if not mesh.is_watertight:
@@ -548,14 +548,14 @@ def hollowed(mesh: trimesh.Trimesh, wall: float) -> trimesh.Trimesh:
     inside = ndimage.distance_transform_edt(np.pad(vox.matrix, 1)) * pitch > wall
     spacing = pitch / 3
     samples, _ = trimesh.sample.sample_surface(mesh, int(min(4e6, mesh.area / spacing**2)), seed=0)
-    surface = cKDTree(samples)  # a sample's distance is at most `spacing` more than the surface's
+    surface = cKDTree(samples)  # разстоянието на проба е най-много с `spacing` повече от това на повърхността
 
-    def points(idx: np.ndarray) -> np.ndarray:  # padded voxel indices -> model coordinates
+    def points(idx: np.ndarray) -> np.ndarray:  # допълнени индекси на воксели -> координати на модела
         return trimesh.transform_points(idx.astype(np.float64) - 1, vox.transform)
 
-    # The cavity's surface lies half a voxel outside its edge voxels' centres.
+    # Повърхността на кухината лежи на половин воксел извън центровете на крайните ѝ воксели.
     need = wall + 0.5 * pitch + spacing
-    for _ in range(80):  # a layer of voxels per round; thin, detailed figures need a few dozen
+    for _ in range(80):  # по слой воксели на кръг; тънките детайлни фигури искат няколко десетки
         idx = np.argwhere(inside & ~ndimage.binary_erosion(inside))
         if not len(idx):
             break
@@ -569,16 +569,17 @@ def hollowed(mesh: trimesh.Trimesh, wall: float) -> trimesh.Trimesh:
     verts, faces, _, _ = measure.marching_cubes(inside.astype(np.float32), 0.5)
     cavity = trimesh.Trimesh(trimesh.transform_points(verts - 1, vox.transform), faces, process=True)
     d, _ = surface.query(cavity.vertices, workers=-1)
-    if d.min() - spacing < 0.95 * wall:  # never expected after the peeling; a cavity too near the surface is not made
+    if d.min() - spacing < 0.95 * wall:  # не се очаква след махането; кухина твърде близо до повърхността не се прави
         raise EditError(f"Стени от {wall:g} мм не могат да се направят навсякъде в този модел.")
-    # Thin parts split the hollow into pockets: each turned to face into itself; specks of a few voxels left solid.
+    # Тънките части разделят кухината на джобове: всеки се обръща да гледа към себе си; петънца от няколко воксела
+    # остават плътни.
     pockets = []
     for part in cavity.split(only_watertight=False):
         trimesh.repair.fix_normals(part)
         if abs(part.volume) < (3 * pitch) ** 3:
             continue
         if part.volume > 0:
-            part.invert()  # its faces look into the hollow, away from the plastic
+            part.invert()  # стените ѝ гледат към кухината, далеч от пластмасата
         pockets.append(part)
     if not pockets:
         raise thin
@@ -654,8 +655,8 @@ def apply(model: Model, op: dict, note: Callable[[str], None] = lambda text: Non
         near_top = m.vertices[m.vertices[:, 2] >= top - 0.02 * m.extents[2]]
         at = near_top[np.argmin(np.linalg.norm(near_top[:, :2] - near_top[:, :2].mean(0), axis=1))]
         hoop = ring(d / 2 + tube, tube)
-        hoop.apply_transform(trimesh.transformations.rotation_matrix(np.pi / 2, [1, 0, 0]))  # standing up
-        hoop.apply_translation([at[0], at[1], top + d / 2 + tube])  # its lowest point a tube's width into the top
+        hoop.apply_transform(trimesh.transformations.rotation_matrix(np.pi / 2, [1, 0, 0]))  # изправен
+        hoop.apply_translation([at[0], at[1], top + d / 2 + tube])  # най-ниската му точка е на ширина на тръба навътре във върха
         model.mesh = boolean("union", m, hoop, "Халка", note)
     elif n == "smooth":
         model.mesh = M.smooth(m, op["strength"])
@@ -664,20 +665,22 @@ def apply(model: Model, op: dict, note: Callable[[str], None] = lambda text: Non
     elif n == "simplify":
         target = max(500, int(len(m.faces) * op["percent"] / 100))
         model.mesh = M.decimate(m, target, keep_closed=m.is_watertight)
-    model.seat()  # every change ends standing on z = 0, centred (smoothing moves points near the base too)
+    model.seat()  # всяка промяна завършва стояща върху z = 0, центрирана (заглаждането мести и точки близо до основата)
 
 
-# --- Changes to one part of the model -----------------------------------------------------------------------------
+# --- Промени на една част от модела
+# ----------------------------------------------------------------------------------
 
-HERE_RADIUS = 0.12  # (share of the model's longest side) the tapped spot's area, for smoothing and thickening
-# (a part) Light: Taubin's filter, which takes off fine ripples and keeps the shape (it does not shrink). Medium and
-# strong: Laplacian smoothing, which also flattens lumps a few mm wide (a figure's hair strands: Taubin moved them at
-# most 0.3 mm, 100 Laplacian rounds 0.8 mm), and sinks the area a little (0.27 mm).
+HERE_RADIUS = 0.12  # (дял от най-дългата страна на модела) областта на докоснатото място за заглаждане и удебеляване
+# (част) Леко: филтър на Таубин, който маха фините вълни и запазва формата (не свива). Средно и силно: лапласово
+# заглаждане, което изравнява и бучки с ширина няколко мм (кичури на фигура: Таубин ги мести най-много с 0,3 мм, 100
+# лапласови кръга с 0,8 мм) и леко хлътва областта (0,27 мм).
 SMOOTH_FILTERS = {1: ("taubin", 40), 2: ("laplacian", 30), 3: ("laplacian", 100)}
 
 
 def thickened(m: trimesh.Trimesh, mm: np.ndarray) -> trimesh.Trimesh:
-    """Each point pushed out along the surface's normal by its mm (in, if negative); the flat base stays on the table."""
+    """Всяка точка, изтласкана навън по нормалата на повърхността с мм си (навътре при отрицателно); плоската основа
+    остава на масата."""
     floor = m.bounds[0, 2]
     v = m.vertices + m.vertex_normals * mm[:, None]
     base = m.vertices[:, 2] <= floor + 1e-6 * m.extents.max()
@@ -688,7 +691,7 @@ def thickened(m: trimesh.Trimesh, mm: np.ndarray) -> trimesh.Trimesh:
 
 
 def local(model: Model, op: dict, regions: "Regions", note: Callable[[str], None]):
-    """smooth, thicken, hole and loop on a part of the model or at the tapped spot."""
+    """smooth, thicken, hole и loop върху част от модела или на докоснатото място."""
     m, n = model.mesh, op["op"]
     if n == "smooth":
         w = regions.weights(model, op["part"])
@@ -696,7 +699,7 @@ def local(model: Model, op: dict, regions: "Regions", note: Callable[[str], None
         kind, rounds = SMOOTH_FILTERS[op["strength"]]
         if kind == "taubin":
             trimesh.smoothing.filter_taubin(smooth, lamb=0.5, nu=0.53, iterations=rounds)
-        else:  # no volume constraint: it would rescale the whole model for a change to a part of it
+        else:  # без ограничение за обема: то би мащабирало целия модел при промяна на част от него
             trimesh.smoothing.filter_laplacian(smooth, lamb=0.5, iterations=rounds, volume_constraint=False)
         v = m.vertices + w[:, None] * (smooth.vertices - m.vertices)
         v[:, 2] = np.maximum(v[:, 2], m.bounds[0, 2])
@@ -718,21 +721,21 @@ def local(model: Model, op: dict, regions: "Regions", note: Callable[[str], None
         d = op["diameter_mm"]
         tube = max(1.2, 0.3 * d)
         at, normal = regions.place(model, op["part"], top=True)
-        across = np.cross(normal, [0.0, 0.0, 1.0])  # the ring's axis: across the normal, so the ring stands out of it
+        across = np.cross(normal, [0.0, 0.0, 1.0])  # оста на халката: напречно на нормалата, така че халката да стърчи от нея
         if np.linalg.norm(across) < 1e-3:
             across = np.array([1.0, 0.0, 0.0])
         hoop = ring(d / 2 + tube, tube)
         hoop.apply_transform(trimesh.geometry.align_vectors([0, 0, 1], across / np.linalg.norm(across)))
-        hoop.apply_translation(at + normal * (d / 2 + tube))  # its nearest point a tube's width into the surface
+        hoop.apply_translation(at + normal * (d / 2 + tube))  # най-близката ѝ точка е на ширина на тръба навътре в повърхността
         model.mesh = boolean("union", m, hoop, "Халка", note)
 
 
 class Regions:
-    """Where part-wise changes act, found once on the model as it was before any change (in the coordinates where
-    model.T is the identity), then followed through the changes by nearest point:
-    - HERE: the spot the user tapped in the app: a colour or a thickening takes the part there (recolor.tapped:
-      MobileSAM cuts out what is under the tap), smoothing fades out over HERE_RADIUS around it;
-    - a part's name: found by CLIPSeg on pictures of the model drawn from its photo texture (app/recolor.py)."""
+    """Къде действат промените по части, намерено веднъж върху модела преди всякаква промяна (в координатите, където
+    model.T е единичната матрица), после следвано през промените по най-близка точка. HERE: докоснатото място: цвят
+    или удебеляване взимат частта там (recolor.tapped: MobileSAM изрязва каквото е под докосването), а заглаждането
+    избледнява на HERE_RADIUS около него. Име на част: намира се от CLIPSeg върху изображения на модела, нарисувани от
+    текстурата му (app/recolor.py)."""
 
     def __init__(self, job: Path, mesh: trimesh.Trimesh, parts: list[dict] | None, spot: np.ndarray | None,
                  sh: Callable[[str, list], None]):  # fmt: skip
@@ -745,19 +748,19 @@ class Regions:
         if mesh.visual.kind == "vertex":
             self.vcols = np.asarray(mesh.visual.vertex_colors[:, :3], np.uint8).copy()
         else:
-            self.vcols = np.full((len(mesh.vertices), 3), 170, np.uint8)  # a grey model: one colour all over
+            self.vcols = np.full((len(mesh.vertices), 3), 170, np.uint8)  # сив модел: един цвят навсякъде
         self.vnrm = np.asarray(mesh.vertex_normals, np.float32)
         self.mesh = mesh.copy()
 
     def queries(self, atlases: list[np.ndarray] | None = None, vcols: np.ndarray | None = None) -> list:
-        """The texels of each texture image and, last, the vertices: (points, colours, normals) each."""
+        """Текселите на всяко изображение на текстура и накрая върховете: по (точки, цветове, нормали)."""
         atlases = self.atlases if atlases is None else atlases
         out = [(pts, a[where], nrm) for (where, pts, nrm), a in zip(self.texels, atlases)]
         return out + [(self.base.astype(np.float32), self.vcols if vcols is None else vcols, self.vnrm)]
 
     def draw_from(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Surface samples (points, colours, normals) the AI's pictures of the model are drawn from: its texels where
-        it has a photo texture (the photos' detail), else points on its faces in their vertex colours."""
+        """Проби от повърхността (точки, цветове, нормали), от които се рисуват изображенията за AI: текселите ѝ, ако
+        има текстура от снимки (детайла от снимките), иначе точки по стените с цветовете на върховете."""
         queries = self.queries()
         if self.texels:
             allq = [np.concatenate(x) for x in zip(*queries[:-1])]
@@ -768,7 +771,7 @@ class Regions:
         return pts, cols, self.mesh.face_normals[face]
 
     def tapped(self) -> list[np.ndarray]:
-        """The part under the tapped spot (MobileSAM), per query set (the last: the vertices)."""
+        """Частта под докоснатото място (MobileSAM) за всеки набор за запитване (последният: върховете)."""
         if HERE not in self.found:
             _, _, tri = self.mesh.nearest.on_surface(self.spot[None])
             try:
@@ -779,7 +782,7 @@ class Regions:
         return self.found[HERE]
 
     def part(self, name: str) -> list[np.ndarray]:
-        """CLIPSeg's weights for a named part, per query set (the last: the vertices)."""
+        """Теглата на CLIPSeg за назована част за всеки набор за запитване (последният: върховете)."""
         if name not in self.found:
             if not RC.ready():
                 raise EditError("Промените на част от модела още не са включени на сървъра. Опитайте по-късно.")
@@ -792,7 +795,7 @@ class Regions:
         return self.found[name]
 
     def base_weights(self, name: str, tapped_part: bool = False) -> np.ndarray:
-        """Weights 0-1 over the vertices as they were. tapped_part: HERE is the part under the tap, not the area."""
+        """Тегла 0-1 върху върховете, какви са били. tapped_part: HERE е частта под докосването, а не областта."""
         if not name:
             return np.ones(len(self.base))
         if name == HERE and tapped_part:
@@ -800,18 +803,20 @@ class Regions:
         if name == HERE:
             d = np.linalg.norm(self.base - self.spot, axis=1) / (HERE_RADIUS * self.size)
             w = np.clip(1 - d, 0, 1)
-            return w * w * (3 - 2 * w)  # down to 0 at the edge smoothly: no step in the surface
+            return w * w * (3 - 2 * w)  # плавно до 0 при ръба: без стъпало по повърхността
         return self.part(name)[-1]
 
     def weights(self, model: Model, name: str, tapped_part: bool = False) -> np.ndarray:
-        """Weights 0-1 over the model's vertices now (moved, smoothed, holed...): each takes its nearest old one's."""
+        """Тегла 0-1 върху сегашните върхове на модела (преместени, заглаждани, с дупки...): всеки взима това на
+        най-близкия стар."""
         w = self.base_weights(name, tapped_part)
         _, idx = cKDTree(trimesh.transform_points(self.base, model.T)).query(model.mesh.vertices, workers=-1)
         return w[idx]
 
     def place(self, model: Model, name: str, top: bool) -> tuple[np.ndarray, np.ndarray]:
-        """Where a hole or loop goes, on the model's surface now, and the surface's outward normal there: the tapped
-        spot, or a named part's top (a loop, to hang it by) or its point nearest its middle (a hole)."""
+        """Къде отива дупка или халка върху сегашната повърхност на модела и външната нормала на повърхността там:
+        докоснатото място или върхът на назована част (халка, за окачване) или точката ѝ, най-близка до средата
+        (дупка)."""
         if name == HERE:
             p0 = self.spot
         else:
@@ -831,20 +836,21 @@ class Regions:
 
 
 def spot_point(mesh: trimesh.Trimesh, spot: list | None) -> np.ndarray | None:
-    """The point the user tapped in the app, on the model's surface. The app sends it as shares (0-1) of the model's
-    bounding box in the axes of the GLB it shows (glTF: y up; mesh.export turns z up into y up, y into -z)."""
+    """Точката, докосната в приложението, върху повърхността на модела. Приложението я изпраща като дялове (0-1) от
+    ограничаващата кутия на модела в осите на показвания GLB (glTF: y нагоре; mesh.export обръща z нагоре в y нагоре,
+    а y в -z)."""
     if not spot:
         return None
     u, v, w = (float(x) for x in spot)
     lo, hi = mesh.bounds
     ex = hi - lo
-    p = np.array([lo[0] + u * ex[0], hi[1] - w * ex[1], lo[2] + v * ex[2]])  # glTF x, y, z = x, z, -y here
+    p = np.array([lo[0] + u * ex[0], hi[1] - w * ex[1], lo[2] + v * ex[2]])  # x, y, z от glTF = x, z, -y тук
     at, _, _ = mesh.nearest.on_surface(p[None])
     return at[0]
 
 
 def coloured(out: trimesh.Trimesh, original: trimesh.Trimesh, T: np.ndarray) -> trimesh.Trimesh:
-    """Each vertex takes the colour of the nearest point of the original surface, moved as the model was."""
+    """Всеки връх взима цвета на най-близката точка от оригиналната повърхност, преместена заедно с модела."""
     if original.visual.kind != "vertex":
         return out
     _, idx = cKDTree(trimesh.transform_points(original.vertices, T)).query(out.vertices)
@@ -852,13 +858,13 @@ def coloured(out: trimesh.Trimesh, original: trimesh.Trimesh, T: np.ndarray) -> 
     return out
 
 
-# --- The job --------------------------------------------------------------------------------------------------------
+# --- Задачата -------------------------------------------------------------------------------------------------------
 
 
 def understand(job: Path, prompt: str, sizes: dict, sh: Callable[[str, list], None],
                tapped: bool = False) -> tuple[list[dict], bool]:  # fmt: skip
-    """The operations, and whether part of the request was left out (the language model said so). tapped: the user
-    marked a spot on the model."""
+    """Операциите и дали е пропусната част от заявката (езиковият модел е казал така). tapped: потребителят е
+    отбелязал място върху модела."""
     ops = parse(prompt)
     if ops is not None:
         P.note(job, f"edit: read by rules: {ops}")
@@ -890,13 +896,13 @@ def understand(job: Path, prompt: str, sizes: dict, sh: Callable[[str, list], No
 
 
 def paint(regions: Regions, ops: list[dict]) -> list[np.ndarray]:
-    """The colour operations on the model's vertex colours (regions.vcols, in place) and on the photo texture's
-    images; returns the new images (none without a texture)."""
+    """Операциите за цвят върху цветовете на върховете на модела (regions.vcols, на място) и върху изображенията на
+    текстурата; връща новите изображения (без текстура: няма)."""
     atlases = [a.copy() for a in regions.atlases]
     vcols = regions.vcols
     for op in ops:
         rgb = RC.colour_rgb(op["color"])
-        if op["part"] == HERE:  # the part under the tapped spot
+        if op["part"] == HERE:  # частта под докоснатото място
             weights = regions.tapped()
         elif op["part"]:
             weights = regions.part(op["part"])
@@ -911,9 +917,9 @@ def paint(regions: Regions, ops: list[dict]) -> list[np.ndarray]:
 
 def save_texture(job: Path, parts: list[dict], atlases: list[np.ndarray] | None, vertices: np.ndarray,
                  normals: np.ndarray, links: list[np.ndarray], flip: bool):  # fmt: skip
-    """The photo texture on the changed surface: each texture vertex at its model vertex's new place (links: the
-    model vertex of each; the changes kept the model's vertices, in order), with the new images if colours changed.
-    flip: mirrored an odd number of times (the faces turn the other way round)."""
+    """Текстурата върху променената повърхност: всеки връх на текстурата на новото място на върха си от модела (links:
+    върхът на модела за всеки; промените пазят върховете на модела по ред), с новите изображения при променени
+    цветове. flip: огледално обръщане нечетен брой пъти (стените се обръщат наопаки)."""
     arrays = {}
     for k, (p, link) in enumerate(zip(parts, links)):
         faces = np.asarray(p["faces"])
@@ -928,10 +934,11 @@ def save_texture(job: Path, parts: list[dict], atlases: list[np.ndarray] | None,
     np.savez_compressed(job / TX.NPZ, count=len(parts), **arrays)
 
 
-# --- A name plate: a stand under the model with the name in raised letters, the way the model looks ------------------
+# --- Табелка с име: поставка под модела с име с релефни букви, в посоката, в която гледа моделът
+# ---------------------
 
-TEXT_FONTS = ("arialbd.ttf", "DejaVuSans-Bold.ttf", "LiberationSans-Bold.ttf")  # bold, with Cyrillic; else Pillow's own
-MIN_TEXT = 2.0  # mm: smaller letters do not print legibly
+TEXT_FONTS = ("arialbd.ttf", "DejaVuSans-Bold.ttf", "LiberationSans-Bold.ttf")  # удебелен, с кирилица; иначе този на Pillow
+MIN_TEXT = 2.0  # мм: по-малки букви не се печатат четливо
 PLATE_COLOUR, LETTER_COLOUR = (31, 33, 38), (242, 242, 244)
 Z_UP = np.array([0.0, 0.0, 1.0])
 
@@ -948,8 +955,8 @@ def text_font(px: int):
 
 
 def text_outline(text: str) -> tuple[list[np.ndarray], np.ndarray]:
-    """The letters' outlines (closed polygons: outsides and the holes of o, a, e...), in units of a capital letter's
-    height, centred on (0, 0); and their (width, height) in those units."""
+    """Очертанията на буквите (затворени многоъгълници: външни и дупките на о, а, е...) в единици височина на главна
+    буква, центрирани в (0, 0); и техните (ширина, височина) в тези единици."""
     from PIL import ImageDraw
     from skimage import measure
 
@@ -977,8 +984,8 @@ def text_outline(text: str) -> tuple[list[np.ndarray], np.ndarray]:
 
 def text_solid(polys: list[np.ndarray], mm: float, z_lo: float, z_hi: float, drape: Callable[[np.ndarray], np.ndarray],
                fine: float | None) -> trimesh.Trimesh:  # fmt: skip
-    """The letters `mm` high as a solid from z_lo to z_hi (z: out of the surface), laid on the stand by `drape`;
-    fine: divided this small first, to follow a curve."""
+    """Буквите с височина `mm` като тяло от z_lo до z_hi (z: навън от повърхността), положени върху поставката с
+    `drape`; fine: първо разделени на толкова дребно, за да следват крива."""
     import manifold3d as mf
 
     cs = mf.CrossSection([np.asarray(p * mm, np.float64) for p in polys], mf.FillRule.EvenOdd).simplify(0.01)
@@ -992,8 +999,7 @@ def text_solid(polys: list[np.ndarray], mm: float, z_lo: float, z_hi: float, dra
 
 def nameplate(m: trimesh.Trimesh, text: str, shape: str, front: np.ndarray,
               note: Callable[[str], None]) -> tuple[trimesh.Trimesh, np.ndarray]:  # fmt: skip
-    """The stand under the model (in its coordinates, mm) with `text` facing `front`. Returns it and which of its
-    faces are the letters."""
+    """Поставката под модела (в координатите му, мм) с `text` в посока `front`. Връща я и кои стени са буквите."""
     n = np.array([front[0], front[1], 0.0])
     n /= max(np.linalg.norm(n), 1e-9)
     right = np.cross(Z_UP, n)
@@ -1012,7 +1018,7 @@ def nameplate(m: trimesh.Trimesh, text: str, shape: str, front: np.ndarray,
     inset = 0.8
     if shape == "round":
         radius = float(np.hypot(a - centre_a, b - centre_b).max()) + margin
-        mm = min(mm, 2.4 * radius / w1)  # about 140 degrees round: what is seen from the front
+        mm = min(mm, 2.4 * radius / w1)  # около 140 градуса наоколо: каквото се вижда отпред
         stand = trimesh.creation.cylinder(radius=radius, height=stand_h + overlap, sections=128)
 
         def drape(P: np.ndarray) -> np.ndarray:
@@ -1027,7 +1033,7 @@ def nameplate(m: trimesh.Trimesh, text: str, shape: str, front: np.ndarray,
         radius = depth / 2
         stand = trimesh.creation.box(extents=[width, depth, stand_h + overlap])
         turn = np.eye(4)
-        turn[:3, :3] = np.c_[right, -n, Z_UP]  # the box is the same both ways: only a turn, never a mirror
+        turn[:3, :3] = np.c_[right, -n, Z_UP]  # кутията е една и съща и в двете посоки: само завъртане, никога огледално
         stand.apply_transform(turn)
 
         def drape(P: np.ndarray) -> np.ndarray:
@@ -1048,7 +1054,8 @@ def nameplate(m: trimesh.Trimesh, text: str, shape: str, front: np.ndarray,
 
 
 def plate_part(plate: trimesh.Trimesh, raised: np.ndarray, k: int, job: Path) -> dict:
-    """The plate as one more texture part (its own small two-colour image), so the model above keeps its photos."""
+    """Табелката като още една част на текстурата (собствено малко двуцветно изображение), така че моделът отгоре да
+    запази снимките си."""
     image = np.zeros((8, 8, 3), np.uint8)
     image[:, :4], image[:, 4:] = PLATE_COLOUR, LETTER_COLOUR
     Image.fromarray(image).save(job / f"texture_{k}.jpg", quality=95)
@@ -1061,7 +1068,7 @@ def plate_part(plate: trimesh.Trimesh, raised: np.ndarray, k: int, job: Path) ->
 
 
 def front_of(job: Path, mesh: trimesh.Trimesh) -> np.ndarray:
-    """Which way the model looks: towards the side that shows the most (a face, a logo)."""
+    """Накъде гледа моделът: към страната, която показва най-много (лице, лого)."""
     from . import render
 
     pts, col, _ = render.surface(job, mesh, 400_000)
@@ -1090,7 +1097,7 @@ def run_nameplate(job: Path, params: dict, set_state: Callable[[str], None]) -> 
     real = float(out.extents.max())
     shrink = trimesh.transformations.scale_matrix(100.0 / real)
     out.apply_transform(shrink)
-    if parts:  # the model's photos as they were, moved with it; the plate as a part of its own
+    if parts:  # снимките на модела, каквито са били, преместени с него; табелката като собствена част
         plate.apply_transform(shrink)
         to = shrink @ model.T
         arrays = {}
@@ -1112,11 +1119,11 @@ def run(job: Path, params: dict, set_state: Callable[[str], None], sh: Callable[
     prompt = str(params["prompt"])
     longest_mm = float(params.get("longest_mm") or 100.0)
     source = trimesh.load(job / SOURCE, force="mesh")
-    parts = TX.load(job)  # the photo texture, copied with the model (copy_source); None if it has none
+    parts = TX.load(job)  # текстурата от снимки, копирана с модела (copy_source); None, ако няма
     model = Model(source)
     model.transform(trimesh.transformations.scale_matrix(longest_mm / float(source.extents.max())))
     model.seat()
-    if parts:  # in the same coordinates, and tied to the model's vertices (the texture's are the same points)
+    if parts:  # в същите координати и обвързани с върховете на модела (тези на текстурата са същите точки)
         tree = cKDTree(model.mesh.vertices)
         for p in parts:
             p["vertices"] = trimesh.transform_points(p["vertices"], model.T)
@@ -1139,14 +1146,14 @@ def run(job: Path, params: dict, set_state: Callable[[str], None], sh: Callable[
         rgba = np.full((n_vertices, 4), 255, np.uint8)
         rgba[:, :3] = regions.vcols
         model.mesh.visual = trimesh.visual.ColorVisuals(model.mesh, vertex_colors=rgba)
-    original = model.mesh.copy()  # coloured, where the shape changes start from
+    original = model.mesh.copy()  # оцветен, откъдето започват промените на формата
     mirrors = 0
     for op in ops:
         if op["op"] != "color":
             apply(model, op, lambda text: P.note(job, text), regions)
             mirrors += op["op"] == "mirror"
-    # The texture follows when the model's own vertices are all still there, in order (moved, smoothed, thickened,
-    # or with a hollow's inside after them).
+    # Текстурата следва, когато собствените върхове на модела са още там по ред (преместени, заглаждани, удебелени или
+    # с вътрешността на кухина след тях).
     keep = bool(parts) and all(op["op"] in KEEPS_TEXTURE for op in ops) and len(model.mesh.vertices) >= n_vertices
     if keep:
         outside = trimesh.Trimesh(model.mesh.vertices[:n_vertices], model.mesh.faces[:n_faces], process=False)
@@ -1159,11 +1166,11 @@ def run(job: Path, params: dict, set_state: Callable[[str], None], sh: Callable[
     trimesh.repair.fix_normals(out)
     out = coloured(out, original, model.T)
     real = float(out.extents.max())
-    out.apply_scale(100.0 / real)  # stored at a 100 mm longest side, as every model (the app scales to real_mm)
+    out.apply_scale(100.0 / real)  # пази се при най-дълга страна 100 мм, както всеки модел (приложението мащабира до real_mm)
     if keep:
         save_texture(job, parts, atlases, surface * (100.0 / real), normals, links, mirrors % 2 == 1)
     else:
-        TX.clear(job)  # the shape changed under it: the vertex colours only
+        TX.clear(job)  # формата се е променила под нея: само цветовете на върховете
     changes = [describe(op) for op in ops] + (["Част от искането не може да се направи и е пропусната."] if partial else [])
     P.note(job, "edit: " + "; ".join(changes))
     return P.finish(job, out) | {"real_mm": round(real, 1), "edit": {"prompt": prompt[:500], "changes": changes,
@@ -1171,7 +1178,7 @@ def run(job: Path, params: dict, set_state: Callable[[str], None], sh: Callable[
 
 
 def copy_source(source_job: Path, job: Path):
-    """The model the change starts from, with its photo texture if it has one."""
+    """Моделът, от който започва промяната, с текстурата от снимки, ако има такава."""
     shutil.copy(source_job / "model.ply", job / SOURCE)
     if (source_job / TX.NPZ).exists():
         for f in [source_job / TX.NPZ, *TX.texture_files(source_job)]:
