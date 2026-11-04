@@ -20,15 +20,15 @@ import { currentUserId } from '@/lib/session';
 import { checkVideo } from '@/lib/videoCheck';
 import { font, makeStyles, palettes, radius, space } from '@/theme';
 
-// Two slow circles take 1–2 minutes; the cap only guards against a forgotten recording (~320 MB).
+// Два бавни кръга отнемат 1-2 минути; границата само пази от забравен запис (около 320 MB).
 const MAX_SECONDS = 180;
-const MIN_SECONDS = 10; // an AI model's video: shorter cannot go round the object
-const MIN_ROUND = 0.75; // an AI model's video: of the first circle, below which sides will be missing
-const DARK_LUX = 10; // the phone's light sensor: a room too dim to film in
-// 4K: the server wraps the frames onto the model as its texture, and small print reads only with the pixels for it
-// (at 1080p a drill's battery label was just readable). 14 Mbit/s: ~105 MB per minute to upload, twice 1080p at
-// 6 Mbit/s; a slow walk-around changes little between frames, so the encoder keeps detail at that rate. Phones
-// without 4K record their highest quality instead.
+const MIN_SECONDS = 10; // видео за AI модел: по-кратко не може да обиколи предмета
+const MIN_ROUND = 0.75; // видео за AI модел: дял от първия кръг, под който ще липсват страни
+const DARK_LUX = 10; // сензорът за светлина на телефона: стая, твърде тъмна за заснемане
+// 4K: сървърът нанася кадрите върху модела като текстура, а дребният текст се чете само ако има достатъчно пиксели
+// (при 1080p етикетът на батерия на дрелка едва се четеше). 14 Mbit/s: около 105 MB в минута за качване, двойно
+// спрямо 1080p при 6 Mbit/s; при бавна обиколка кадрите се променят малко, затова кодекът запазва детайла при тази
+// скорост. Телефони без 4K записват с най-високото си качество.
 const BITRATE = 14_000_000;
 
 const TIPS = [
@@ -47,10 +47,10 @@ const PHASES = [
 const fmt = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 
 export default function Capture() {
-  useKeepAwake(); // the screen must not lock mid-circle
+  useKeepAwake(); // екранът не бива да се заключва по средата на кръга
   const [permission, requestPermission] = useCameraPermissions();
-  // The AI model films with nothing but a point in the middle; the standard scan with the guide around the object.
-  // extend: this video adds a missing side to that model: the camera as plain, whichever way the model was made.
+  // AI моделът заснема само с точка в средата; стандартното сканиране с водача около предмета. extend: това видео
+  // добавя липсваща страна към модела: обикновена камера, независимо как е създаден моделът.
   const params = useLocalSearchParams<{ ai?: string; extend?: string; title?: string }>();
   const [ai] = useState(() => params.ai === '1' && aiAvailable());
   const [scan] = useState(() => {
@@ -67,15 +67,15 @@ export default function Capture() {
   const [orbit, setOrbit] = useState<OrbitState | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [showTips, setShowTips] = useState(true);
-  const [dim, setDim] = useState(false); // the room is too dim, by the light sensor (where the phone has one)
-  const [checking, setChecking] = useState(false); // looking over the video just filmed
+  const [dim, setDim] = useState(false); // стаята е твърде тъмна според сензора за светлина (ако телефонът има такъв)
+  const [checking, setChecking] = useState(false); // проверка на току-що заснетото видео
 
-  // Mutable mirrors of state for the 20 Hz sensor callback.
+  // Променливи копия на състоянието за извикванията от сензора с 20 Hz.
   const recordingRef = useRef(false);
   const tracker = useRef(new OrbitTracker());
   const stopReason = useRef<'user' | 'done' | null>(null);
   const startedAt = useRef(0);
-  const motion = useRef<RawMotion[]>([]); // the phone's orientation while recording, sent with the video
+  const motion = useRef<RawMotion[]>([]); // положението на телефона по време на записа, изпраща се с видеото
   const finished = useRef(false);
   const unmounted = useRef(false);
 
@@ -123,7 +123,7 @@ export default function Capture() {
     return () => clearInterval(timer);
   }, [recording]);
 
-  // Leaving without a kept video should not leave an empty scan in history.
+  // Излизане без запазено видео не бива да оставя празно сканиране в историята.
   useEffect(
     () => () => {
       unmounted.current = true;
@@ -140,10 +140,10 @@ export default function Capture() {
     motionFile(scan.id).writeSync(JSON.stringify({ samples: motionSamples(motion.current, startedAt.current) }));
     finished.current = true;
     updateScan(scan.id, { status: 'uploading', videoSeconds: secs });
-    router.replace({ pathname: '/processing/[id]', params: { id: scan.id, auto: '1' } }); // upload at once
+    router.replace({ pathname: '/processing/[id]', params: { id: scan.id, auto: '1' } }); // качване веднага
   }
 
-  /** A look over the video before it goes up: what is wrong with it can still be filmed again. */
+  /* Преглед на видеото преди качване: което не е наред, още може да се заснеме отново. */
   async function review(uri: string, secs: number) {
     setChecking(true);
     const found = await checkVideo(uri, secs);
@@ -169,10 +169,10 @@ export default function Capture() {
     recordingRef.current = true;
     setRecording(true);
     try {
-      // Resolves when stopRecording() is called or MAX_SECONDS is reached.
+      // Завършва при извикване на stopRecording() или при достигане на MAX_SECONDS.
       const video = await camera.current.recordAsync({
         maxDuration: MAX_SECONDS,
-        ...(Platform.OS === 'ios' && { codec: 'avc1' as const }), // iOS applies videoBitrate only with a codec
+        ...(Platform.OS === 'ios' && { codec: 'avc1' as const }), // iOS прилага videoBitrate само при зададен кодек
       });
       const secs = Math.round((Date.now() - startedAt.current) / 1000);
       if (unmounted.current) {
@@ -185,7 +185,7 @@ export default function Capture() {
         setMessage('Твърде кратко видео. Обиколете целия предмет.');
         return;
       }
-      // Stopped by the time limit before even one full circle: let the user decide.
+      // Спряно от ограничението за време преди дори един пълен кръг: нека потребителят реши.
       if (!plain && !stopReason.current && tracker.current.firstLoopFraction < 1)
         Alert.alert('Времето изтече', 'Първият кръг не е завършен, затова моделът ще има дупки.', [
           { text: 'Запиши отново', onPress: () => new File(video.uri).delete() },
@@ -202,10 +202,10 @@ export default function Capture() {
 
   function onShutter() {
     if (!recording) return record();
-    if (plain) return stop('user'); // no circles counted: the user knows when it has gone round
+    if (plain) return stop('user'); // не се броят кръгове: потребителят знае кога е обиколил
     const part = tracker.current.firstLoopFraction;
     if (part >= 1) return stop('user');
-    // Recording continues while the alert is open.
+    // Записът продължава, докато предупреждението е отворено.
     Alert.alert(
       'Още не сте обиколили докрай',
       `Заснети са около ${Math.round(part * 100)}% от първия кръг. Незаснетите страни ще липсват.`,
@@ -233,7 +233,8 @@ export default function Capture() {
         mute
         videoQuality="2160p"
         videoBitrate={BITRATE}
-        // Stabilisation crops and warps each frame differently, which breaks the fixed-lens model COLMAP fits.
+        // Стабилизацията изрязва и изкривява всеки кадър различно, което разваля модела на обектива с постоянни
+        // параметри, който напасва COLMAP.
         videoStabilizationMode="off"
         onCameraReady={() => setReady(true)}
       />
@@ -368,7 +369,7 @@ const usePermissionStyles = makeStyles((c) => ({
   content: { flex: 1, justifyContent: 'center', padding: space.xl, gap: space.lg },
 }));
 
-// Over the camera picture: always the dark theme's colours.
+// Върху изображението от камерата: винаги цветовете на тъмната тема.
 const dark = palettes.dark;
 const WHITE = '#ffffff';
 const GLASS = 'rgba(9,9,11,0.72)';

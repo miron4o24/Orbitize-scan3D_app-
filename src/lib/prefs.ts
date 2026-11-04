@@ -1,15 +1,16 @@
 import type { ProMethod } from './api';
 import { getSession } from './session';
 
-// The two ways to make a model, named the same on every screen: the standard scan (everyone) and the AI model (Pro).
+// Двата начина за създаване на модел с едни и същи имена на всеки екран: стандартното сканиране (за всички) и AI
+// модела (Pro).
 
-// Older scans may be "quick" (fewer, smaller frames, ~10 min); new ones are never.
+// По-старите сканирания може да са "quick" (по-малко и по-малки кадри, около 10 мин); новите никога не са.
 export type Quality = 'quick' | 'detailed';
 
 export const SCAN_INFO = { label: 'Стандартно', time: '~35 мин', minutes: 35 };
 
-// Pro (backend app/ai.py, app/pipeline.py EXPRESS_*). Only "single" can be started now; the others stay here for
-// scans already made with them, and for text changes ("edit").
+// Pro (сървър app/ai.py, app/pipeline.py EXPRESS_*). Сега може да се стартира само "single"; останалите са тук за
+// вече направени с тях сканирания и за текстови промени ("edit").
 export const PRO_INFO: Record<ProMethod, { label: string; time: string; minutes: number }> = {
   express: { label: 'Експресно', time: '~5 мин', minutes: 5 },
   edit: { label: 'Промяна с AI', time: '~1–3 мин', minutes: 2 },
@@ -18,7 +19,7 @@ export const PRO_INFO: Record<ProMethod, { label: string; time: string; minutes:
   photo: { label: 'AI от снимки', time: '~3 мин', minutes: 3 },
 };
 
-/** A free account's one AI model, not yet used. */
+/* Единственият AI модел на безплатен профил, още неизползван. */
 export function aiTrial(): boolean {
   const s = getSession();
   if (s?.kind !== 'account' || s.user.pro) return false;
@@ -26,9 +27,10 @@ export function aiTrial(): boolean {
   return !!l && l.limit != null && l.used < l.limit && s.user.ai?.single !== false;
 }
 
-/** Whether this account can make an AI model (Pro or its free one, and the server has it). */
+/* Дали този профил може да създаде AI модел (Pro или безплатния му опит, и сървърът го поддържа). */
 export function aiAvailable(): boolean {
   const s = getSession();
-  // Only a server's clear "no" hides it: a profile saved before the server told which AI it has must not.
+  // Скрива го само ясното "не" на сървъра: профил, запазен преди сървърът да съобщи какъв AI има, не бива да го
+  // скрива.
   return s?.kind === 'account' && ((!!s.user.pro && s.user.ai?.single !== false) || aiTrial());
 }

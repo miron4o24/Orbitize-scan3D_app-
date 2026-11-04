@@ -6,8 +6,8 @@ import { Button, Card, ErrorText, Row, Section, Segmented } from '@/components/u
 import { ApiError, downloadPrintZip, errorText, printPlan, type PrintPlan } from '@/lib/api';
 import { makeStyles } from '@/theme';
 
-// Ready for the printer: the model laid the way that needs the least support, and cut into parts when it is bigger than
-// the printer's bed (backend app/printing.py). Common beds, by their side.
+// Готово за принтера: моделът е положен така, че да иска най-малко подпори, и е разрязан на части, когато е по-голям
+// от плочата на принтера (сървър app/printing.py). Обичайни плочи по страна.
 const BEDS = {
   s: { label: '18 см', bed: [180, 180, 180] },
   m: { label: '22 см', bed: [220, 220, 250] },
@@ -20,12 +20,12 @@ export function PrintHelper({ jobId, mm }: { jobId: string; mm: number }) {
   const s = useStyles();
   const [bed, setBed] = useState<Bed>('m');
   const [result, setResult] = useState<{ key: string; plan?: PrintPlan; error?: string } | null>(null);
-  const [missing, setMissing] = useState(false); // a server from before this
+  const [missing, setMissing] = useState(false); // сървър отпреди тази функция
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const size = BEDS[bed].bed;
   const key = `${jobId}:${mm}:${bed}`;
-  const plan = result?.key === key ? result.plan : undefined; // an answer for another size is no answer
+  const plan = result?.key === key ? result.plan : undefined; // отговор за друг размер не е отговор
   const planError = result?.key === key ? result.error : undefined;
 
   useEffect(() => {
@@ -39,7 +39,7 @@ export function PrintHelper({ jobId, mm }: { jobId: string; mm: number }) {
           else setResult({ key, error: errorText(e) });
         },
       );
-    }, 400); // while a size is still being typed
+    }, 400); // докато размерът още се въвежда
     return () => {
       cancelled = true;
       clearTimeout(timer);

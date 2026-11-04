@@ -10,15 +10,15 @@ import { font, makeStyles, radius, space, useColors } from '@/theme';
 type Props = {
   visible: boolean;
   model: Object3D;
-  mm: number; // the model's longest side now
+  mm: number; // сегашната най-дълга страна на модела
   onClose: () => void;
   onApply: (longestMm: number) => void;
 };
 
 const mmText = (v: number) => (v >= 100 ? v.toFixed(0) : v.toFixed(1));
 
-// Two taps on the model give the distance between them at the size set. Typing what that distance really is sets the
-// whole model's size: the way to true size for a part that must fit.
+// Две докосвания върху модела дават разстоянието между тях при зададения размер. Въвеждането на истинското разстояние
+// задава размера на целия модел: така се постига точен размер за част, която трябва да пасне.
 export function MeasureTool({ visible, model, mm, onClose, onApply }: Props) {
   const c = useColors();
   const s = useStyles();

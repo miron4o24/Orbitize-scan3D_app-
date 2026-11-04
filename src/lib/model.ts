@@ -4,13 +4,15 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 
 import { photoTexturePlugin } from './photoTexture';
 
-/** A GLB from the server as a three.js scene. textureKey: names the photo texture's file (lib/photoTexture.ts). */
+/**
+ * GLB от сървъра като сцена на three.js. textureKey: именува файла на текстурата от снимките (lib/photoTexture.ts).
+ */
 export async function parseGlb(file: File, textureKey: string): Promise<Object3D> {
   const bytes = await file.bytes();
   const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
   const scene = (await new GLTFLoader().register(photoTexturePlugin(textureKey)).parseAsync(buffer, '')).scene;
-  // Scans from before the server wrote a material get glTF's default, fully metallic one, which renders nearly
-  // black with nothing to reflect: show those matte.
+  // Сканирания отпреди сървърът да записва материал получават стандартния изцяло метален материал на glTF, който
+  // изглежда почти черен, защото няма какво да отразява: показваме ги матови.
   scene.traverse((o) => {
     if (!(o instanceof Mesh)) return;
     for (const m of [o.material].flat())

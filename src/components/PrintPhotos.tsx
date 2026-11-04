@@ -12,8 +12,8 @@ import { font, makeStyles, radius, space } from '@/theme';
 
 const SIDE = 1600;
 
-// A community model's "printed by": photos of it in real life. Anyone but its author can add theirs; a tap offers what
-// can be done with one.
+// "Отпечатано от" за модел от общността: негови снимки в реалността. Всеки освен автора може да добави своя;
+// докосването предлага какво може да се направи със снимката.
 export function PrintPhotos({ postId, mine }: { postId: string; mine: boolean }) {
   const s = useStyles();
   const [photos, setPhotos] = useState<PrintPhoto[] | null>(null);
@@ -21,7 +21,7 @@ export function PrintPhotos({ postId, mine }: { postId: string; mine: boolean })
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(() => {
-    listPrintPhotos(postId).then(setPhotos, () => setPhotos(null)); // an older server: nothing to show
+    listPrintPhotos(postId).then(setPhotos, () => setPhotos(null)); // по-стар сървър: няма какво да се покаже
   }, [postId]);
   useEffect(load, [load]);
 

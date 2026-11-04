@@ -54,7 +54,7 @@ async function loadModel(id: string, jobId: string | undefined): Promise<Object3
   try {
     return await parseGlb(file, `scan-${id}`);
   } catch (e) {
-    if (jobId) file.delete(); // likely a truncated download; Retry fetches it again
+    if (jobId) file.delete(); // вероятно прекъснато изтегляне; повторният опит го изтегля отново
     throw e;
   }
 }
@@ -65,21 +65,21 @@ const FORMATS = [
   { format: 'glb', mime: 'model/gltf-binary', note: 'С цветовете' },
 ] as const;
 type Format = (typeof FORMATS)[number]['format'];
-// Print files: "smooth" comes from the server with the scan's ripples smoothed off (backend app/mesh.py smooth),
-// "detail" is the model as shown.
+// Файлове за печат: "smooth" идва от сървъра с изгладени вълни от сканирането (сървър app/mesh.py smooth), "detail" е
+// моделът, както е показан.
 type Surface = 'smooth' | 'detail';
 const SMOOTH_PASSES = 2;
-// Below this share of the frame width the object has too few pixels for its details (a 6 cm speaker filmed from
-// arm's length spanned 18%).
+// Под този дял от ширината на кадъра предметът няма достатъчно пиксели за детайлите си (колонка от 6 см, заснета от
+// разстояние на ръка, заема 18%).
 const SMALL_OBJECT = 0.5;
 
 type Tab = 'size' | 'files' | 'share';
 
-const FRAMES_KEPT_MS = 7 * 86_400_000; // the server keeps a model's frames this long (backend JOB_TTL_DAYS)
+const FRAMES_KEPT_MS = 7 * 86_400_000; // сървърът пази кадрите на модела толкова дълго (сървър JOB_TTL_DAYS)
 
 const mmText = (v: number) => (v >= 100 ? v.toFixed(0) : v.toFixed(1));
 
-// An error while showing the model (a release build would close the app on it) shows here instead.
+// Грешка при показване на модела (издадената версия би затворила приложението) се показва тук.
 export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
   const s = useStyles();
   return (
@@ -99,7 +99,7 @@ export default function Viewer() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [wireframe, setWireframe] = useState(false);
-  const [full, setFull] = useState(false); // the model over the whole screen
+  const [full, setFull] = useState(false); // моделът на целия екран
   const [mmInput, setMmInput] = useState(String(scan?.longestMm ?? 100));
   const [busy, setBusy] = useState<string | null>(null);
   const [renaming, setRenaming] = useState(false);
@@ -107,23 +107,23 @@ export default function Viewer() {
   const [attempt, setAttempt] = useState(0);
   const [tab, setTab] = useState<Tab>('size');
   const [surface, setSurface] = useState<Surface>('smooth');
-  const [support, setSupport] = useState<ArSupport | null>(null); // AR on this phone; null while asking
-  const [editing, setEditing] = useState(false); // the text change dialog (Pro)
-  const [editText, setEditText] = useState(''); // kept while the user points at the model
-  const [spot, setSpot] = useState<Spot | null>(null); // where on the model the change is for ("smooth here")
-  const [picking, setPicking] = useState(false); // pointing at the model, over the whole screen
-  const [measuring, setMeasuring] = useState(false); // two taps on the model, over the whole screen
-  const [plating, setPlating] = useState(false); // the name plate dialog (Pro)
+  const [support, setSupport] = useState<ArSupport | null>(null); // AR на този телефон; null, докато се пита
+  const [editing, setEditing] = useState(false); // диалогът за текстова промяна (Pro)
+  const [editText, setEditText] = useState(''); // пази се, докато потребителят посочва върху модела
+  const [spot, setSpot] = useState<Spot | null>(null); // мястото върху модела, за което е промяната ("smooth here")
+  const [picking, setPicking] = useState(false); // посочване върху модела на целия екран
+  const [measuring, setMeasuring] = useState(false); // две докосвания върху модела на целия екран
+  const [plating, setPlating] = useState(false); // диалогът за табелка с име (Pro)
   const session = useSession();
   const user = session?.kind === 'account' ? session.user : null;
   const jobId = scan?.jobId;
-  const account = !!currentUserId() && !!jobId; // saved in the account: rename on the server, share by link
+  const account = !!currentUserId() && !!jobId; // запазено в профила: преименуване на сървъра, споделяне с линк
   const arDone = arAvailable && !!jobId && scan?.status === 'done';
   const showAr = arDone && support !== null && support !== 'unsupported';
   const stressAllowed = allowance(user, 'stress', jobId);
   const arAllowed = allowance(user, 'ar', jobId);
   const canEdit = !!user?.pro && !!user.ai?.edit && !!jobId && scan?.status === 'done';
-  // Made from a video, with its frames still on the server: a missing side can be added.
+  // Създаден от видео, чиито кадри още са на сървъра: може да се добави липсваща страна.
   const [openedAt] = useState(() => Date.now());
   const canExtend = !!jobId && scan?.status === 'done' && !scan.report?.edit && openedAt - scan.createdAt < FRAMES_KEPT_MS;
 
@@ -131,7 +131,7 @@ export default function Viewer() {
     if (arDone) arSupport().then(setSupport);
   }, [arDone]);
 
-  // Volume and surface for the print estimate, for scans whose report is from before they were in it.
+  // Обем и повърхност за оценката на печата, за сканирания с отчет отпреди те да бъдат включени в него.
   const needGeometry = scan?.status === 'done' && !!jobId && !!scan.report && scan.report.volume_mm3 == null;
   useEffect(() => {
     if (!needGeometry) return;
@@ -141,7 +141,7 @@ export default function Viewer() {
         const now = getScan(id);
         if (!cancelled && now?.report) setScan(updateScan(id, { report: { ...now.report, volume_mm3: g.volume_mm3, area_mm2: g.area_mm2 } }));
       },
-      () => {}, // an older server: no estimate
+      () => {}, // по-стар сървър: без оценка
     );
     return () => {
       cancelled = true;
@@ -162,8 +162,8 @@ export default function Viewer() {
   const mm = Number(mmInput.replace(',', '.'));
   const mmValid = Number.isFinite(mm) && mm >= 1 && mm <= 2000;
   const report = scan?.report;
-  // The server normalises the model to a 100 mm longest side; dimensions scale linearly. Its footprint's two sides
-  // come in no set order: the longer one is shown as the length.
+  // Сървърът нормализира модела до най-дълга страна 100 мм; размерите се мащабират линейно. Двете страни на стъпката
+  // идват в произволен ред: по-дългата се показва като дължина.
   const dims = (() => {
     if (!report || !mmValid) return null;
     const [x, y, z] = report.dimensions_mm.map((d) => (d * mm) / 100);
@@ -204,7 +204,7 @@ export default function Viewer() {
       if (!mmValid || !scan) return;
       setScan(updateScan(id, { longestMm: mm }));
       await viewInRoom(jobId!, mm, scanTitle(scan), realSize);
-      if (arAllowed && !arAllowed.unlimited && !arAllowed.counted) refreshProfile().catch(() => {}); // one fewer left
+      if (arAllowed && !arAllowed.unlimited && !arAllowed.counted) refreshProfile().catch(() => {}); // остава един по-малко
     });
   };
 
@@ -213,7 +213,7 @@ export default function Viewer() {
     router.push({ pathname: '/stress/[id]', params: { id: jobId!, source: 'scan', mm: String(mm), title: scanTitle(scan!) } });
   };
 
-  // Pro: a new model made from this one by a text change; it is followed on the processing screen like a scan.
+  // Pro: нов модел, създаден от този чрез текстова промяна; следи се на екрана за обработка като сканиране.
   const edit = (prompt: string) =>
     run('edit', async () => {
       if (!mmValid || !scan) return;
@@ -342,7 +342,7 @@ export default function Viewer() {
   const title = scanTitle(scan);
   const done = scan.status === 'done';
   const kind = badgeOf(scan.status);
-  // Which of the two ways made it; a free account has only one, so nothing to tell apart.
+  // Кой от двата начина го е създал; безплатният профил има само един, затова няма какво да се различава.
   const way = report?.ai ? PRO_INFO[report.ai].label : report && !report.edit && user?.pro ? SCAN_INFO.label : null;
   const tabs: { value: Tab; label: string }[] = [
     { value: 'size', label: 'Размер' },
@@ -609,7 +609,7 @@ export default function Viewer() {
           <Note warn>Предметът беше далеч от камерата. Следващия път се приближете.</Note>
         )}
 
-        {/* For the app's owner only: how the model was made and how long it took. */}
+        {/* Само за собственика на приложението: как е създаден моделът и колко време е отнело. */}
         {!!user?.owner && !!report && (
           <Section label="Собственик">
             <Card style={s.list}>
@@ -736,8 +736,8 @@ function RenameDialog(props: { visible: boolean; initial: string; saving: boolea
   );
 }
 
-// Requests the server reads exactly (backend app/edit.py rules); others go to its language model. With a spot picked
-// on the model, "here" and "this" mean it.
+// Заявки, които сървърът разбира точно (сървър app/edit.py, правила); останалите отиват при езиковия му модел. При
+// посочено място върху модела "here" и "this" означават него.
 const EXAMPLES = ['make the hair blue', 'make it 15 cm tall', 'add a keychain loop', 'hollow it with 2 mm walls'];
 const SPOT_EXAMPLES = ['make this red', 'smooth here', 'add a 3 mm hole here'];
 
@@ -748,7 +748,7 @@ type EditDialogProps = {
   value: string;
   onChange: (text: string) => void;
   spot: Spot | null;
-  onPickSpot?: () => void; // absent until the model is loaded
+  onPickSpot?: () => void; // липсва, докато моделът не се зареди
   onClearSpot: () => void;
   onClose: () => void;
   onSave: (prompt: string) => void;
@@ -803,7 +803,7 @@ function EditDialog(props: EditDialogProps) {
   );
 }
 
-/** How long the print takes, the plastic and the cost, at the size set above (lib/printEstimate.ts). */
+/* Колко време отнема печатът, пластмасата и цената при зададения по-горе размер (lib/printEstimate.ts). */
 function PrintCard({ report, mm }: { report: Report; mm: number }) {
   const s = useStyles();
   const [material, setMaterial] = useState<Material>('pla');
@@ -819,7 +819,7 @@ function PrintCard({ report, mm }: { report: Report; mm: number }) {
   const changePrice = (text: string) => {
     setPriceInput(text);
     const v = Number(text.replace(',', '.'));
-    if (Number.isFinite(v) && v >= 0 && v <= 1000) setPrice(material, v); // the next models start with it
+    if (Number.isFinite(v) && v >= 0 && v <= 1000) setPrice(material, v); // следващите модели започват с него
   };
 
   if (report.volume_mm3 == null || report.area_mm2 == null)

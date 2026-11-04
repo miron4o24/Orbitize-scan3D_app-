@@ -6,21 +6,25 @@ import { ApiError, cancelJob, errorText, listMyScans, type ServerScan } from './
 import { deleteScan, importScan, listScans, scanTitle, updateScan, type Scan, type ScanStatus } from './scans';
 import { currentUserId, useSession } from './session';
 
-// "My scans": the scans on this phone plus, when signed in, the account's scans from the server (made on other
-// phones, or deleted here). A scan on both is one entry; the server's state wins once processing has started.
+// "Моите сканирания": сканиранията на този телефон и, при влязъл потребител, сканиранията на профила от сървъра
+// (направени на други телефони или изтрити тук). Сканиране и на двете места е един запис; състоянието на сървъра
+// важи, след като обработката е започнала.
 
 export type Entry = {
   key: string;
-  scan?: Scan; // the local record, if this phone has one
+  scan?: Scan; // местният запис, ако този телефон има такъв
   server?: ServerScan;
   jobId?: string;
   title: string;
   createdAt: number;
   status: ScanStatus;
-  thumb: boolean; // the server has a picture of it
+  thumb: boolean; // сървърът има изображение на сканирането
 };
 
-/** The local scans the current user may see: an account's own (with nobody signed in, those of older guest use). */
+/**
+ * Местните сканирания, които текущият потребител може да вижда: тези на профила му (без влязъл потребител: от
+ * по-старото използване като гост).
+ */
 export function visibleScans(): Scan[] {
   const uid = currentUserId();
   return listScans().filter((s) => (uid ? s.userId === uid : !s.userId));
@@ -33,21 +37,21 @@ export function badgeOf(status: ScanStatus): BadgeKind {
   return 'working';
 }
 
-/** Made by AI: an AI model, or a text change of a model. */
+/* Създаден от AI: AI модел или текстова промяна на модел. */
 export function isAi(entry: Entry): boolean {
   const report = entry.server?.report ?? entry.scan?.report;
   const method = entry.scan?.method;
   return !!report?.ai || !!report?.edit || (!!method && method !== 'scan' && method !== 'express');
 }
 
-/** Copies the server's state into the matching local records. */
+/* Копира състоянието от сървъра в съответните местни записи. */
 function sync(server: ServerScan[]) {
   const byJob = new Map(server.map((s) => [s.id, s]));
   for (const scan of visibleScans()) {
     const s = scan.jobId ? byJob.get(scan.jobId) : undefined;
     if (!s) continue;
     const patch: Partial<Scan> = {};
-    // While the phone is still uploading, the server's "uploading" says nothing new.
+    // Докато телефонът още качва, "uploading" от сървъра не казва нищо ново.
     if (s.state !== 'uploading' && s.state !== scan.status) {
       patch.status = s.state;
       patch.error = s.error ?? undefined;
@@ -130,7 +134,7 @@ export function useLibrary() {
   return { entries, refresh, loading, error };
 }
 
-/** Opens a scan: the model when it is finished, its progress or upload screen otherwise. */
+/* Отваря сканиране: модела, когато е готов, иначе екрана за напредък или качване. */
 export function openEntry(entry: Entry) {
   let scan = entry.scan;
   const uid = currentUserId();
@@ -141,12 +145,12 @@ export function openEntry(entry: Entry) {
   router.push({ pathname: scan.status === 'done' ? '/viewer/[id]' : '/processing/[id]', params: { id: scan.id } });
 }
 
-/** Deletes a scan from this phone and from the server (and so from the account on every phone). */
+/* Изтрива сканиране от този телефон и от сървъра (а така и от профила на всеки телефон). */
 export async function deleteEntry(entry: Entry) {
   if (entry.jobId)
     await cancelJob(entry.jobId).catch((e) => {
-      // Already gone is fine. A guest's server copy expires by itself, so offline is fine too; an account's would
-      // come back from the server, so that must reach it.
+      // Ако вече го няма, няма проблем. Копието на гост на сървъра изтича само, затова липсата на връзка също не
+      // пречи; това на профил би се върнало от сървъра, затова изтриването трябва да стигне до него.
       if (currentUserId() && !(e instanceof ApiError && e.status === 404)) throw e;
     });
   if (entry.scan) deleteScan(entry.scan.id);

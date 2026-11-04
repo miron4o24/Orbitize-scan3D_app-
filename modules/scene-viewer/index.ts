@@ -6,5 +6,5 @@ type SceneViewerModule = {
   openInPackage(url: string, packageName: string): Promise<boolean>;
 };
 
-// null on iOS and in builds from before the module.
+// null на iOS и в компилации отпреди модула.
 export default requireOptionalNativeModule<SceneViewerModule>('SceneViewer');

@@ -21,7 +21,7 @@ export default function MyScans() {
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const scrollY = useScrollY();
 
-  // AI models apart from the others, once there are both; it opens on the kind made last.
+  // AI моделите отделно от останалите, щом има и от двата вида; отваря се на последно създадения вид.
   const [chosen, setChosen] = useState<Group | null>(null);
   const ai = entries.filter(isAi);
   const other = entries.filter((e) => !isAi(e));

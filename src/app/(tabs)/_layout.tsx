@@ -11,7 +11,7 @@ import type { IconName } from '@/components/ui';
 import { startScan } from '@/lib/startScan';
 import { brandDeep, font, makeStyles, space, useColors } from '@/theme';
 
-// Two tabs either side of the scan button, which sits in slot 2.
+// По два раздела от двете страни на бутона за сканиране, който е на позиция 2.
 const ITEMS: Record<string, { label: string; icon: IconName; active: IconName; slot: number }> = {
   index: { label: 'Начало', icon: 'home-outline', active: 'home', slot: 0 },
   community: { label: 'Общност', icon: 'people-outline', active: 'people', slot: 1 },
@@ -19,11 +19,11 @@ const ITEMS: Record<string, { label: string; icon: IconName; active: IconName; s
   profile: { label: 'Профил', icon: 'person-outline', active: 'person', slot: 4 },
 };
 const SLOTS = 5;
-const MARK = 20; // the line over the open tab
+const MARK = 20; // линията над отворения раздел
 
 type BarProps = { state: { index: number; routes: { key: string; name: string }[] }; navigateToTab: (routeKey: string) => void };
 
-/** A tab's icon, which gives a small bounce when its tab opens. */
+/* Иконата на раздел, която леко подскача при отварянето му. */
 function TabIcon({ name, on, color }: { name: IconName; on: boolean; color: string }) {
   const reduce = useReducedMotion();
   const scale = useSharedValue(1);

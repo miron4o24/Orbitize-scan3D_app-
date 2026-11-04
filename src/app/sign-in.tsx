@@ -11,7 +11,7 @@ import { errorText, health, type Health } from '@/lib/api';
 import { createAccount, signInWithGoogle, signInWithPassword } from '@/lib/auth';
 import { font, makeStyles, space, text, useColors } from '@/theme';
 
-const PASSWORD_MIN = 6; // the server's rule (accounts.PASSWORD_MIN)
+const PASSWORD_MIN = 6; // правилото на сървъра (accounts.PASSWORD_MIN)
 
 export default function SignIn() {
   const c = useColors();
@@ -44,7 +44,7 @@ export default function SignIn() {
     setBusy(true);
     setError(null);
     try {
-      // On success the layout swaps this screen for the app.
+      // При успех подредбата заменя този екран с приложението.
       if (register) await createAccount(email, password, name);
       else await signInWithPassword(email, password);
     } catch (e) {
@@ -72,7 +72,7 @@ export default function SignIn() {
     setError(null);
   }
 
-  // The server answers but its accounts are down: nobody can sign in until they are back.
+  // Сървърът отговаря, но профилите му не работят: никой не може да влезе, докато не се върнат.
   const noAccounts = server !== null && server !== 'unreachable' && !server.accounts;
 
   return (

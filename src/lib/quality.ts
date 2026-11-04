@@ -1,12 +1,13 @@
-// Per-frame quality check on a small RGBA copy of the photo (~512 px wide).
+// Проверка на качеството на всеки кадър върху малко RGBA копие на снимката (около 512 px широко).
 
 export type FrameMetrics = {
-  sharpness: number; // variance of the Laplacian of luminance; low = blurry
-  brightness: number; // mean luminance 0..255
-  clipped: number; // fraction of pixels at >= 250 luminance
+  sharpness: number; // дисперсия на лапласиана на яркостта; ниска = размазано
+  brightness: number; // средна яркост 0..255
+  clipped: number; // дял на пикселите с яркост >= 250
 };
 
-// shortcut: thresholds are first guesses for 512 px frames; tune with the readout on the capture screen.
+// опростяване: праговете са първоначални стойности за кадри от 512 px; настройват се с показанията на екрана за
+// заснемане.
 export const THRESHOLDS = { minSharpness: 40, minBrightness: 45, maxClipped: 0.15 };
 
 export function measure(rgba: Uint8Array, width: number, height: number): FrameMetrics {
@@ -21,7 +22,7 @@ export function measure(rgba: Uint8Array, width: number, height: number): FrameM
     if (y >= 250) clipped++;
   }
 
-  // Welford running variance of the 4-neighbour Laplacian.
+  // Текуща дисперсия по Уелфорд на лапласиана с 4 съседа.
   let count = 0;
   let mean = 0;
   let m2 = 0;
@@ -45,6 +46,7 @@ export function judge(m: FrameMetrics) {
   if (m.clipped > THRESHOLDS.maxClipped) warnings.push('Твърде светло: избягвайте пряка светлина и отблясъци');
   const blurry = m.sharpness < THRESHOLDS.minSharpness;
   if (blurry) warnings.push('Размазано: дръжте телефона стабилно');
-  // Blur ruins feature matching, so drop the frame; exposure issues are only warned about.
+  // Размазването разваля съпоставянето на особеностите, затова кадърът отпада; за проблеми с осветеността само се
+  // предупреждава.
   return { reject: blurry, warnings };
 }

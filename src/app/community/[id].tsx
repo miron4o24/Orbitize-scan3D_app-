@@ -21,7 +21,7 @@ import { checkProgress } from '@/lib/progress';
 import { listScans, updateScan } from '@/lib/scans';
 import { font, makeStyles, radius, space, useColors } from '@/theme';
 
-// A model from the community: turn it around, like it, download it at the size its author gave.
+// Модел от общността: завъртане, харесване и изтегляне в размера, зададен от автора.
 
 const FORMATS = [
   { format: 'stl', mime: 'model/stl', note: '' },
@@ -38,7 +38,7 @@ async function loadModel(id: string): Promise<Object3D> {
   try {
     return await parseGlb(file, `post-${id}`);
   } catch (e) {
-    file.delete(); // likely a truncated download; Retry fetches it again
+    file.delete(); // вероятно прекъснато изтегляне; повторният опит го изтегля отново
     throw e;
   }
 }
@@ -58,7 +58,7 @@ export default function CommunityPost() {
   const c = useColors();
   const s = useStyles();
   const [post, setPost] = useState<Post | null>(null);
-  const [gone, setGone] = useState<string | null>(null); // the post could not be had
+  const [gone, setGone] = useState<string | null>(null); // публикацията не можа да се получи
   const [model, setModel] = useState<Object3D | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
@@ -101,7 +101,7 @@ export default function CommunityPost() {
     }
   }
 
-  // At once on the screen; the server's count follows (or the old state comes back).
+  // Веднага на екрана; после идва броят от сървъра (или се връща старото състояние).
   async function toggleLike() {
     if (!post) return;
     const before = post;
@@ -110,7 +110,7 @@ export default function CommunityPost() {
     try {
       const r = await likePost(post.id, on);
       setPost((p) => p && { ...p, ...r });
-      if (on) checkProgress(); // liking counts for some weekly challenges
+      if (on) checkProgress(); // харесването се брои за някои седмични предизвикателства
     } catch (e) {
       setPost(before);
       setError(errorText(e));

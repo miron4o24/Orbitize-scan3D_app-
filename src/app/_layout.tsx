@@ -20,7 +20,7 @@ SplashScreen.preventAutoHideAsync().catch(() => {});
 export default function RootLayout() {
   const session = useSession();
   const c = useColors();
-  // A font that fails to load falls back to the system one rather than keeping the splash screen up.
+  // Шрифт, който не се зарежда, преминава към системния, вместо да задържа началния екран.
   const [loaded, failed] = useFonts({
     Onest_400Regular,
     Onest_500Medium,
@@ -33,20 +33,21 @@ export default function RootLayout() {
     if (ready) SplashScreen.hideAsync().catch(() => {});
   }, [ready]);
 
-  // The phone's own parts follow the app's theme: system dialogs, the keyboard, the window behind the screens.
+  // Системните части на телефона следват темата на приложението: системните диалози, клавиатурата, прозорецът зад
+  // екраните.
   useEffect(() => {
     Appearance.setColorScheme(c.scheme);
     SystemUI.setBackgroundColorAsync(c.bg).catch(() => {});
   }, [c]);
 
-  // Points earned meanwhile (a scan finished on the server, a like on a post) are celebrated on coming back; the
-  // profile (Pro) comes fresh too, as the phone's copy is what decides which scans are offered.
+  // Точките, спечелени междувременно (завършено на сървъра сканиране, харесване на публикация), се празнуват при
+  // връщане; профилът (Pro) също се опреснява, защото копието на телефона решава кои сканирания да се предлагат.
   const account = session?.kind === 'account' ? session.user.id : null;
   useEffect(() => {
     if (!account) return;
     checkProgress(true);
     refreshProfile().catch(() => {});
-    setUpPush(false); // the question itself comes with the first scan (processing screen)
+    setUpPush(false); // самият въпрос идва с първото сканиране (екран за обработка)
     const stopListening = listenToPush();
     const sub = AppState.addEventListener('change', (st) => {
       if (st !== 'active') return;
@@ -61,7 +62,7 @@ export default function RootLayout() {
 
   if (!ready) return null;
 
-  const bars = c.scheme === 'dark' ? 'light' : 'dark'; // light icons on the dark theme
+  const bars = c.scheme === 'dark' ? 'light' : 'dark'; // светли икони при тъмна тема
   const inside = session !== null;
   return (
     <>
@@ -74,7 +75,7 @@ export default function RootLayout() {
           headerTintColor: c.text,
           headerTitleStyle: { color: c.text, fontFamily: font.semibold, fontSize: 16 },
           contentStyle: { backgroundColor: c.bg },
-          animation: 'slide_from_right', // a page opens from the side; the camera rises from below
+          animation: 'slide_from_right', // страницата се отваря отстрани; камерата се вдига отдолу
         }}
       >
         <Stack.Protected guard={inside}>

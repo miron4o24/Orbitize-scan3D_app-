@@ -4,12 +4,12 @@ import { LOOPS, SECTORS, type OrbitState } from '@/lib/orbit';
 import { palettes } from '@/theme';
 
 const DOT = 10;
-const GAP = 16; // between the two rings of dots
+const GAP = 16; // между двата пръстена от точки
 
 type Props = { size: number; orbit: OrbitState | null };
 
-// The circle the object should stay inside, ringed by one row of dots per circle walked (outer = first).
-// Dots turn green as the user walks past; the yellow one is where the phone is now.
+// Кръгът, в който трябва да остане предметът, заобиколен от по един ред точки за всеки извървян кръг (външният е
+// първият). Точките позеленяват при преминаване; жълтата показва къде е телефонът сега.
 export function OrbitGuide({ size, orbit }: Props) {
   const dots = [];
   for (let loop = 0; loop < LOOPS; loop++) {

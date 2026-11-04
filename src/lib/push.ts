@@ -5,9 +5,10 @@ import { Platform } from 'react-native';
 import { forgetPushToken, savePushToken } from './api';
 import { listScans } from './scans';
 
-// "Your model is ready", when the app is closed. The server sends it through Expo's push service (backend
-// app/notify.py). Not in Expo Go, which has no push on Android: everything here then does nothing. The same when the
-// build has no Firebase file (google-services.json): the phone gets no token, and the app works without notifications.
+// "Вашият модел е готов", когато приложението е затворено. Сървърът го изпраща през услугата за известия на Expo
+// (сървър app/notify.py). Не работи в Expo Go, което няма известия на Android: тогава нищо тук не прави нищо. Същото,
+// когато компилацията няма файл на Firebase (google-services.json): телефонът не получава ключ, а приложението работи
+// без известия.
 
 type Notifications = typeof import('expo-notifications');
 
@@ -29,7 +30,10 @@ function load(): Notifications | null {
 
 let token: string | null = null;
 
-/** Registers this phone for the signed-in account. ask: may show the system's question; else only if already allowed. */
+/**
+ * Регистрира този телефон за влезлия профил. ask: може да покаже въпроса на системата; иначе само ако вече е
+ * разрешено.
+ */
 export async function setUpPush(ask: boolean) {
   const N = load();
   if (!N) return;
@@ -43,10 +47,10 @@ export async function setUpPush(ask: boolean) {
     const { data } = await N.getExpoPushTokenAsync({ projectId });
     token = data;
     await savePushToken(data);
-  } catch {} // no notifications, nothing else lost
+  } catch {} // няма известия, нищо друго не се губи
 }
 
-/** Signing out: this phone stops hearing about the account. */
+/* Изход от профила: телефонът спира да получава известия за него. */
 export async function stopPush() {
   if (token) await forgetPushToken(token).catch(() => {});
   token = null;
@@ -58,7 +62,7 @@ function open(jobId: unknown) {
   else router.push('/scans');
 }
 
-/** Shown also while the app is open; a tap opens the model. Returns how to stop listening. */
+/* Показва се и при отворено приложение; докосването отваря модела. Връща как да спре слушането. */
 export function listenToPush(): () => void {
   const N = load();
   if (!N) return () => {};

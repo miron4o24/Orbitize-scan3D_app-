@@ -3,13 +3,13 @@ import { stopPush } from './push';
 import { listScans, updateScan } from './scans';
 import { clearSession, currentUserId, signedIn, updateProfile } from './session';
 
-// Two ways in, one account per email: email and password (no verification code), or Google (the phone gets an ID
-// token for the web client the server names in /health; the server checks it). Either way the server answers with
-// its own session token. A Google sign-in with the address of an email account opens that account.
+// Два начина за влизане, един профил на имейл: имейл и парола (без код за потвърждение) или Google (телефонът
+// получава ID токен за уеб клиента, който сървърът посочва в /health; сървърът го проверява). И в двата случая
+// сървърът отговаря със собствен сесиен ключ. Вход с Google с адреса на имейл профил отваря този профил.
 
 type GoogleModule = typeof import('@react-native-google-signin/google-signin');
 
-// Loaded on first use: Expo Go has no Google sign-in inside, and importing it there stops the whole app.
+// Зарежда се при първа употреба: Expo Go няма вграден вход с Google и импортирането му там спира цялото приложение.
 let google: GoogleModule | null | undefined;
 function loadGoogle(): GoogleModule | null {
   if (google === undefined) {
@@ -35,7 +35,7 @@ export async function createAccount(email: string, password: string, name: strin
   await adoptLocalScans(user.id);
 }
 
-/** Signs in; false when the user closed Google's account picker. */
+/* Влиза в профила; false, когато потребителят затвори избора на профил в Google. */
 export async function signInWithGoogle(): Promise<boolean> {
   const h = await health();
   if (!h.google_client_id) throw new Error('Използвайте имейл и парола.');
@@ -63,18 +63,18 @@ function googleProblem({ isErrorWithCode, statusCodes }: GoogleModule, e: unknow
   if (isErrorWithCode(e)) {
     if (e.code === statusCodes.IN_PROGRESS) return 'Входът вече е отворен.';
     if (e.code === statusCodes.PLAY_SERVICES_NOT_AVAILABLE) return 'Входът с Google не работи на този телефон. Използвайте имейл и парола.';
-    // DEVELOPER_ERROR: Google does not know this app build (Android client with its SHA-1 missing).
+    // DEVELOPER_ERROR: Google не познава тази компилация на приложението (липсва клиент за Android с нейния SHA-1).
     if (e.code === '10' || /DEVELOPER_ERROR/.test(e.message))
       return 'Входът с Google не успя. Използвайте имейл и парола.';
   }
   return 'Входът с Google не успя. Опитайте отново.';
 }
 
-/** Scans made on this phone before signing in join the account, here and on the server. */
+/* Сканиранията, направени на този телефон преди влизане, се присъединяват към профила тук и на сървъра. */
 async function adoptLocalScans(userId: string) {
   const mine = listScans().filter((s) => !s.userId);
   const jobIds = mine.map((s) => s.jobId).filter((j): j is string => !!j);
-  if (jobIds.length) await claimScans(jobIds).catch(() => {}); // they stay on this phone either way
+  if (jobIds.length) await claimScans(jobIds).catch(() => {}); // така или иначе остават на този телефон
   for (const s of mine) updateScan(s.id, { userId });
   if (jobIds.length) await refreshProfile();
 }
@@ -84,10 +84,10 @@ export async function refreshProfile() {
   updateProfile(await getMe());
 }
 
-/** Ends the session here and on the server. Scans stay on the server and come back at the next sign-in. */
+/* Приключва сесията тук и на сървъра. Сканиранията остават на сървъра и се връщат при следващото влизане. */
 export async function signOut() {
   await stopPush();
-  await endSession().catch(() => {}); // offline: the server session just stays unused
+  await endSession().catch(() => {}); // без връзка: сесията на сървъра просто остава неизползвана
   await loadGoogle()?.GoogleSignin.signOut().catch(() => {});
   await clearSession();
 }

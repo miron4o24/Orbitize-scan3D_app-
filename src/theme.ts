@@ -2,9 +2,9 @@ import { File, Paths } from 'expo-file-system';
 import { useSyncExternalStore } from 'react';
 import { type ImageStyle, StyleSheet, type TextStyle, type ViewStyle } from 'react-native';
 
-// Scanly's look, after the website: calm and flat, with the brand gradient on the one main action of a screen. Surfaces
-// with 1px lines instead of shadows, Onest for text,
-// JetBrains Mono for numbers, sizes, dates and small uppercase labels (fonts loaded in app/_layout.tsx). Dark by
+// Визията на Scanly, по примера на сайта: спокойна и плоска, с градиента на марката върху единственото главно
+// действие на екрана. Повърхности с линии от 1px вместо сенки, Onest за текст, JetBrains Mono за числа, размери, дати
+// и малки главни етикети (шрифтовете се зареждат в app/_layout.tsx). Тъмна по подразбиране
 // default; the choice (profile → Тема) is kept in theme.txt.
 
 export type Scheme = 'dark' | 'light';
@@ -29,13 +29,13 @@ export type Palette = {
   warningSoft: string;
   danger: string;
   dangerSoft: string;
-  primary: string; // the primary button
+  primary: string; // основният бутон
   onPrimary: string;
-  accentLine: string; // a border in the accent colour (a recommended choice)
-  glass: string; // see-through bars and labels over content
-  viewer: readonly [string, string]; // the 3D view's radial background, centre → edge
-  stage: readonly [string, string, string]; // the picture stage's radial background, centre → edge
-  backdrop: string; // behind dialogs
+  accentLine: string; // рамка в цвета за акцент (препоръчан избор)
+  glass: string; // прозрачни ленти и етикети върху съдържание
+  viewer: readonly [string, string]; // радиалният фон на 3D изгледа, от центъра към ръба
+  stage: readonly [string, string, string]; // радиалният фон на сцената с изображението, от центъра към ръба
+  backdrop: string; // зад диалоговите прозорци
 };
 
 const dark: Palette = {
@@ -98,9 +98,9 @@ const light: Palette = {
 
 export const palettes: Record<Scheme, Palette> = { dark, light };
 
-/** The logo and the avatar. */
+/* Логото и аватарът. */
 export const brand = ['#3b6cf6', '#8b5cf6'] as const;
-/** Under white text and icons: the one main action of a screen. */
+/* Под бял текст и икони: единственото главно действие на екрана. */
 export const brandDeep = ['#2f5ee8', '#7c3aed'] as const;
 
 export const font = {
@@ -114,9 +114,9 @@ export const font = {
 export const space = { xs: 4, sm: 8, md: 12, lg: 16, xl: 24, xxl: 32 };
 export const radius = { sm: 12, md: 18, pill: 999 };
 
-// Sizes only: the colour comes from the palette (components/ui.tsx). Custom fonts carry their weight in the family:
-// no fontWeight (Android would fall back to the system font).
-// The website's scale: big tight headlines, quiet body text, mono details.
+// Само размери: цветът идва от палитрата (components/ui.tsx). Собствените шрифтове носят дебелината си в семейството:
+// без fontWeight (Android би минал към системния шрифт). Скалата на сайта: големи сбити заглавия, спокоен основен
+// текст, моноширинни подробности.
 export const text = {
   display: { fontFamily: font.semibold, fontSize: 40, lineHeight: 44, letterSpacing: -1.8 },
   title: { fontFamily: font.semibold, fontSize: 32, lineHeight: 36, letterSpacing: -1.2 },
@@ -130,7 +130,7 @@ export const text = {
   number: { fontFamily: font.semibold, fontSize: 24, lineHeight: 30, letterSpacing: -0.8 },
 } satisfies Record<string, TextStyle>;
 
-// --- The chosen theme ---------------------------------------------------------------------------------------------
+// --- Избраната тема ------------------------------------------------------------------------------------------------
 
 const file = () => new File(Paths.document, 'theme.txt');
 
@@ -154,14 +154,17 @@ export function setScheme(next: Scheme) {
   scheme = next;
   try {
     file().writeSync(next);
-  } catch {} // not kept: back to dark at the next start
+  } catch {} // не се пази: при следващото стартиране отново е тъмна
   listeners.forEach((l) => l());
 }
 
 export const useScheme = () => useSyncExternalStore(subscribe, () => scheme);
 export const useColors = () => palettes[useScheme()];
 
-/** Styles that use the palette, made once per theme: `const useStyles = makeStyles((c) => ({ ... }))`. */
+/**
+ * Стилове, които използват палитрата, създадени веднъж за всяка тема: `const useStyles = makeStyles((c) => ({ ...
+ * }))`.
+ */
 export function makeStyles<T extends { [K in keyof T]: ViewStyle | TextStyle | ImageStyle }>(build: (c: Palette) => T) {
   const made: Partial<Record<Scheme, T>> = {};
   return () => {

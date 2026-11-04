@@ -4,9 +4,10 @@ import { useSyncExternalStore } from 'react';
 import { ApiError, getProgress, type Badge, type Progress } from './api';
 import { currentUserId } from './session';
 
-// The account's points, level, badges and weekly challenges (backend app/progress.py), and the moments worth a
-// celebration: points earned, a challenge done, a badge, a new level. What was last seen is kept per account in a
-// file, so each is celebrated once, on whatever screen the app is when it is noticed (components/Celebration.tsx).
+// Точките, нивото, значките и седмичните предизвикателства на профила (сървър app/progress.py) и моментите, които
+// заслужават празнуване: спечелени точки, изпълнено предизвикателство, значка, ново ниво. Последно видяното се пази
+// за всеки профил във файл, така че всичко се празнува веднъж, на екрана, на който е приложението при забелязването
+// му (components/Celebration.tsx).
 
 export type Celebration =
   | { kind: 'points'; points: number; label: string }
@@ -22,7 +23,7 @@ type State = { owner: string | null; progress: Progress | null; queue: Queued[] 
 let serial = 0;
 
 let state: State = { owner: null, progress: null, queue: [] };
-let unsupported = false; // a server from before points
+let unsupported = false; // сървър отпреди точките
 let lastCheck = 0;
 let running: Promise<void> | null = null;
 const listeners = new Set<() => void>();
@@ -37,7 +38,7 @@ const subscribe = (l: () => void) => {
   return () => listeners.delete(l);
 };
 
-/** The signed-in account's progress (null until first fetched, for guests, or on a server without points). */
+/* Напредъкът на влезлия профил (null до първото получаване, за гости или на сървър без точки). */
 export function useProgress() {
   const s = useSyncExternalStore(subscribe, () => state);
   return s.owner === currentUserId() ? s.progress : null;
@@ -45,7 +46,7 @@ export function useProgress() {
 
 export const useCelebrations = () => useSyncExternalStore(subscribe, () => state.queue);
 
-/** The celebration on screen is done with. */
+/* Показаното празнуване е приключило. */
 export const dismissCelebration = () => set({ queue: state.queue.slice(1) });
 
 const seenFile = (userId: string) => new File(Paths.document, `progress-${userId}.json`);
@@ -69,13 +70,13 @@ function saveSeen(userId: string, p: Progress, before: Seen | null) {
   };
   try {
     seenFile(userId).writeSync(JSON.stringify(seen));
-  } catch {} // not kept: celebrated again next time, no worse
+  } catch {} // не се пази: следващия път се празнува отново, което не вреди
 }
 
-/** What changed since `seen`, in the order it is shown: the points, the challenges, the badges, the level last. */
+/* Какво се е променило спрямо `seen` в реда на показване: точките, предизвикателствата, значките и накрая нивото. */
 export function celebrations(p: Progress, seen: Seen | null): Celebration[] {
   const unlocked = p.badges.filter((b) => b.unlocked);
-  // First time on this phone: the history so far in one card, not a card per old badge.
+  // Първи път на този телефон: досегашната история в една карта, а не по карта за всяка стара значка.
   if (!seen) return p.points > 0 ? [{ kind: 'welcome', points: p.points, badges: unlocked.length }] : [];
   const out: Celebration[] = [];
   const challenges = p.challenges.items.filter((c) => c.done && !seen.challenges.includes(`${p.challenges.week}:${c.id}`));
@@ -87,8 +88,10 @@ export function celebrations(p: Progress, seen: Seen | null): Celebration[] {
   return out;
 }
 
-/** Fetches the progress and queues what is new. Often called (after a scan, a post, a like, a test, on returning to
- * the app): at most every few seconds unless `now`. */
+/**
+ * Получава напредъка и нарежда новото за показване. Вика се често (след сканиране, публикация, харесване, тест, при
+ * връщане в приложението): най-много веднъж на няколко секунди, освен при `now`.
+ */
 export function checkProgress(now = false): Promise<void> {
   const userId = currentUserId();
   if (!userId || unsupported) return Promise.resolve();
@@ -98,7 +101,7 @@ export function checkProgress(now = false): Promise<void> {
     try {
       const p = await getProgress();
       lastCheck = Date.now();
-      if (currentUserId() !== userId) return; // signed out meanwhile
+      if (currentUserId() !== userId) return; // междувременно е излязъл от профила
       const seen = loadSeen(userId);
       const fresh = state.owner === userId ? state.queue : [];
       set({ owner: userId, progress: p, queue: [...fresh, ...celebrations(p, seen).map((c) => ({ ...c, id: ++serial }))] });

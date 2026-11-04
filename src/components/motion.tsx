@@ -31,15 +31,15 @@ import Animated, {
 
 import { font, makeStyles, useColors } from '@/theme';
 
-// The website's motion (assets/style.css): one calm curve, things rise 12px as they fade in, headlines come up line
-// by line, parts further down come up as they scroll into view, numbers count up. All of it follows the phone's
-// "reduce motion" setting.
+// Движението от сайта (assets/style.css): една спокойна крива, елементите се вдигат с 12px, докато се появяват,
+// заглавията излизат ред по ред, по-долните части се появяват при превъртане, числата се броят нагоре. Всичко следва
+// настройката на телефона за намалено движение.
 export const ease = Easing.bezier(0.22, 0.8, 0.24, 1);
 export const easeOut = ease;
 const STAGGER_MS = 60;
 const MAX_STAGGER = 8;
 
-/** Content arriving: fades in and rises 12px, item `index` 60 ms after the one before. */
+/* Появяващо се съдържание: избледнява навътре и се вдига с 12px, елемент `index` идва 60 мс след предходния. */
 export const enter = (index = 0) =>
   FadeInDown.duration(700)
     .delay(Math.min(index, MAX_STAGGER) * STAGGER_MS)
@@ -47,10 +47,10 @@ export const enter = (index = 0) =>
     .withInitialValues({ opacity: 0, transform: [{ translateY: 12 }] })
     .reduceMotion(ReduceMotion.System);
 
-/** A soft fade. */
+/* Меко появяване. */
 export const fade = FadeIn.duration(260).easing(ease).reduceMotion(ReduceMotion.System);
 
-/** A section switching in: a fade with a small rise. */
+/* Смяна на раздел: появяване с малко вдигане. */
 export const swap = FadeInDown.duration(380)
   .easing(ease)
   .withInitialValues({ opacity: 0, transform: [{ translateY: 8 }] })
@@ -64,11 +64,12 @@ export function Appear({ index, children, style }: { index?: number; children: R
   );
 }
 
-// --- Headlines ----------------------------------------------------------------------------------------------------
+// --- Заглавия
+// -------------------------------------------------------------------------------------------------------
 
 export type Line = string | { soft: string };
 
-/** A headline that comes up line by line from under its own baseline (the website's hero). */
+/* Заглавие, което излиза ред по ред изпод собствената си базова линия (главният раздел на сайта). */
 export function RiseLines({ lines, style, softColor, delay = 0 }: { lines: Line[]; style: TextStyle; softColor: string; delay?: number }) {
   const reduce = useReducedMotion();
   const h = (style.lineHeight ?? 44) * 1.08;
@@ -97,20 +98,21 @@ export function RiseLines({ lines, style, softColor, delay = 0 }: { lines: Line[
   );
 }
 
-// --- Scroll-in ----------------------------------------------------------------------------------------------------
+// --- Поява при превъртане
+// -------------------------------------------------------------------------------------------
 
 const ScrollContext = createContext<SharedValue<number> | null>(null);
 const RevealContext = createContext<SharedValue<number> | null>(null);
 
-/** Around a scroll view's content: lets each Reveal inside know when it scrolls into view. */
+/* Около съдържанието на превъртащ се изглед: съобщава на всеки Reveal вътре кога влиза в изгледа. */
 export function RevealScroll({ y, children }: { y: SharedValue<number>; children: ReactNode }) {
   return <ScrollContext.Provider value={y}>{children}</ScrollContext.Provider>;
 }
 
-/** 0 → 1 as the nearest Reveal comes into view, for drawings that play then. */
+/* 0 → 1, докато най-близкият Reveal влиза в изгледа, за рисунки, които се изпълняват тогава. */
 export const useReveal = () => useContext(RevealContext);
 
-/** Comes up (fades in, rises 18px) once it has scrolled into view, like the website's sections. */
+/* Появява се (избледнява навътре и се вдига с 18px), щом се превърти в изгледа, като разделите на сайта. */
 export function Reveal({ children, style, delay = 0 }: { children: ReactNode; style?: StyleProp<ViewStyle>; delay?: number }) {
   const scrollY = useContext(ScrollContext);
   const reduce = useReducedMotion();
@@ -139,16 +141,17 @@ export function Reveal({ children, style, delay = 0 }: { children: ReactNode; st
   );
 }
 
-// --- Touch --------------------------------------------------------------------------------------------------------
+// --- Докосване
+// ------------------------------------------------------------------------------------------------------
 
-/** A light tick under the finger: 'select' for a choice, 'tap' for a main action. Silent where there is none. */
+/* Леко потрепване под пръста: 'select' за избор, 'tap' за главно действие. Без усещане, където го няма. */
 export function haptic(kind: 'select' | 'tap' = 'select') {
   (kind === 'select' ? Haptics.selectionAsync() : Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light)).catch(() => {});
 }
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
-/** A Pressable that shrinks to 98% while held; `feedback` adds a light tick on press. */
+/* Pressable, който се свива до 98%, докато е натиснат; `feedback` добавя леко потрепване при натискане. */
 export function PressScale({
   style,
   onPressIn,
@@ -183,9 +186,10 @@ export function PressScale({
   );
 }
 
-// --- Loading and live states ------------------------------------------------------------------------------------
+// --- Зареждане и живи състояния
+// -------------------------------------------------------------------------------------
 
-/** A loading placeholder with a band of light passing over it (still when motion is reduced). */
+/* Заместител при зареждане с преминаваща светла лента (неподвижен при намалено движение). */
 export function Skeleton({ style }: { style?: StyleProp<ViewStyle> }) {
   const c = useColors();
   const reduce = useReducedMotion();
@@ -208,7 +212,7 @@ export function Skeleton({ style }: { style?: StyleProp<ViewStyle> }) {
   );
 }
 
-/** A small dot that breathes: "working on it". */
+/* Малка пулсираща точка: "работи се". */
 export function LiveDot({ color, size = 6 }: { color: string; size?: number }) {
   const reduce = useReducedMotion();
   const t = useSharedValue(0);
@@ -227,7 +231,7 @@ export function LiveDot({ color, size = 6 }: { color: string; size?: number }) {
   );
 }
 
-/** A number that counts up to `value` in 1.4 s (and glides on to a new one). */
+/* Число, което се брои до `value` за 1,4 с (и плавно преминава към ново). */
 export function CountUp({
   value,
   style,
@@ -262,11 +266,11 @@ export function CountUp({
   );
 }
 
-/** Words running slowly sideways without end (the website's ticker). */
+/* Думи, които бавно се движат настрани безкрайно (лентата от сайта). */
 export function Ticker({ items, style }: { items: string[]; style?: StyleProp<ViewStyle> }) {
   const s = useTickerStyles();
   const reduce = useReducedMotion();
-  const [w, setW] = useState(0); // one copy of the words
+  const [w, setW] = useState(0); // едно копие на думите
   const x = useSharedValue(0);
   useEffect(() => {
     if (!w || reduce) return;
@@ -304,9 +308,10 @@ const useTickerStyles = makeStyles((c) => ({
   word: { fontFamily: font.medium, fontSize: 19, letterSpacing: -0.6, color: c.muted },
 }));
 
-// --- Scroll -------------------------------------------------------------------------------------------------------
+// --- Превъртане
+// -----------------------------------------------------------------------------------------------------
 
-/** For the bar at the top of a page: its back and line appear once the page has scrolled a little. */
+/* За лентата най-горе на страницата: фонът и линията ѝ се появяват, щом страницата се превърти малко. */
 export function useBarStyle(y: SharedValue<number>) {
   return useAnimatedStyle(() => {
     const t = Math.min(1, Math.max(0, (y.value - 24) / 32));
@@ -314,7 +319,7 @@ export function useBarStyle(y: SharedValue<number>) {
   });
 }
 
-/** For a title in that bar: it comes in once the page's big title has gone. */
+/* За заглавие в тази лента: появява се, щом голямото заглавие на страницата изчезне. */
 export function useBarTitleStyle(y: SharedValue<number>, after = 60) {
   return useAnimatedStyle(() => {
     const t = Math.min(1, Math.max(0, (y.value - after) / 28));

@@ -4,7 +4,7 @@ import type { Method, Report, ServerScan } from './api';
 import { dayMonth } from './dates';
 import type { Quality } from './prefs';
 
-// Scans live on disk only: Paths.document/scans/<id>/{scan.json, video.mp4 or photos/, results}.
+// Сканиранията са само на диска: Paths.document/scans/<id>/{scan.json, video.mp4 или photos/, results}.
 export type ScanStatus =
   | 'capturing'
   | 'uploading'
@@ -20,29 +20,29 @@ export type Scan = {
   id: string;
   createdAt: number;
   status: ScanStatus;
-  photoCount: number; // older photo scans; video scans keep 0
+  photoCount: number; // по-стари сканирания със снимки; при видео остава 0
   videoSeconds?: number;
   jobId?: string;
   error?: string;
   longestMm?: number;
   flatBase?: boolean;
   report?: Report;
-  userId?: string; // the account it belongs to; none: made as a guest (joins the account at sign-in)
+  userId?: string; // профилът, на който принадлежи; без такъв: създадено като гост (присъединява се към профила при влизане)
   title?: string;
-  share?: string; // the public link's id while shared
-  published?: boolean; // in the community
-  quality?: Quality; // how the server processes it (missing: detailed)
-  imported?: boolean; // the video came from the gallery, not the app's camera
-  method?: Method; // an AI model (Pro) instead of a scan (missing: scan)
-  extendFrom?: string; // this video adds a missing side to that model (its job id)
+  share?: string; // номерът на публичния линк, докато е споделено
+  published?: boolean; // в общността
+  quality?: Quality; // как го обработва сървърът (липсва: подробно)
+  imported?: boolean; // видеото е от галерията, а не от камерата на приложението
+  method?: Method; // AI модел (Pro) вместо сканиране (липсва: сканиране)
+  extendFrom?: string; // това видео добавя липсваща страна към този модел (номер на задачата му)
 };
 
 const root = new Directory(Paths.document, 'scans');
 
 export const scanDir = (id: string) => new Directory(root, id);
 export const photosDir = (id: string) => new Directory(scanDir(id), 'photos');
-export const videoFile = (id: string) => new File(scanDir(id), 'video.mp4'); // iOS records MOV; the server reads either
-export const motionFile = (id: string) => new File(scanDir(id), 'motion.json'); // the phone's orientation while filming
+export const videoFile = (id: string) => new File(scanDir(id), 'video.mp4'); // iOS записва MOV; сървърът чете и двата формата
+export const motionFile = (id: string) => new File(scanDir(id), 'motion.json'); // положението на телефона по време на записа
 export const modelFile = (id: string) => new File(scanDir(id), 'model.glb');
 const metaFile = (id: string) => new File(scanDir(id), 'scan.json');
 
@@ -62,7 +62,10 @@ export function createScan(userId?: string, method: Method = 'scan'): Scan {
   return scan;
 }
 
-/** A scan of the account made on another phone (or whose local copy was deleted): a local record to open it by. */
+/**
+ * Сканиране на профила, направено на друг телефон (или с изтрито местно копие): местен запис, през който да се
+ * отвори.
+ */
 export function importScan(server: ServerScan, userId: string): Scan {
   const scan: Scan = {
     id: newId(),
@@ -82,7 +85,7 @@ export function importScan(server: ServerScan, userId: string): Scan {
   return scan;
 }
 
-/** The title shown for a scan: its own, or the date. */
+/* Показваното заглавие на сканиране: неговото или датата. */
 export const scanTitle = (scan: { title?: string; createdAt: number }) => scan.title || `Сканиране ${dayMonth(scan.createdAt)}`;
 
 export function saveScan(scan: Scan) {

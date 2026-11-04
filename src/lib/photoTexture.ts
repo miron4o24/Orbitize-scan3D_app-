@@ -3,14 +3,17 @@ import { File, Paths } from 'expo-file-system';
 import { ExternalTexture, Mesh, MeshStandardMaterial, type Object3D, type WebGLRenderer } from 'three';
 import type { GLTFLoaderPlugin, GLTFParser } from 'three/examples/jsm/loaders/GLTFLoader.js';
 
-// The server's GLB carries the photo texture as JPEG images. three.js decodes images with the browser's Image or
-// createImageBitmap, which React Native does not have, so the loader would fail on them. Instead each image is
-// written to a file, and once the GL context exists (ModelView) expo-gl decodes it straight into a GPU texture:
-// texImage2D accepts { localUri } (docs.expo.dev/versions/v57.0.0/sdk/gl-view).
+// GLB файлът от сървъра носи текстурата от снимките като JPEG изображения. three.js декодира изображения с Image или
+// createImageBitmap на браузъра, които React Native няма, затова зареждането би се провалило. Вместо това всяко
+// изображение се записва във файл и щом контекстът на GL съществува (ModelView), expo-gl го декодира директно в
+// текстура на видеокартата: texImage2D приема { localUri } (docs.expo.dev/versions/v57.0.0/sdk/gl-view).
 
 type Pending = { localUri: string; gl?: ExpoWebGLRenderingContext };
 
-/** GLTFLoader plugin: textures become ExternalTextures whose image waits in a file (`prefix` names the files). */
+/**
+ * Добавка за GLTFLoader: текстурите стават ExternalTexture, чието изображение чака във файл (`prefix` именува
+ * файловете).
+ */
 export function photoTexturePlugin(prefix: string) {
   return (parser: GLTFParser): GLTFLoaderPlugin => ({
     name: 'scan3d_photo_texture',
@@ -22,7 +25,7 @@ export function photoTexturePlugin(prefix: string) {
         const file = new File(Paths.cache, `${prefix}-texture-${source}.jpg`);
         file.writeSync(new Uint8Array(bytes));
         const texture = new ExternalTexture(null);
-        texture.flipY = false; // glTF's texture coordinates start at the image's top, as the file's rows do
+        texture.flipY = false; // координатите на текстурата в glTF започват от горната страна на изображението, както редовете във файла
         texture.userData = { localUri: file.uri } satisfies Pending;
         return texture;
       });
@@ -30,7 +33,7 @@ export function photoTexturePlugin(prefix: string) {
   });
 }
 
-/** Hands the model's photo textures to the GPU of this GL context (again after the view was recreated). */
+/* Предава текстурите на модела на видеокартата на този контекст на GL (отново, ако изгледът е пресъздаден). */
 export function uploadPhotoTextures(model: Object3D, gl: ExpoWebGLRenderingContext, renderer: WebGLRenderer) {
   model.traverse((o) => {
     if (!(o instanceof Mesh)) return;
@@ -41,10 +44,11 @@ export function uploadPhotoTextures(model: Object3D, gl: ExpoWebGLRenderingConte
       if (!pending.localUri || pending.gl === gl) continue;
       try {
         const texture = gl.createTexture();
-        // Bound through three's state so its record of what is bound stays right. Not renderer.resetState(): that
-        // reads gl.canvas, which expo-gl's context lacks, and the TypeError closed the app.
+        // Свързва се през състоянието на three, за да остане верен записът му за свързаното. Не с
+        // renderer.resetState(): той чете gl.canvas, което контекстът на expo-gl няма, и грешката TypeError затваряше
+        // приложението.
         renderer.state.bindTexture(gl.TEXTURE_2D, texture);
-        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false); // three sets it again before each of its own uploads
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false); // three го задава отново преди всяко свое качване
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, { localUri: pending.localUri } as never);
         gl.generateMipmap(gl.TEXTURE_2D);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
@@ -54,12 +58,12 @@ export function uploadPhotoTextures(model: Object3D, gl: ExpoWebGLRenderingConte
         map.sourceTexture = texture;
       } catch (e) {
         console.warn('Photo texture not shown:', e);
-        m.map = null; // the plain matte model rather than none
+        m.map = null; // обикновеният матов модел вместо нищо
         m.needsUpdate = true;
         continue;
       }
       pending.gl = gl;
-      // The texels are sRGB, uploaded as they are: decode them in the shader (three does so for video textures).
+      // Текселите са в sRGB и се качват непроменени: декодират се в шейдъра (three прави така за видео текстури).
       m.onBeforeCompile = (shader) => {
         shader.fragmentShader = shader.fragmentShader.replace(
           '#include <map_fragment>',

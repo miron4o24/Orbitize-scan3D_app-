@@ -1,16 +1,17 @@
 import type { StressCase, StressSummary } from './api';
 
-// The stress test's numbers for the user's choices. The server solves each kind of test once per model, at a 100 mm
-// longest side, for 1 kg (own weight: at 1 g/cm³), with stresses that do not depend on the plastic's stiffness
-// (backend app/stress.py). Here they are scaled, while the user picks: by the weight (proportional), by the real size
-// (a given weight: 1/size²; own weight: size), and by the material and infill picked.
+// Числата от теста за здравина за изборите на потребителя. Сървърът решава всеки вид тест веднъж за модел, при
+// най-дълга страна 100 мм, за 1 кг (собствено тегло: при 1 г/см³), с напрежения, които не зависят от твърдостта на
+// пластмасата (сървър app/stress.py). Тук те се мащабират, докато потребителят избира: по теглото (пропорционално),
+// по реалния размер (при зададено тегло: 1/размер²; при собствено тегло: размер) и по избраните материал и пълнеж.
 
 export type Material = 'pla' | 'petg' | 'abs' | 'resin';
 export type Infill = 20 | 50 | 100;
 export type Verdict = 'safe' | 'edge' | 'break';
 
-// Printed parts, typical datasheet values: stiffness (GPa), tensile strength (MPa), density (g/cm³). layered: printed
-// in layers (FDM), which hold together less well than the plastic itself, and with infill; resin prints are solid.
+// Отпечатани части, типични стойности от технически листове: твърдост (GPa), якост на опън (MPa), плътност (г/см³).
+// layered: отпечатани на слоеве (FDM), които се държат заедно по-слабо от самата пластмаса и имат пълнеж;
+// отпечатаното със смола е плътно.
 export const MATERIALS: Record<Material, { label: string; gpa: number; mpa: number; density: number; layered: boolean }> = {
   pla: { label: 'PLA', gpa: 3.5, mpa: 50, density: 1.24, layered: true },
   petg: { label: 'PETG', gpa: 2.1, mpa: 48, density: 1.27, layered: true },
@@ -18,11 +19,13 @@ export const MATERIALS: Record<Material, { label: string; gpa: number; mpa: numb
   resin: { label: 'Смола', gpa: 2.4, mpa: 45, density: 1.15, layered: false },
 };
 export const INFILLS: Infill[] = [20, 50, 100];
-const LAYERS = 0.7; // strength between FDM layers, of the plastic's own
-const SAFE = 2; // a safety factor this big: holds with room to spare
+const LAYERS = 0.7; // якост между слоевете при FDM като дял от тази на пластмасата
+const SAFE = 2; // коефициент на сигурност с такава големина: държи с резерв
 
-/** Strength (MPa), stiffness (GPa) and density (g/cm³) of the part as printed. Infill: the walls carry most of the
- * load, so strength and stiffness fall much less than the infill share does. */
+/**
+ * Якост (MPa), твърдост (GPa) и плътност (г/см³) на отпечатаната част. Пълнеж: стените носят по-голямата част от
+ * товара, затова якостта и твърдостта падат много по-малко от дела на пълнежа.
+ */
 export function effective(material: Material, infill: Infill) {
   const m = MATERIALS[material];
   const p = m.layered ? infill / 100 : 1;
@@ -34,28 +37,29 @@ export function effective(material: Material, infill: Infill) {
 }
 
 export type Outcome = {
-  scale: number; // the server's stresses times this are the real ones (MPa)
-  peak: number; // the highest stress, MPa
+  scale: number; // напреженията от сървъра, умножени по това, са реалните (MPa)
+  peak: number; // най-високото напрежение, MPa
   strength: number; // MPa
-  factor: number; // strength / peak
+  factor: number; // якост / пик
   verdict: Verdict;
-  limit: number; // what breaks it: kg, or for a drop the height in m (0: not even a drop from nothing)
+  limit: number; // какво го чупи: кг, а при падане височината в м (0: дори падане от нулева височина)
   massG: number;
 };
 
-/** The test at `load` (kg; for a drop the height in m), for the material, infill and real longest side (mm). */
+/* Тестът при `load` (кг; при падане височината в м) за материала, пълнежа и реалната най-дълга страна (мм). */
 export function outcome(s: StressSummary, load: number, material: Material, infill: Infill, longestMm: number): Outcome {
   const e = effective(material, infill);
   const k = longestMm / s.ref_mm;
   let scale: number;
   let limit: number;
   if (s.case === 'drop') {
-    // Landing on its base, the object stops in the distance it squashes: its own weight's stresses times
-    // 1 + √(1 + 2h / sag), the sag being how far its own weight presses it down.
-    const own = e.density * k; // own-weight stresses grow with density and size
+    // При приземяване на основата си предметът спира в разстоянието, на което се сплесква: напреженията от
+    // собственото му тегло, умножени по 1 + √(1 + 2h / sag), където sag показва колко го притиска собственото му
+    // тегло.
+    const own = e.density * k; // напреженията от собствено тегло растат с плътността и размера
     const sag = Math.max(((s.sag_m ?? 0) * e.density * k ** 2) / e.gpa, 1e-15);
     scale = own * (1 + Math.sqrt(1 + (2 * load) / sag));
-    const breaks = e.mpa / (s.max_mpa * own); // the factor that breaks it
+    const breaks = e.mpa / (s.max_mpa * own); // множителят, който го чупи
     limit = breaks <= 2 ? 0 : (sag * ((breaks - 1) ** 2 - 1)) / 2;
   } else {
     scale = load / k ** 2;
@@ -89,15 +93,16 @@ export const kgText = (kg: number) => (kg >= 1000 ? `${num(kg / 1000)} т` : kg 
 export const mText = (m: number) => (m >= 1 ? `${num(m)} м` : `${Math.round(m * 100)} см`);
 export const loadText = (kind: StressCase, load: number) => (kind === 'drop' ? mText(load) : kgText(load));
 
-/** "Holds up to": the limit in words, kept to what is believable. */
+/* "Издържа до": границата с думи, в рамките на правдоподобното. */
 export function limitText(kind: StressCase, limit: number) {
   if (kind === 'drop') return limit <= 0 ? 'Не издържа падане' : limit > 20 ? 'Над 20 м' : mText(limit);
   return limit > 5000 ? 'Над 5 т' : kgText(limit);
 }
 
-// --- Colours --------------------------------------------------------------------------------------------------
+// --- Цветове -------------------------------------------------------------------------------------------------------
 
-// From no stress to the strength: blue, cyan, green, yellow, orange, red (sRGB, 0..1); at or past it, red.
+// От липса на напрежение до якостта: синьо, циан, зелено, жълто, оранжево, червено (sRGB, 0..1); при нея и над нея:
+// червено.
 const STOPS: [number, [number, number, number]][] = [
   [0, [0.15, 0.35, 0.92]],
   [0.15, [0.02, 0.71, 0.83]],
@@ -108,7 +113,7 @@ const STOPS: [number, [number, number, number]][] = [
 ];
 export const UNTESTED: [number, number, number] = [0.42, 0.42, 0.45];
 
-/** The colour (sRGB) for a stress as a share of the strength; negative: not tested. */
+/* Цветът (sRGB) за напрежение като дял от якостта; отрицателно: не е тествано. */
 export function stressColor(share: number): [number, number, number] {
   if (share < 0) return UNTESTED;
   if (share >= 1) return STOPS[STOPS.length - 1][1];
@@ -120,5 +125,5 @@ export function stressColor(share: number): [number, number, number] {
   return [0, 1, 2].map((j) => ca[j] + (cb[j] - ca[j]) * t) as [number, number, number];
 }
 
-/** The legend's gradient, as CSS-like stops for expo-linear-gradient. */
+/* Градиентът на легендата като точки за expo-linear-gradient, подобни на CSS. */
 export const LEGEND = STOPS.map(([at, [r, g, b]]) => ({ at, color: `rgb(${Math.round(r * 255)},${Math.round(g * 255)},${Math.round(b * 255)})` }));

@@ -18,7 +18,7 @@ import { Avatar } from './Avatar';
 import { ease, easeOut, haptic, Skeleton } from './motion';
 import { ViewerGround } from './ScanCard';
 
-/** A community post's author: photo (or initials), name and level. */
+/* Авторът на публикация в общността: снимка (или инициали), име и ниво. */
 export function AuthorLine({ post, size = 18, date }: { post: Post; size?: number; date?: boolean }) {
   const s = useStyles();
   const a = post.author;
@@ -38,7 +38,7 @@ export function AuthorLine({ post, size = 18, date }: { post: Post; size?: numbe
   );
 }
 
-/** The heart with the count. It pops when it fills. */
+/* Сърцето с броя. Подскача, когато се запълни. */
 export function LikeButton({ liked, likes, onPress, big }: { liked: boolean; likes: number; onPress: () => void; big?: boolean }) {
   const c = useColors();
   const s = useStyles();
@@ -97,8 +97,10 @@ function PostThumb({ post, zoom }: { post: Post; zoom: SharedValue<number> }) {
   );
 }
 
-/** A post in the community grid: the model's picture with its likes, then its name and author. Pressed, it dips and
- * the picture leans in, as the scan cards do. */
+/**
+ * Публикация в мрежата на общността: изображение на модела с харесванията, после името и авторът. При натискане
+ * хлътва и изображението се навежда, както при картите на сканирания.
+ */
 export function PostCard({ post, onPress }: { post: Post; onPress: () => void }) {
   const c = useColors();
   const s = useStyles();
