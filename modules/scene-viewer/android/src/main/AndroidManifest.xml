@@ -1,0 +1,11 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <application>
+    <!-- Portrait and own config changes: turning the phone must not restart the AR session. -->
+    <activity
+      android:name="expo.modules.sceneviewer.ArActivity"
+      android:exported="false"
+      android:screenOrientation="portrait"
+      android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode"
+      android:theme="@android:style/Theme.DeviceDefault.NoActionBar" />
+  </application>
+</manifest>

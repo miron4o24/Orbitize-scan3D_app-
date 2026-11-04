@@ -7,6 +7,7 @@ services:
     environment:
       API_TOKEN: ${API_TOKEN:?set API_TOKEN in backend/.env}
       MAX_IMAGE_SIZE: ${MAX_IMAGE_SIZE:-1600}
+      MAX_VIDEO_MB: ${MAX_VIDEO_MB:-600}
     volumes:
       - scan3d-data:/data
     restart: unless-stopped

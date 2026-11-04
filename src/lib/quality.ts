@@ -41,10 +41,10 @@ export function measure(rgba: Uint8Array, width: number, height: number): FrameM
 
 export function judge(m: FrameMetrics) {
   const warnings: string[] = [];
-  if (m.brightness < THRESHOLDS.minBrightness) warnings.push('Too dark – add light');
-  if (m.clipped > THRESHOLDS.maxClipped) warnings.push('Overexposed – avoid direct light/glare');
+  if (m.brightness < THRESHOLDS.minBrightness) warnings.push('Твърде тъмно: добавете светлина');
+  if (m.clipped > THRESHOLDS.maxClipped) warnings.push('Твърде светло: избягвайте пряка светлина и отблясъци');
   const blurry = m.sharpness < THRESHOLDS.minSharpness;
-  if (blurry) warnings.push('Blurry – hold steady');
+  if (blurry) warnings.push('Размазано: дръжте телефона стабилно');
   // Blur ruins feature matching, so drop the frame; exposure issues are only warned about.
   return { reject: blurry, warnings };
 }

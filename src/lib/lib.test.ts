@@ -2,7 +2,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { angleBetween, cellOf, elevation, isNewAngle, viewDir, type Vec3 } from './coverage.ts';
+import { elevation, isUsableAim, viewDir, type Vec3 } from './coverage.ts';
+import { OrbitTracker } from './orbit.ts';
 import { judge, measure } from './quality.ts';
 
 const W = 128;
@@ -54,17 +55,63 @@ test('view direction: flat phone looks down, upright phone looks north', () => {
   assert.ok(close(viewDir({ alpha: Math.PI / 2, beta: Math.PI / 2, gamma: 0 }), [-1, 0, 0]));
 });
 
-test('cells and auto-capture spacing', () => {
+test('elevation and usable aim', () => {
   const tilt = (deg: number) => (deg * Math.PI) / 180;
   const v = viewDir({ alpha: 0, beta: tilt(60), gamma: 0 }); // 30° below horizon
   assert.equal(Math.round(elevation(v)), -30);
-  assert.deepEqual(cellOf(v), { band: 1, sector: 0 });
+  assert.equal(isUsableAim(v), true);
+  assert.equal(isUsableAim(viewDir({ alpha: 0, beta: tilt(120), gamma: 0 })), false); // aimed upward
+  assert.equal(isUsableAim(viewDir({ alpha: 0, beta: 0, gamma: 0 })), false); // straight down
+});
 
-  const turned = viewDir({ alpha: tilt(15), beta: tilt(60), gamma: 0 });
-  assert.ok(angleBetween(v, turned) > 12);
-  assert.equal(isNewAngle(turned, [v]), true);
-  assert.equal(isNewAngle(v, [v]), false);
-  assert.equal(isNewAngle(viewDir({ alpha: 0, beta: tilt(120), gamma: 0 }), []), false); // aimed upward
+// Walks `turnDeg` around the object at `degPerS`, looking `downDeg` below the horizon; 20 Hz like the app.
+function walk(o: OrbitTracker, from: number, turnDeg: number, degPerS: number, downDeg: number, t0: number) {
+  const rad = (d: number) => (d * Math.PI) / 180;
+  const steps = Math.round((turnDeg / degPerS) * 20);
+  for (let i = 1; i <= steps; i++)
+    o.update(viewDir({ alpha: rad(from + (turnDeg * i) / steps), beta: rad(90 - downDeg), gamma: 0 }), degPerS, t0 + i / 20);
+  return t0 + steps / 20;
+}
+
+test('orbit: two circles, the second from higher up, complete the scan', () => {
+  const o = new OrbitTracker();
+  let t = walk(o, 0, 200, 12, 10, 0);
+  assert.equal(o.state.loop, 0);
+  assert.equal(o.state.pace, 'good');
+  assert.ok(o.firstLoopFraction > 0.5 && o.firstLoopFraction < 1);
+  t = walk(o, 200, 160, 12, 10, t);
+  assert.equal(o.state.loop, 1);
+  // Going round again at the same height does not count for the second circle.
+  t = walk(o, 360, 120, 12, 10, t);
+  assert.equal(o.state.aim, 'higher');
+  assert.equal(o.state.covered[1].filter(Boolean).length, 0);
+  walk(o, 480, 370, 12, 45, t);
+  assert.equal(o.done, true);
+});
+
+test('orbit: the first circle only counts near the object’s height', () => {
+  const o = new OrbitTracker();
+  walk(o, 0, 360, 12, 40, 0); // filmed from well above, like a 6 cm speaker from standing height
+  assert.equal(o.state.aim, 'lower');
+  assert.equal(o.state.covered[0].filter(Boolean).length, 0);
+});
+
+test('orbit: the second circle must not look down too steeply', () => {
+  const o = new OrbitTracker();
+  const t = walk(o, 0, 360, 12, 10, 0);
+  assert.equal(o.state.loop, 1);
+  walk(o, 360, 360, 12, 70, t); // nearly straight down: no overlap with the first circle
+  assert.equal(o.state.aim, 'lower');
+  assert.equal(o.state.covered[1].filter(Boolean).length, 0);
+});
+
+test('orbit: turning too fast covers nothing', () => {
+  const o = new OrbitTracker();
+  walk(o, 0, 360, 45, 10, 0);
+  assert.equal(o.state.pace, 'fast');
+  // Only the first ~0.5 s counts, while the smoothed speed catches up.
+  assert.ok(o.state.covered[0].filter(Boolean).length <= 4, `${o.state.covered[0].filter(Boolean).length}`);
+  assert.equal(o.state.loop, 0);
 });
 
 test('print export: Y-up model becomes Z-up and is scaled to the requested size', async () => {
