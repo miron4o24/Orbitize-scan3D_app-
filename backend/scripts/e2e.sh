@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# End-to-end test through the HTTP API, exactly like the app: create job, upload, start, poll, download.
-# Usage: API_TOKEN=... [API_URL=http://localhost:8000] scripts/e2e.sh <folder of .jpg | video.mp4> [out dir]
+# Тест от край до край през HTTP, точно като приложението: създаване на задача, качване, стартиране, следене, изтегляне.
+# Употреба: API_TOKEN=... [API_URL=http://localhost:8000] scripts/e2e.sh <папка с .jpg | video.mp4> [изходна папка]
 set -euo pipefail
 API=${API_URL:-http://localhost:8000}
 H="Authorization: Bearer ${API_TOKEN:?set API_TOKEN}"
@@ -11,7 +11,7 @@ field() { python3 -c "import sys, json; print(json.load(sys.stdin).get('$1') or 
 id=$(curl -fsS -X POST -H "$H" "$API/jobs" | field id)
 echo "job $id"
 if [ -f "$src" ]; then
-  # Same 8 MB chunks as the app.
+  # Същите части от 8 MB като в приложението.
   size=$(stat -c %s "$src")
   chunk=$((8 * 1024 * 1024))
   for ((off = 0; off < size; off += chunk)); do

@@ -1,5 +1,5 @@
-# End-to-end test through the HTTP API, exactly like the app: create job, upload, start, poll, download.
-# Usage (backend folder): powershell -ExecutionPolicy Bypass -File scripts\e2e.ps1 <photo folder | video.mp4> [out dir] [api url]
+﻿# Тест от край до край през HTTP, точно като приложението: създаване на задача, качване, стартиране, следене, изтегляне.
+# Употреба (папка backend): powershell -ExecutionPolicy Bypass -File scripts\e2e.ps1 <папка със снимки | video.mp4> [изходна папка] [адрес на сървъра]
 param([Parameter(Mandatory = $true)][string]$Source, [string]$Out = 'e2e-out', [string]$Api)
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'env.ps1')
@@ -10,7 +10,7 @@ $id = (Invoke-RestMethod -Method Post "$Api/jobs" -Headers $h).id
 Write-Host "job $id"
 $item = Get-Item $Source
 if ($item -is [IO.FileInfo]) {
-  # Same 8 MB chunks as the app.
+  # Същите части от 8 MB като в приложението.
   $size = $item.Length
   $buf = New-Object byte[] 8MB
   $fs = [IO.File]::OpenRead($item.FullName)
@@ -37,7 +37,7 @@ Invoke-RestMethod -Method Post "$Api/jobs/$id/start" -Headers $h -ContentType 'a
 $clock = [Diagnostics.Stopwatch]::StartNew()
 $last = ''
 while ($true) {
-  # Windows PowerShell 5.1 sometimes drops a reused connection; the app also just retries the next poll.
+  # Windows PowerShell 5.1 понякога губи повторно използвана връзка; приложението също просто опитва при следващата проверка.
   try { $status = Invoke-RestMethod "$Api/jobs/$id" -Headers $h -TimeoutSec 30 }
   catch { Write-Host "  (poll failed: $($_.Exception.Message); retrying)"; Start-Sleep 5; continue }
   $now = "$($status.state) $($status.step)".Trim()

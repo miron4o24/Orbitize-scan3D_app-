@@ -224,17 +224,36 @@ export async function uploadVideo(jobId: string, file: File, from: number, onPro
 // GLB файлове с текстура от снимките (екранът за преглед я декодира през expo-gl: lib/photoTexture.ts). Сървърът
 // изпраща текстурата само при заявка, защото по-стари версии на приложението се провалят при изображения в GLB.
 // smooth: допълнителни заглаждания (1-3) на файла за печат, които махат вълните от сканирането.
-export const resultUrl = (jobId: string, format: ResultFormat, longestMm?: number, smooth?: number) => {
-  const query = [longestMm && `longest_mm=${longestMm}`, format === 'glb' && 'texture=true', smooth && `smooth=${smooth}`]
+export const resultUrl = (jobId: string, format: ResultFormat, longestMm?: number, smooth?: number, view?: boolean) => {
+  const query = [
+    longestMm && `longest_mm=${longestMm}`,
+    format === 'glb' && 'texture=true',
+    smooth && `smooth=${smooth}`,
+    view && 'view=true',
+  ]
     .filter(Boolean)
     .join('&');
   return `${API_URL}/jobs/${jobId}/result.${format}${query ? `?${query}` : ''}`;
 };
 
-export const downloadResult = (jobId: string, format: ResultFormat, dest: File, longestMm?: number, smooth?: number) =>
+export const downloadResult = (
+  jobId: string,
+  format: ResultFormat,
+  dest: File,
+  longestMm?: number,
+  smooth?: number,
+  view?: boolean,
+) =>
   retrying(() =>
-    File.downloadFileAsync(resultUrl(jobId, format, longestMm, smooth), dest, { headers: headers(), idempotent: true }),
+    File.downloadFileAsync(resultUrl(jobId, format, longestMm, smooth, view), dest, {
+      headers: headers(),
+      idempotent: true,
+    }),
   );
+
+/** Лекият файл за преглед на модела: зарежда се много по-бързо; файловете за печат остават с пълните детайли. */
+export const downloadForViewing = (jobId: string, dest: File) =>
+  downloadResult(jobId, 'glb', dest, undefined, undefined, true);
 
 // Подписани линкове към модела в реален размер за AR (lib/ar.ts), които браузърът отваря без нашия ключ: `page`
 // (сървъри отпреди него изпращат само `url`, тоест GLB). Сървърът първо създава файла, затова това отнема няколко
@@ -403,8 +422,9 @@ export async function uploadPrintPhoto(id: string, file: File) {
   await check(res, 'upload photo');
 }
 
-export const downloadPost = (id: string, dest: File) =>
-  retrying(() => File.downloadFileAsync(`${API_URL}/community/${id}/model.glb`, dest, { headers: headers(), idempotent: true }));
+// view: лекият файл за преглед; без него: пълните детайли за изнасяне.
+export const downloadPost = (id: string, dest: File, view = true) =>
+  retrying(() => File.downloadFileAsync(`${API_URL}/community/${id}/model.glb${view ? '?view=true' : ''}`, dest, { headers: headers(), idempotent: true }));
 
 // --- Тест за здравина --- Сървърът изчислява всеки вид тест веднъж за модел (сървър app/stress.py): при най-дълга
 // страна ref_mm и за 1 кг (собствено тегло: при 1 г/см³). lib/stress.ts го мащабира към избраните тегло, височина,

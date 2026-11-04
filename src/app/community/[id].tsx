@@ -120,10 +120,13 @@ export default function CommunityPost() {
   const exportAs = (format: Format) =>
     run(format, async () => {
       if (!model || !post) return;
-      let file = new File(Paths.cache, `post-${id}.glb`);
+      // Изнасянето е с пълните детайли, а показваният модел е лекият файл за преглед.
+      const full = new File(Paths.cache, `post-${id}-full.glb`);
+      if (!full.exists) await downloadPost(id, full, false);
+      let file = full;
       if (format !== 'glb') {
         file = new File(Paths.cache, `post-${id}-${Math.round(post.longest_mm)}mm.${format}`);
-        file.writeSync(exportForPrint(model, format, post.longest_mm));
+        file.writeSync(exportForPrint(await parseGlb(full, `post-${id}-full`), format, post.longest_mm));
       }
       const mime = FORMATS.find((f) => f.format === format)!.mime;
       await Sharing.shareAsync(file.uri, { mimeType: mime, dialogTitle: 'Изнасяне на 3D модел' });

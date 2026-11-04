@@ -25,9 +25,9 @@ import io.github.sceneview.ar.node.AnchorNode
 import io.github.sceneview.node.ModelNode
 import java.io.File
 
-// The model in the room, inside the app: ARCore finds a floor or table, the model is put on it as soon as one is
-// found (at its real size: the file is in metres with its base at the origin) and casts a shadow there. Tap another
-// spot to move it, drag to slide it, twist with two fingers to turn it; pinch only when not at real size.
+// Моделът в стаята, вътре в приложението: ARCore намира под или маса и моделът се поставя върху тях веднага щом
+// бъдат намерени (в реален размер: файлът е в метри с основа в началото) и хвърля сянка там. Докоснете друго
+// място, за да го преместите, влачете го, завъртете с два пръста; мащабиране само когато не е в реален размер.
 class ArActivity : ComponentActivity() {
   private lateinit var sceneView: ARSceneView
   private lateinit var hint: TextView
@@ -55,12 +55,12 @@ class ArActivity : ComponentActivity() {
     root.addView(hint, FrameLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT, Gravity.BOTTOM))
     setContentView(root)
 
-    // Keep the buttons and text clear of the status and navigation bars.
+    // Бутоните и текстът не бива да застъпват лентите за състояние и навигация.
     ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
       val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
       val m = dp(16)
       for (view in listOf(close, name, hint)) {
-        val params = view.layoutParams as? FrameLayout.LayoutParams ?: continue // the name is left out when empty
+        val params = view.layoutParams as? FrameLayout.LayoutParams ?: continue // името се пропуска, когато е празно
         if (view == hint) params.setMargins(m, m, m, bars.bottom + m) else params.setMargins(m, bars.top + m, m, m)
         view.requestLayout()
       }
@@ -91,7 +91,7 @@ class ArActivity : ComponentActivity() {
       }
       onTrackingFailureChanged = { reason -> showHint(reason) }
       onSessionUpdated = { _, _ ->
-        // Put the model on the first floor or table seen in the middle of the screen.
+        // Поставя модела върху първия под или маса, видени в средата на екрана.
         if (anchorNode == null && modelNode != null) {
           hitTestAR(planeTypes = setOf(Plane.Type.HORIZONTAL_UPWARD_FACING))?.let { place(it.createAnchor()) }
         }
@@ -111,8 +111,8 @@ class ArActivity : ComponentActivity() {
     }
     try {
       val instance = sceneView.modelLoader.createModelInstance(file)
-      // A scan's photo colours already hold its look. Filament still gives every surface a 4% mirror shine, which
-      // with the room's light (ENVIRONMENTAL_HDR) made scans look oiled: no shine at all (ior 1 = no reflection).
+      // Цветовете от снимките вече съдържат вида на сканирането. Filament все пак дава 4% огледален блясък на всяка повърхност,
+      // който със светлината в стаята (ENVIRONMENTAL_HDR) ги правеше мазни: без блясък (ior 1 = без отражение).
       for (material in instance.materialInstances) {
         if (material.material.hasParameter("roughnessFactor")) material.setParameter("roughnessFactor", 1f)
         if (material.material.hasParameter("ior")) material.setParameter("ior", 1f)
@@ -165,7 +165,7 @@ class ArActivity : ComponentActivity() {
     setPadding(dp(16), dp(10), dp(16), dp(10))
     background = GradientDrawable().apply {
       cornerRadius = dp(14).toFloat()
-      setColor(Color.argb(184, 9, 9, 11)) // the app's dark background, see-through
+      setColor(Color.argb(184, 9, 9, 11)) // тъмният фон на приложението, прозрачен
       setStroke(dp(1), Color.argb(20, 255, 255, 255))
     }
   }

@@ -381,7 +381,8 @@ def delete_job(job_id: str, p: Principal = Depends(principal)):
 
 @app.get("/jobs/{job_id}/result.{fmt}")
 def result(job_id: str, fmt: str, longest_mm: float | None = Query(None, gt=0, le=2000), texture: bool = False,
-           smooth: int = Query(0, ge=0, le=M.MAX_SMOOTH), p: Principal = Depends(principal)):  # fmt: skip
+           smooth: int = Query(0, ge=0, le=M.MAX_SMOOTH), view: bool = False,
+           p: Principal = Depends(principal)):  # fmt: skip
     """texture: GLB с текстура от снимки, ако задачата има такава. Само при заявка: компилации отпреди това се
     провалят при изображения в GLB (React Native няма декодер на изображения за three.js). smooth: допълнителни
     заглаждания за печат (app/mesh.py smooth); не и за GLB с текстура, чиято повърхност е собствена."""
@@ -390,6 +391,9 @@ def result(job_id: str, fmt: str, longest_mm: float | None = Query(None, gt=0, l
     if existing(job_id, p)["state"] != "done":
         raise HTTPException(409, "Моделът още не е готов.")
     job = jobs.job_dir(job_id)
+    light = AR.view_file(job) if view and fmt == "glb" and texture and not longest_mm else None  # за преглед, не за печат
+    if light:
+        return Response(light.read_bytes(), media_type=M.MEDIA_TYPES[fmt])
     mesh = trimesh.load(job / "model.ply", force="mesh")
     textured = TX.load(job) if fmt == "glb" and texture else None
     if textured is None:
