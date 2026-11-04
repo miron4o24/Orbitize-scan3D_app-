@@ -15,8 +15,8 @@ type Props = {
   onClose: () => void;
 };
 
-// The model over the whole screen. A model can sit in one view at a time, so the viewer drops its own small view
-// while this is open; the back button closes it.
+// Моделът на целия екран. Модел може да стои само в един изглед наведнъж, затова екранът за преглед маха малкия си
+// изглед, докато това е отворено; бутонът за връщане го затваря.
 export function FullscreenModel({ visible, model, title, wireframe, onWireframe, onClose }: Props) {
   const c = useColors();
   const s = useStyles();

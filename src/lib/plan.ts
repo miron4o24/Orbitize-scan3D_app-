@@ -1,11 +1,14 @@
 import type { LimitKind, Profile } from './session';
 
-// The free plan's limits as the app shows them (backend app/plans.py counts them): stress tests on a few models, AR
-// for a few scans; Pro has none. A model already counted can be used again freely.
+// Ограниченията на безплатния план, както ги показва приложението (сървър app/plans.py ги брои): тестове за здравина
+// на няколко модела и AR за няколко сканирания; Pro няма ограничения. Вече преброен модел може да се използва отново
+// свободно.
 
 export type Allowance = { unlimited: true } | { unlimited: false; left: number; limit: number; counted: boolean };
 
-/** What the account may still do of `kind` for this model; null: no limits to show (guests, older servers). */
+/**
+ * Какво още може профилът от вид `kind` за този модел; null: няма ограничения за показване (гости, по-стари сървъри).
+ */
 export function allowance(user: Profile | null | undefined, kind: LimitKind, jobId: string | undefined): Allowance | null {
   const l = user?.limits?.[kind];
   if (!l) return null;
@@ -13,10 +16,10 @@ export function allowance(user: Profile | null | undefined, kind: LimitKind, job
   return { unlimited: false, left: Math.max(0, l.limit - l.used), limit: l.limit, counted: !!jobId && l.refs.includes(jobId) };
 }
 
-/** True when the free plan's uses are spent and this model is not one of them. */
+/* True, когато възможностите на безплатния план са изчерпани и този модел не е сред тях. */
 export const blocked = (a: Allowance | null) => !!a && !a.unlimited && !a.counted && a.left === 0;
 
-/** A short line under the button: how many are left, or nothing for Pro and models already counted. */
+/* Кратък ред под бутона: колко остават или нищо за Pro и вече преброени модели. */
 export function allowanceNote(a: Allowance | null): string | undefined {
   if (!a || a.unlimited || a.counted) return undefined;
   if (a.left === 0) return 'Използвахте всички безплатни. С Pro са без ограничение.';

@@ -6,16 +6,16 @@ import type { Method } from './api';
 import { createScan, deleteScan, updateScan, videoFile } from './scans';
 import { currentUserId } from './session';
 
-// A walk-around video filmed earlier (with the phone's own camera app) instead of in the app. The server treats it
-// like an app recording, except that there is no orientation log for very plain objects. Pro's AI models take any
-// video.
+// Видео с обиколка, заснето по-рано (с камерата на телефона), а не в приложението. Сървърът го обработва като запис
+// от приложението, но без дневник на положението за съвсем едноцветни предмети. AI моделите на Pro приемат всяко
+// видео.
 
-const MAX_BYTES = 600 * 1024 * 1024; // the server's MAX_VIDEO_MB
+const MAX_BYTES = 600 * 1024 * 1024; // MAX_VIDEO_MB на сървъра
 const MIN_SECONDS = 10;
 
 export class ImportProblem extends Error {}
 
-/** Lets the user pick a video and opens it for upload. False when nothing was picked. */
+/* Дава на потребителя да избере видео и го отваря за качване. False, когато нищо не е избрано. */
 export async function importVideo(method: Method = 'scan'): Promise<boolean> {
   const picked = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['videos'], allowsEditing: false, quality: 1 });
   if (picked.canceled || !picked.assets?.length) return false;
@@ -28,7 +28,7 @@ export async function importVideo(method: Method = 'scan'): Promise<boolean> {
   try {
     const src = new File(asset.uri);
     const dest = videoFile(scan.id);
-    // The picker hands over its own copy in the app's cache: moving it costs nothing.
+    // Прозорецът за избор дава собствено копие в кеша на приложението: преместването му не струва нищо.
     try {
       src.moveSync(dest);
     } catch {

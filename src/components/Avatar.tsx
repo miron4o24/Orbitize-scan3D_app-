@@ -9,8 +9,10 @@ import { brand, font } from '@/theme';
 
 type Person = Pick<Profile, 'name' | 'has_avatar' | 'google_picture'>;
 
-/** The own uploaded photo, else the Google photo, else the initials on the brand gradient. photo: where someone
- * else's uploaded photo is (a community author's); the signed-in user's own by default. */
+/**
+ * Собствената качена снимка, иначе снимката от Google, иначе инициалите върху градиента на марката. photo: къде е
+ * качената снимка на някой друг (автор в общността); по подразбиране тази на влезлия потребител.
+ */
 export function Avatar({ user, size, photo }: { user: Person | null; size: number; photo?: string }) {
   const version = getAvatarVersion();
   const [failed, setFailed] = useState<string | null>(null);

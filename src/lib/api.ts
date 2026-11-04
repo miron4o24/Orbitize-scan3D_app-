@@ -4,8 +4,8 @@ import { File, FileMode } from 'expo-file-system';
 import { clearSession, sessionToken, type Profile } from './session';
 
 export const API_URL = (process.env.EXPO_PUBLIC_API_URL ?? '').replace(/\/$/, '');
-// Requests carry only the signed-in account's own session token. The server's admin token must never be in the app:
-// anything in the app binary can be extracted.
+// Заявките носят само сесийния ключ на влезлия профил. Администраторският ключ на сървъра никога не трябва да е в
+// приложението: всичко в инсталационния файл може да бъде извлечено.
 
 export type JobState =
   | 'uploading'
@@ -24,40 +24,41 @@ export type Job = {
   video_bytes: number;
   error?: string;
   report?: Report | null;
-  step?: string | null; // the tool running now, e.g. "camera solving"
-  ahead?: number | null; // while waiting: how many go first, the one being processed among them
+  step?: string | null; // инструментът, който работи в момента, например "camera solving"
+  ahead?: number | null; // докато чака: колко са преди него, включително обработваната в момента
 };
 
 export type Report = {
-  dimensions_mm: [number, number, number]; // at the default 100 mm longest side
+  dimensions_mm: [number, number, number]; // при подразбиращата се най-дълга страна от 100 мм
   triangles: number;
   watertight: boolean;
   photos_used?: number;
   photos_total?: number;
   seconds?: number;
-  object_width?: number; // median share of the frame width the object spanned
-  ai?: AiMethod; // made by an AI (Pro) rather than scanned
-  object?: string; // what the AI saw, in Bulgarian
-  real_mm?: number | null; // the real longest side: Claude's estimate, or a text change's result
-  // at the 100 mm size, for the print estimate (lib/printEstimate.ts); older scans: getGeometry
+  object_width?: number; // медианният дял от ширината на кадъра, който заема предметът
+  ai?: AiMethod; // създаден от AI (Pro), а не сканиран
+  object?: string; // какво е видял AI, на български
+  real_mm?: number | null; // реалната най-дълга страна: оценка на AI или резултат от текстова промяна
+  // при размер 100 мм, за оценката на печата (lib/printEstimate.ts); за по-стари сканирания: getGeometry
   volume_mm3?: number;
   area_mm2?: number;
-  edit?: { prompt: string; changes: string[]; source: string | null }; // made by a text change (Pro)
+  edit?: { prompt: string; changes: string[]; source: string | null }; // създаден чрез текстова промяна (Pro)
 };
 
 export type Geometry = { dimensions_mm: [number, number, number]; volume_mm3: number; area_mm2: number };
 
-// Pro (backend app/ai.py): the ~5 minute express scan, and the AI models: single (free, on the server: the object's
-// AI-cut outline in every frame with measured and AI depth fused within it, the photos as its texture; TripoSR from
-// one frame as a fallback), claude and photo (paid services, off until the server has their keys). edit: a text change
-// of a model (backend app/edit.py), made from the viewer.
+// Pro (сървър app/ai.py): експресното сканиране за около 5 минути и AI моделите: single (безплатен, на сървъра:
+// очертанията на предмета, изрязани с AI във всеки кадър, в които се сливат измерената и AI дълбочината, със снимките
+// като текстура; TripoSR от един кадър е резервен вариант), claude и photo (платени услуги, изключени, докато
+// сървърът няма ключове за тях). edit: текстова промяна на модел (сървър app/edit.py), направена от екрана за
+// преглед.
 export type AiMethod = 'single' | 'claude' | 'photo';
 export type ProMethod = 'express' | 'edit' | AiMethod;
 export type Method = 'scan' | ProMethod;
 
 export type ResultFormat = 'glb' | 'stl' | 'obj' | '3mf';
 
-/** What a feature says when the server does not have it yet. */
+/* Какво казва дадена функция, когато сървърът още я няма. */
 export const NOT_AVAILABLE = 'Това още не е налично. Опитайте по-късно.';
 
 export class ApiError extends Error {
@@ -69,9 +70,9 @@ export class ApiError extends Error {
   }
 }
 
-// What the user is told when something fails: the message itself when it is written for them (in Bulgarian: the
-// app's and the server's own), otherwise a plain sentence for its kind. Technical messages ("Network request
-// failed", "SSLHandshakeException…", an older server's English) stay out of sight.
+// Какво се показва на потребителя при неуспех: самото съобщение, когато е написано за него (на български: от
+// приложението и от сървъра), иначе обикновено изречение за вида грешка. Техническите съобщения ("Network request
+// failed", "SSLHandshakeException…", английските съобщения на по-стар сървър) остават скрити.
 const CYRILLIC = /[Ѐ-ӿ]/;
 const OFFLINE = /network|connect|ssl|socket|timeout|timed out|abort|fetch|host|unreachable/i;
 
@@ -89,12 +90,16 @@ export function errorText(e: unknown): string {
   return 'Нещо се обърка. Опитайте отново.';
 }
 
-/** A scan's failure as the server gave it, for the user (an older server's English becomes a plain sentence). */
+/**
+ * Неуспехът на сканиране, както го е дал сървърът, за потребителя (английското съобщение на по-стар сървър става
+ * обикновено изречение).
+ */
 export const failureText = (error: string | undefined) =>
   error && CYRILLIC.test(error) ? error : 'Обработката не успя. Опитайте отново или заснемете ново видео.';
 
-// Mobile networks and the Funnel relay drop a connection now and then (seen: "SSLHandshakeException: connection
-// closed"), so network errors and 5xx answers get a few quiet retries, about a minute in all. Other answers are final.
+// Мобилните мрежи и препращането през Funnel понякога прекъсват връзката (наблюдавано: "SSLHandshakeException:
+// connection closed"), затова мрежовите грешки и отговорите 5xx получават няколко тихи повторения, общо около минута.
+// Другите отговори са окончателни.
 const RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 15_000, 30_000];
 const final = (e: unknown) => e instanceof ApiError && e.status < 500 && e.status !== 408 && e.status !== 429;
 
@@ -113,9 +118,9 @@ async function check(res: { ok: boolean; status: number; text(): Promise<string>
   if (res.ok) return;
   let detail = await res.text();
   try {
-    detail = JSON.parse(detail).detail ?? detail; // FastAPI error body
+    detail = JSON.parse(detail).detail ?? detail; // тяло на грешка от FastAPI
   } catch {}
-  // The account's session was ended (signed out elsewhere, account deleted): back to the sign-in screen.
+  // Сесията на профила е приключила (изход от другаде, изтрит профил): обратно към екрана за вход.
   if (res.status === 401 && sessionToken()) clearSession();
   throw new ApiError(detail ? String(detail) : `${what}: ${res.status}`, res.status);
 }
@@ -125,7 +130,7 @@ const headers = (extra?: Record<string, string>): Record<string, string> => {
   return { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...extra };
 };
 
-/** For images loaded straight from the server (expo-image sends these). */
+/* За изображения, зареждани директно от сървъра (expo-image изпраща тези заглавки). */
 export const authHeaders = () => headers();
 
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -139,27 +144,27 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
   return (await res.json()) as T;
 }
 
-// accounts: the server has its account database (email and password sign-in); google_client_id: Google sign-in is
-// set up, with this web client. Servers from before accounts answer just { ok }.
+// accounts: сървърът има база данни с профили (вход с имейл и парола); google_client_id: входът с Google е настроен с
+// този уеб клиент. Сървъри отпреди профилите отговарят само с { ok }.
 export type Health = { ok: boolean; accounts?: boolean; database?: string; google_client_id?: string | null };
 export const health = () => call<Health>('GET', '/health');
 export const createJob = () => call<Job>('POST', '/jobs');
 export const getJob = (id: string) => call<Job>('GET', `/jobs/${id}`);
-// quality: servers from before quick scans ignore it and process in full detail. method: an AI model (Pro).
+// quality: сървъри отпреди бързите сканирания го пренебрегват и обработват с пълни детайли. method: AI модел (Pro).
 export const startJob = (
   id: string,
   params: { flat_base: boolean; video_bytes?: number; quality?: 'quick' | 'detailed'; method?: Method; extend?: string },
 ) => call<Job>('POST', `/jobs/${id}/start`, params);
 export const cancelJob = (id: string) => call<Job>('DELETE', `/jobs/${id}`);
 
-// The last lines of the server's processing log, shown when a scan fails.
+// Последните редове от дневника на обработката на сървъра, показвани при неуспешно сканиране.
 export async function getLog(id: string, lines = 40) {
   const res = await fetch(`${API_URL}/jobs/${id}/log?lines=${lines}`, { headers: headers() });
   await check(res, 'log');
   return res.text();
 }
 
-// Idempotent per file name, so a retry only needs to send what `received` lacks.
+// Повторението е безопасно за всяко име на файл, така че повторен опит изпраща само това, което липсва в `received`.
 export const uploadPhoto = (jobId: string, file: File) =>
   retrying(async () => {
     const res = await expoFetch(`${API_URL}/jobs/${jobId}/photos/${file.name}`, {
@@ -170,7 +175,8 @@ export const uploadPhoto = (jobId: string, file: File) =>
     await check(res, `upload ${file.name}`);
   });
 
-// The phone's orientation while filming (src/lib/motion.ts). A server without this endpoint (404) just goes without.
+// Положението на телефона по време на записа (src/lib/motion.ts). Сървър без тази крайна точка (404) просто минава
+// без него.
 export async function uploadMotion(jobId: string, file: File) {
   const body = await file.text();
   await retrying(async () => {
@@ -186,7 +192,8 @@ export async function uploadMotion(jobId: string, file: File) {
 
 const VIDEO_CHUNK_BYTES = 8 * 1024 * 1024;
 
-// Resumes from `from` (the server's video_bytes). Chunks keep memory flat and make a dropped connection cost one chunk.
+// Продължава от `from` (video_bytes на сървъра). Частите пазят паметта постоянна, а прекъсната връзка струва само
+// една част.
 export async function uploadVideo(jobId: string, file: File, from: number, onProgress: (sent: number) => void) {
   const handle = file.open(FileMode.ReadOnly);
   try {
@@ -194,7 +201,7 @@ export async function uploadVideo(jobId: string, file: File, from: number, onPro
     while (sent < file.size) {
       const next = sent;
       sent = await retrying(async (attempt) => {
-        // A chunk whose answer was lost may have arrived anyway: go on from what the server has.
+        // Част, чийто отговор се е загубил, може все пак да е пристигнала: продължаваме от това, което сървърът има.
         const at = attempt ? (await getJob(jobId)).video_bytes : next;
         if (at >= file.size) return at;
         handle.offset = at;
@@ -214,9 +221,9 @@ export async function uploadVideo(jobId: string, file: File, from: number, onPro
   }
 }
 
-// GLBs with the photo texture (the viewer decodes it through expo-gl: lib/photoTexture.ts). The server sends the
-// texture only on request, as older app builds fail on images inside a GLB. smooth: extra smoothing passes (1-3)
-// on a print file, which takes the scan's ripples off.
+// GLB файлове с текстура от снимките (екранът за преглед я декодира през expo-gl: lib/photoTexture.ts). Сървърът
+// изпраща текстурата само при заявка, защото по-стари версии на приложението се провалят при изображения в GLB.
+// smooth: допълнителни заглаждания (1-3) на файла за печат, които махат вълните от сканирането.
 export const resultUrl = (jobId: string, format: ResultFormat, longestMm?: number, smooth?: number) => {
   const query = [longestMm && `longest_mm=${longestMm}`, format === 'glb' && 'texture=true', smooth && `smooth=${smooth}`]
     .filter(Boolean)
@@ -229,9 +236,9 @@ export const downloadResult = (jobId: string, format: ResultFormat, dest: File, 
     File.downloadFileAsync(resultUrl(jobId, format, longestMm, smooth), dest, { headers: headers(), idempotent: true }),
   );
 
-// Signed links to the model at its real size for AR (lib/ar.ts), which the browser opens without our token: `page`
-// (servers from before it send only `url`, the GLB). The server makes the file first, so this takes a few seconds;
-// not retried, as each try makes it again.
+// Подписани линкове към модела в реален размер за AR (lib/ar.ts), които браузърът отваря без нашия ключ: `page`
+// (сървъри отпреди него изпращат само `url`, тоест GLB). Сървърът първо създава файла, затова това отнема няколко
+// секунди; не се повтаря, защото всеки опит го създава наново.
 export async function arLink(jobId: string, longestMm: number) {
   try {
     return await call<{ url: string; page?: string; expires: number }>('POST', `/jobs/${jobId}/ar`, {
@@ -244,19 +251,19 @@ export async function arLink(jobId: string, longestMm: number) {
   }
 }
 
-// Volume and surface for the print estimate, for scans whose report is from before they were in it.
+// Обем и повърхност за оценката на печата, за сканирания с отчет отпреди те да бъдат включени в него.
 export const getGeometry = (jobId: string) => call<Geometry>('GET', `/jobs/${jobId}/geometry`);
 
-// Pro: a new model made from this one by a text change (in English); the server answers the new job. spot: where
-// the user tapped on the model ("smooth here", "make this red"), as components/ModelView's Spot.
+// Pro: нов модел, създаден от този чрез текстова промяна (на английски); сървърът връща новата задача. spot: мястото,
+// което потребителят е докоснал върху модела ("smooth here", "make this red"), като Spot от components/ModelView.
 export const editModel = (jobId: string, prompt: string, longestMm: number, title: string, spot?: readonly number[] | null) =>
   call<Job>('POST', `/jobs/${jobId}/edit`, { prompt, longest_mm: longestMm, title, ...(spot ? { spot } : {}) });
 
-// Pro: a new model made from this one, standing on a plate with a name.
+// Pro: нов модел, създаден от този, стоящ върху плочка с име.
 export const nameplateModel = (jobId: string, text: string, shape: 'round' | 'square', longestMm: number, title: string) =>
   call<Job>('POST', `/jobs/${jobId}/nameplate`, { text, shape, longest_mm: longestMm, title });
 
-// Ready for the printer (backend app/printing.py): how it would be laid and cut, and the files.
+// Готово за принтера (сървър app/printing.py): как би се разположил и разрязал моделът и файловете.
 export type PrintPlan = { parts: number; support_before: number; support_after: number; turned: boolean; size_mm: [number, number, number] };
 type BedSize = readonly [number, number, number];
 export const printPlan = (jobId: string, longestMm: number, [x, y, z]: BedSize) =>
@@ -269,7 +276,8 @@ export const downloadPrintZip = (jobId: string, longestMm: number, [x, y, z]: Be
     }),
   );
 
-// The spinning video to share: asked for until ready (it takes the server a minute or two), then downloaded.
+// Видеото със завъртане за споделяне: заявява се, докато стане готово (сървърът го прави за минута-две), после се
+// изтегля.
 const SPIN_POLL_MS = 4000;
 const SPIN_MOST_MS = 8 * 60 * 1000;
 export async function downloadSpin(jobId: string, dest: File) {
@@ -281,17 +289,17 @@ export async function downloadSpin(jobId: string, dest: File) {
   return retrying(() => File.downloadFileAsync(`${API_URL}/jobs/${jobId}/spin.mp4`, dest, { headers: headers(), idempotent: true }));
 }
 
-// "Your model is ready" on this phone (lib/push.ts).
+// "Вашият модел е готов" на този телефон (lib/push.ts).
 export const savePushToken = (token: string) => call<{ ok: boolean }>('PUT', '/me/push-token', { token });
 export const forgetPushToken = (token: string) => call<{ ok: boolean }>('POST', '/me/push-token/forget', { token });
 
-// Pro bought in Google Play: the server checks it with Google and answers the profile with Pro on.
+// Pro, купен от Google Play: сървърът проверява покупката при Google и връща профила с включен Pro.
 export const confirmGooglePurchase = (token: string) => call<Profile>('POST', '/billing/google', { purchase_token: token });
 
 export const thumbUrl = (jobId: string) => `${API_URL}/jobs/${jobId}/thumb.jpg`;
 export const shareUrl = (slug: string) => `${API_URL}/s/${slug}`;
 
-// --- Accounts ---------------------------------------------------------------------------------------------------
+// --- Профили -------------------------------------------------------------------------------------------------------
 
 export const signInWithIdToken = (idToken: string) =>
   call<{ token: string; user: Profile }>('POST', '/auth/google', { id_token: idToken });
@@ -316,17 +324,17 @@ export async function uploadAvatar(file: File) {
   return (await res.json()) as Profile;
 }
 
-/** A scan saved in the account (any phone). */
+/* Сканиране, запазено в профила (на всеки телефон). */
 export type ServerScan = {
-  id: string; // the job id
+  id: string; // номерът на задачата
   title: string;
-  created: number; // Unix seconds
+  created: number; // секунди по Unix
   state: JobState;
   error?: string | null;
   report?: Report | null;
   step?: string | null;
-  share: string | null; // the public link's id while shared
-  published?: number | null; // Unix seconds it went into the community (servers from before it leave this out)
+  share: string | null; // номерът на публичния линк, докато е споделено
+  published?: number | null; // секунди по Unix, откакто е в общността (сървъри отпреди нея го пропускат)
   thumb: boolean;
 };
 
@@ -336,28 +344,28 @@ export const shareScan = (jobId: string) => call<{ share: string }>('POST', `/me
 export const unshareScan = (jobId: string) => call<{ share: null }>('DELETE', `/me/scans/${jobId}/share`);
 export const claimScans = (jobIds: string[]) => call<{ claimed: string[] }>('POST', '/me/scans/claim', { job_ids: jobIds });
 
-// --- Community --------------------------------------------------------------------------------------------------
-// Finished scans their owners posted for every signed-in user (backend app/community.py).
+// --- Общност --- Завършени сканирания, публикувани от собствениците им за всички влезли потребители (сървър
+// app/community.py).
 
-// level: from their points (servers from before points leave it out).
+// level: от точките им (сървъри отпреди точките го пропускат).
 export type Author = { id: string; name: string; has_avatar: boolean; google_picture: string | null; level?: number };
 
 export type Post = {
-  id: string; // the job id
+  id: string; // номерът на задачата
   title: string;
-  published: number; // Unix seconds
-  longest_mm: number; // the real size its author gave
+  published: number; // секунди по Unix
+  longest_mm: number; // реалният размер, зададен от автора
   likes: number;
   liked: boolean; // by me
   mine: boolean;
-  dimensions_mm: [number, number, number] | null; // at 100 mm longest side
+  dimensions_mm: [number, number, number] | null; // при най-дълга страна от 100 мм
   triangles: number | null;
   author: Author;
 };
 
 export type PostSort = 'new' | 'top';
 
-// A server from before the community answers FastAPI's own "Not Found" for these paths.
+// Сървър отпреди общността отговаря за тези пътища със стандартното "Not Found" на FastAPI.
 async function community<T>(method: string, path: string, body?: unknown): Promise<T> {
   try {
     return await call<T>(method, path, body);
@@ -380,7 +388,7 @@ export const reportPost = (id: string, reason: string) => community<{ ok: boolea
 export const postThumbUrl = (id: string) => `${API_URL}/community/${id}/thumb.jpg`;
 export const authorPhotoUrl = (userId: string) => `${API_URL}/community/authors/${userId}/avatar.jpg`;
 
-// Photos of a community model printed in real life.
+// Снимки на модел от общността, отпечатан в реалността.
 export type PrintPhoto = { id: string; name: string; created: number; mine: boolean; can_remove: boolean };
 export const listPrintPhotos = (id: string) => community<PrintPhoto[]>('GET', `/community/${id}/prints`);
 export const printPhotoUrl = (photoId: string) => `${API_URL}/community/prints/${photoId}.jpg`;
@@ -398,9 +406,9 @@ export async function uploadPrintPhoto(id: string, file: File) {
 export const downloadPost = (id: string, dest: File) =>
   retrying(() => File.downloadFileAsync(`${API_URL}/community/${id}/model.glb`, dest, { headers: headers(), idempotent: true }));
 
-// --- Stress test ------------------------------------------------------------------------------------------------
-// The server works each kind of test out once per model (backend app/stress.py): at a ref_mm longest side and for
-// 1 kg (own weight: at 1 g/cm³). lib/stress.ts scales that to the weight, height, material and size picked.
+// --- Тест за здравина --- Сървърът изчислява всеки вид тест веднъж за модел (сървър app/stress.py): при най-дълга
+// страна ref_mm и за 1 кг (собствено тегло: при 1 г/см³). lib/stress.ts го мащабира към избраните тегло, височина,
+// материал и размер.
 
 export type StressCase = 'top' | 'hang' | 'side' | 'drop';
 export type Vec3 = [number, number, number];
@@ -408,24 +416,24 @@ export type Vec3 = [number, number, number];
 export type StressSummary = {
   case: StressCase;
   ref_mm: number;
-  max_mpa: number; // the highest stress, MPa
-  weak: Vec3; // where it is: model coordinates (mm, y up) at ref_mm
-  volume_cm3: number; // at ref_mm
-  sag_m?: number; // drop: the own weight's mean sag at 1 GPa and 1 g/cm³
-  load_at?: Vec3; // the others: where the force acts, and which way
+  max_mpa: number; // най-високото напрежение, MPa
+  weak: Vec3; // къде е то: координати в модела (мм, y нагоре) при ref_mm
+  volume_cm3: number; // при ref_mm
+  sag_m?: number; // drop: средното провисване от собственото тегло при 1 GPa и 1 г/см³
+  load_at?: Vec3; // останалите: къде действа силата и в каква посока
   load_dir?: Vec3;
   elements: number;
   pitch_mm: number;
-  dropped: number; // share of the model too thin to be held, so not tested
+  dropped: number; // дял от модела, твърде тънък, за да се закрепи, затова не е тестван
 };
 
-/** Own scans by their job id; community posts by their id. */
+/* Собствените сканирания по номера на задачата; публикациите в общността по техния номер. */
 export type StressSource = 'scan' | 'post';
 const stressPath = (id: string, source: StressSource, kind: StressCase) =>
   `${source === 'post' ? `/community/${id}` : `/jobs/${id}`}/stress/${kind}`;
 
-// The first request for a kind works it out on the server (up to a minute). A dropped connection is tried again:
-// the server finishes it anyway, and the next try gets it at once.
+// Първата заявка за даден вид го изчислява на сървъра (до минута). При прекъсната връзка се опитва отново: сървърът
+// така или иначе го довършва, а следващият опит го получава веднага.
 export async function stressSummary(id: string, source: StressSource, kind: StressCase) {
   try {
     return await retrying(() => call<StressSummary>('GET', stressPath(id, source, kind)));
@@ -436,39 +444,41 @@ export async function stressSummary(id: string, source: StressSource, kind: Stre
   }
 }
 
-// The model with its stress per vertex (the "_stress" attribute, MPa at the summary's size and load).
+// Моделът с напрежението за всеки връх (атрибут "_stress", MPa при размера и натоварването от обобщението).
 export const downloadStressModel = (id: string, source: StressSource, kind: StressCase, dest: File) =>
   retrying(() => File.downloadFileAsync(`${API_URL}${stressPath(id, source, kind)}/model.glb`, dest, { headers: headers(), idempotent: true }));
 
-// --- Points, levels, badges, weekly challenges (backend app/progress.py) ----------------------------------------
+// --- Точки, нива, значки, седмични предизвикателства (сървър app/progress.py)
+// ---------------------------------------
 
 export type Badge = {
   id: string;
   title: string;
   description: string;
-  icon: string; // an Ionicons name
+  icon: string; // име на икона от Ionicons
   target: number;
   progress: number;
   unlocked: boolean;
-  unlocked_at: number | null; // Unix seconds
+  unlocked_at: number | null; // секунди по Unix
 };
 
 export type Challenge = { id: string; title: string; icon: string; target: number; progress: number; points: number; done: boolean };
 
-export type Level = { number: number; name: string; from: number; to: number }; // points where it starts, the next starts
+export type Level = { number: number; name: string; from: number; to: number }; // точките, от които започва това ниво и следващото
 
 export type Progress = {
   points: number;
   points_week: number;
   level: Level;
   badges: Badge[];
-  challenges: { week: string; ends: number; items: Challenge[] }; // ends: Unix seconds
+  challenges: { week: string; ends: number; items: Challenge[] }; // ends: секунди по Unix
   recent: { kind: string; label: string; points: number; created: number }[];
 };
 
 export const getProgress = () => call<Progress>('GET', '/me/progress');
 
-// --- The owner's Pro page: who is Pro (backend app/accounts.py) ------------------------------------------------
+// --- Страницата на собственика за Pro: кой е с Pro (сървър app/accounts.py)
+// -----------------------------------------
 
 export type OwnerUser = { id: string; email: string; name: string; created: number; pro: boolean; owner: boolean };
 

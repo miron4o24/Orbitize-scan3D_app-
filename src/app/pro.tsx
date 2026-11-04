@@ -10,7 +10,7 @@ import { proOffer, restore, subscribe, type ProOffer } from '@/lib/billing';
 import { useSession } from '@/lib/session';
 import { font, makeStyles, radius, space, useColors } from '@/theme';
 
-// What Pro gives and the way to get it. The price is the store's own, so it is always the real one.
+// Какво дава Pro и как се получава. Цената идва от магазина, затова винаги е реалната.
 
 const BENEFITS: { icon: IconName; title: string }[] = [
   { icon: 'sparkles', title: 'AI модели без ограничение' },

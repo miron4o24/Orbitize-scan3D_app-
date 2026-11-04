@@ -50,7 +50,7 @@ const STEPS: [string, string][] = [
   ['meshing', 'Изграждане на повърхността'],
   ['cleaning', 'Подготовка за печат'],
 ];
-// The server's tool steps within "reconstructing", in words for the user.
+// Стъпките на инструментите на сървъра в "reconstructing", с думи за потребителя.
 const SUBSTEPS: Record<string, string> = {
   'reading video': 'Четене на видеото',
   'picking frames': 'Избор на най-добрите кадри',
@@ -66,7 +66,7 @@ const SUBSTEPS: Record<string, string> = {
   'fusing depth': 'Изграждане на повърхността',
   texturing: 'Оцветяване със снимките',
   'shape from motion sensors': 'Изграждане на формата',
-  // AI models (Pro)
+  // AI модели (Pro)
   'claude designing': 'Проектиране на предмета',
   'claude checking': 'Проверка на модела',
   'choosing frames': 'Избор на най-добрите кадри',
@@ -75,17 +75,17 @@ const SUBSTEPS: Record<string, string> = {
   'understanding the request': 'Разчитане на промяната',
   'finding the part': 'Намиране на частта от модела',
 };
-// A text change (Pro) goes through these instead.
+// Текстовата промяна (Pro) минава през тези вместо това.
 const EDIT_STEPS: [string, string][] = [
   ['queued', 'На опашка'],
   ['reconstructing', 'Разчитане на промяната'],
   ['cleaning', 'Прилагане на промените'],
 ];
 
-const pop = ZoomIn.duration(240).easing(Easing.out(Easing.back(2))).reduceMotion(ReduceMotion.System); // a step's tick
+const pop = ZoomIn.duration(240).easing(Easing.out(Easing.back(2))).reduceMotion(ReduceMotion.System); // отметка на стъпка
 
-// Seconds each server step took for an 80-frame drill scan in full detail (24 min in all): the overall progress bar
-// moves through these. A quick scan takes about the same shares of a shorter time.
+// Секундите на всяка стъпка на сървъра при сканиране на дрелка с 80 кадъра и пълни детайли (общо 24 мин): общата
+// лента за напредък минава през тях. Бързото сканиране заема приблизително същите дялове от по-кратко време.
 const PLAN: [string, number][] = [
   ['reading video', 4],
   ['picking frames', 2],
@@ -103,7 +103,8 @@ const PLAN: [string, number][] = [
   ['cleaning', 6],
   ['texturing', 25],
 ];
-// The same for Pro's methods: express from the 80-frame steps scaled to 30 smaller frames, the rest estimates.
+// Същото за методите на Pro: експресното е мащабирано от стъпките за 80 кадъра до 30 по-малки кадъра, а останалото е
+// приблизително.
 const PRO_PLANS: Record<ProMethod, [string, number][]> = {
   edit: [
     ['reconstructing', 3],
@@ -127,8 +128,8 @@ const PRO_PLANS: Record<ProMethod, [string, number][]> = {
     ['cleaning', 4],
     ['texturing', 20],
   ],
-  // 48 frames placed, the object cut out of all 48, their depth fused within its outline (backend app/ai.py,
-  // outline.py).
+  // 48 разположени кадъра, предметът е изрязан от всичките 48, а дълбочините им са слети в очертанията му (сървър
+  // app/ai.py, outline.py).
   single: [
     ['reading video', 4],
     ['picking frames', 4],
@@ -161,7 +162,7 @@ const PRO_PLANS: Record<ProMethod, [string, number][]> = {
   ],
 };
 
-/** Share of the work done (0..1) at `elapsed` ms into step `name`; null for steps not in the plan. */
+/* Дял от извършената работа (0..1) след `elapsed` мс в стъпка `name`; null за стъпки извън плана. */
 function planned(plan: [string, number][], name: string, elapsed: number): number | null {
   const i = plan.findIndex(([n]) => n === name);
   if (i < 0) return null;
@@ -171,7 +172,7 @@ function planned(plan: [string, number][], name: string, elapsed: number): numbe
   return (before + Math.min(elapsed / 1000, own * 0.95)) / total;
 }
 
-/** A thin flat bar that glides to its new length, with a soft shine running along it while work goes on. */
+/* Тънка плоска лента, която плавно приема новата си дължина, с мек отблясък, докато работата продължава. */
 function ProgressBar({ share }: { share: number }) {
   const s = useStyles();
   const reduce = useReducedMotion();
@@ -202,14 +203,14 @@ export default function Processing() {
   const c = useColors();
   const s = useStyles();
   const [scan, setScan] = useState<Scan | null>(() => getScan(id));
-  const [uploaded, setUploaded] = useState<number | null>(null); // photos or bytes sent; non-null while uploading
+  const [uploaded, setUploaded] = useState<number | null>(null); // изпратени снимки или байтове; различно от null по време на качване
   const [netError, setNetError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
-  const [step, setStep] = useState<string | null>(null); // what the server is doing right now
-  const [ahead, setAhead] = useState<number | null>(null); // while waiting: how many go first
+  const [step, setStep] = useState<string | null>(null); // какво прави сървърът в момента
+  const [ahead, setAhead] = useState<number | null>(null); // докато чака: колко са преди него
   const [log, setLog] = useState<string | null>(null);
   const update = (patch: Partial<Scan>) => setScan(updateScan(id, patch));
-  const [progress, setProgress] = useState(0); // share of the work done; never moves back (some steps run twice)
+  const [progress, setProgress] = useState(0); // дял от извършената работа; никога не намалява (някои стъпки работят два пъти)
 
   const active = !!scan && ACTIVE.includes(scan.status);
   const jobId = scan?.jobId;
@@ -242,13 +243,13 @@ export default function Processing() {
             status: job.state,
             error: job.error ?? undefined,
             report: r ?? undefined,
-            // An AI model brings its name and Claude's guess of the real size, where the user has given none.
+            // AI модел носи името си и приблизителния реален размер, ако потребителят не е дал такъв.
             ...(r?.object && !was?.title && { title: r.object }),
             ...(r?.real_mm && !was?.longestMm && { longestMm: r.real_mm }),
           }),
         );
         if (job.state === 'done') {
-          checkProgress(true); // a finished scan earns points
+          checkProgress(true); // завършено сканиране носи точки
           router.replace({ pathname: '/viewer/[id]', params: { id } });
         }
       } catch (e) {
@@ -280,7 +281,7 @@ export default function Processing() {
       : photosDir(id)
           .list()
           .filter((f): f is File => f instanceof File && f.name.endsWith('.jpg'));
-  // Progress in bytes for a video, in photos otherwise.
+  // Напредък в байтове за видео, иначе в снимки.
   const total = hasVideo ? video.size : photos.length;
 
   async function uploadAndStart() {
@@ -288,19 +289,19 @@ export default function Processing() {
     setInfo(null);
     setLog(null);
     setUploaded(0);
-    // A locked screen suspends the app and with it the upload.
+    // Заключен екран спира приложението, а с него и качването.
     await activateKeepAwakeAsync('upload').catch(() => {});
     try {
       const known = scan!.jobId;
       const old = known
         ? await retrying(() => getJob(known)).catch((e) => {
-            if (e instanceof ApiError && e.status === 404) return null; // expired on the server: start a new job
+            if (e instanceof ApiError && e.status === 404) return null; // изтекло на сървъра: започваме нова задача
             throw e;
           })
         : null;
       const job = old ?? (await retrying(() => createJob()));
       if (!old) update({ jobId: job.id });
-      // An earlier try started it but lost the answer: just follow it.
+      // По-ранен опит го е стартирал, но отговорът се е загубил: просто го следваме.
       if (ACTIVE.includes(job.state)) {
         update({ status: job.state, error: undefined });
         return;
@@ -320,9 +321,10 @@ export default function Processing() {
           setUploaded(++done);
         }
       }
-      // The choices as they are now: they can still be changed while the upload runs.
+      // Изборите в момента: могат да се променят, докато качването върви.
       const now = getScan(id) ?? scan!;
-      // Only the two ways on offer: an older scan's other way (express, quick) is tried again as a standard scan.
+      // Само предлаганите два начина: друг начин от по-старо сканиране (express, quick) се опитва отново като
+      // стандартно сканиране.
       const chosen = now.method === 'single' && aiAvailable() ? 'single' : undefined;
       update({ method: chosen, quality: undefined });
       const started = await retrying(() =>
@@ -334,13 +336,13 @@ export default function Processing() {
           ...(now.extendFrom && { extend: now.extendFrom }),
         }),
       ).catch((e) => {
-        // A try that got through but lost its answer leaves the job already started.
+        // Опит, който е минал, но е загубил отговора си, оставя задачата вече стартирана.
         if (e instanceof ApiError && e.status === 409) return retrying(() => getJob(job.id));
         throw e;
       });
       update({ status: started.state, error: undefined });
-      refreshProfile().catch(() => {}); // a free account's AI trial is now used
-      setUpPush(true); // the moment "tell me when it is ready" makes sense
+      refreshProfile().catch(() => {}); // пробният AI модел на безплатния профил вече е използван
+      setUpPush(true); // моментът, в който "кажи ми, когато е готово" има смисъл
     } catch (e) {
       setNetError(`Качването спря. ${errorText(e)}`);
     } finally {
@@ -349,7 +351,8 @@ export default function Processing() {
     }
   }
 
-  // The server's log of the job: for the app's owner only, to see why a scan failed.
+  // Дневникът на задачата на сървъра: само за собственика на приложението, за да види защо сканирането се е
+  // провалило.
   const owner = !!user?.owner;
   const canAi = !!user && aiAvailable();
   async function showLog() {
@@ -359,7 +362,7 @@ export default function Processing() {
   }
 
   async function cancel() {
-    if (scan!.jobId) await cancelJob(scan!.jobId).catch(() => {}); // already gone is fine
+    if (scan!.jobId) await cancelJob(scan!.jobId).catch(() => {}); // ако вече го няма, няма проблем
     update({ status: 'uploading', jobId: undefined, error: undefined });
     setInfo('Обработката е спряна.');
   }
@@ -370,7 +373,7 @@ export default function Processing() {
     router.back();
   }
 
-  // Straight after filming or picking a video: no need to tap upload.
+  // Веднага след заснемане или избор на видео: не е нужно да се натиска качване.
   const autoStarted = useRef(false);
   useEffect(() => {
     const sc = getScan(id);
@@ -444,7 +447,7 @@ export default function Processing() {
     );
   }
 
-  // A text change has nothing to upload or retry: the original is unchanged, and the user describes it again there.
+  // Текстовата промяна няма какво да качва или повтаря: оригиналът е непроменен и потребителят я описва отново там.
   if (method === 'edit')
     return (
       <Screen>

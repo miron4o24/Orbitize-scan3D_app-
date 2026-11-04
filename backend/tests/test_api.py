@@ -51,7 +51,7 @@ def test_upload_validation_and_resume(client):
     job = client.post("/jobs").json()
     url = f"/jobs/{job['id']}/photos"
     assert client.put(f"{url}/img_0001.jpg", content=JPEG).status_code == 200
-    assert client.put(f"{url}/img_0001.jpg", content=JPEG).status_code == 200  # re-upload is idempotent
+    assert client.put(f"{url}/img_0001.jpg", content=JPEG).status_code == 200  # повторното качване е безопасно
     assert client.put(f"{url}/notes.txt", content=JPEG).status_code == 400
     assert client.put(f"{url}/..%2Fstatus.json", content=JPEG).status_code in (400, 404)
     assert client.put(f"{url}/img_0002.jpg", content=b"not a jpeg").status_code == 400
@@ -61,7 +61,7 @@ def test_upload_validation_and_resume(client):
 
 def test_full_lifecycle(client):
     job_id = client.post("/jobs").json()["id"]
-    assert client.post(f"/jobs/{job_id}/start", json={}).status_code == 400  # too few photos
+    assert client.post(f"/jobs/{job_id}/start", json={}).status_code == 400  # твърде малко снимки
     for i in range(8):
         client.put(f"/jobs/{job_id}/photos/img_{i:04d}.jpg", content=JPEG)
     assert client.post(f"/jobs/{job_id}/start", json={"flat_base": False}).status_code == 200
@@ -76,7 +76,7 @@ def test_full_lifecycle(client):
 
     z = zipfile.ZipFile(io.BytesIO(client.get(f"/jobs/{job_id}/frames.zip").content))
     assert len(z.namelist()) == 8 and z.read("img_0000.jpg") == JPEG
-    # A finished scan can be processed again from its frames.
+    # Завършено сканиране може да се обработи отново от кадрите му.
     assert client.post(f"/jobs/{job_id}/start", json={}).status_code == 200
     wait_state(client, job_id, "done")
 
@@ -103,7 +103,7 @@ def test_failed_job_log_and_list(client, monkeypatch):
     assert failed["step"] == "camera solving" and failed["step_started"] > 0
 
     log = client.get(f"/jobs/{job_id}/log").text
-    assert "camera solving" in log and "\nfinal\n" in log and "\nearly" not in log  # \r progress redraws dropped
+    assert "camera solving" in log and "\nfinal\n" in log and "\nearly" not in log  # презаписванията на напредъка с \r отпадат
     assert log.rstrip().endswith("FAILED: Only 3 of 90 frames could be placed in 3D.")
     assert client.get(f"/jobs/{job_id}/log", params={"lines": 1}).text.startswith("[")
 
@@ -120,13 +120,13 @@ def test_video_chunked_upload(client):
     url = f"/jobs/{job_id}/video"
     assert client.put(url, params={"offset": 0}, content=b"not a video at all").status_code == 400
     assert client.put(url, params={"offset": 0}, content=MP4[:50]).json() == {"video_bytes": 50}
-    assert client.put(url, params={"offset": 0}, content=MP4[50:]).status_code == 409  # wrong resume point
+    assert client.put(url, params={"offset": 0}, content=MP4[50:]).status_code == 409  # грешна точка за продължаване
     assert client.get(f"/jobs/{job_id}").json()["video_bytes"] == 50
-    assert client.post(f"/jobs/{job_id}/start", json={"video_bytes": len(MP4)}).status_code == 400  # incomplete
+    assert client.post(f"/jobs/{job_id}/start", json={"video_bytes": len(MP4)}).status_code == 400  # незавършено
     assert client.put(url, params={"offset": 50}, content=MP4[50:]).json() == {"video_bytes": len(MP4)}
     assert client.post(f"/jobs/{job_id}/start", json={"video_bytes": len(MP4)}).status_code == 200
     wait_state(client, job_id, "done")
-    assert client.put(url, params={"offset": len(MP4)}, content=b"x").status_code == 409  # already started
+    assert client.put(url, params={"offset": len(MP4)}, content=b"x").status_code == 409  # вече е стартирано
 
 
 def test_motion_upload(client):
@@ -140,13 +140,13 @@ def test_motion_upload(client):
     assert client.put(url, json={"samples": samples}).json() == {"samples": 100}
     assert json.loads((jobs.job_dir(job_id) / motion.MOTION).read_text()) == {"samples": samples}
     z = zipfile.ZipFile(io.BytesIO(client.get(f"/jobs/{job_id}/frames.zip").content))
-    assert z.namelist() == [motion.MOTION]  # with the frames, to reproduce a scan
-    assert client.put(url, json={"samples": [[1, 2, 3]]}).status_code == 422  # not t, alpha, beta, gamma
+    assert z.namelist() == [motion.MOTION]  # с кадрите, за да се възпроизведе сканиране
+    assert client.put(url, json={"samples": [[1, 2, 3]]}).status_code == 422  # не t, alpha, beta, gamma
     assert client.put(url, json={"samples": [[0, 0, 0, 0]] * 60_001}).status_code == 422
     client.put(f"/jobs/{job_id}/video", params={"offset": 0}, content=MP4)
     client.post(f"/jobs/{job_id}/start", json={"video_bytes": len(MP4)})
     wait_state(client, job_id, "done")
-    assert client.put(url, json={"samples": samples}).status_code == 200  # a finished scan can be redone
+    assert client.put(url, json={"samples": samples}).status_code == 200  # завършено сканиране може да се направи отново
     assert client.put("/jobs/" + "0" * 32 + "/motion", json={"samples": samples}).status_code == 404
 
 
@@ -181,7 +181,7 @@ def test_neighbor_lines_pair_frames_a_few_degrees_apart():
     from app import mesh as M
     from app.pipeline import neighbor_lines
 
-    # 24 frames on a circle, 15° apart, looking at the centre.
+    # 24 кадъра в кръг през 15°, насочени към центъра.
     ang = np.radians(np.arange(24) * 15)
     z = -np.c_[np.cos(ang), np.sin(ang), np.zeros(24)]
     x = np.cross(z, [0, 0, 1.0])
@@ -189,19 +189,19 @@ def test_neighbor_lines_pair_frames_a_few_degrees_apart():
     views = M.Views(R, np.zeros((24, 3)), np.ones((24, 4)), [str(i) for i in range(24)])
     lines = neighbor_lines(views, [100 + i for i in range(24)])
     assert lines[0].split()[0] == "100"
-    assert set(lines[0].split()[1:]) == {"101", "123", "102", "122"}  # 15° and 30° away; 45° is too far
+    assert set(lines[0].split()[1:]) == {"101", "123", "102", "122"}  # на 15° и 30°; 45° е твърде далеч
 
 
 def test_read_views(tmp_path):
     from app.pipeline import read_views
 
-    # Camera at (0, 0, -5) looking along +Z, identity rotation: t = -R C = (0, 0, 5).
+    # Камера в (0, 0, -5), гледаща по +Z, без завъртане: t = -R C = (0, 0, 5).
     with open(tmp_path / "images.bin", "wb") as f:
         f.write(struct.pack("<Q", 1))
         f.write(struct.pack("<I7dI", 1, 1, 0, 0, 0, 0, 0, 5, 7))
         f.write(b"img_0001.jpg\0")
         f.write(struct.pack("<Q", 2) + b"\0" * 48)
-    with open(tmp_path / "cameras.bin", "wb") as f:  # PINHOLE, as image_undistorter writes it
+    with open(tmp_path / "cameras.bin", "wb") as f:  # PINHOLE, както го записва image_undistorter
         f.write(struct.pack("<Q", 1))
         f.write(struct.pack("<iiQQ", 7, 1, 1600, 1200) + struct.pack("<4d", 1300, 1310, 800, 600))
     views = read_views(tmp_path)

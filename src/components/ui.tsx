@@ -30,7 +30,8 @@ import { Appear, CountUp, ease, haptic, LiveDot, PressScale, swap, useBarStyle, 
 
 export type IconName = ComponentProps<typeof Ionicons>['name'];
 
-// --- Text ---------------------------------------------------------------------------------------------------------
+// --- Текст
+// ----------------------------------------------------------------------------------------------------------
 
 function styledText(base: TextStyle, color: keyof Palette) {
   return function StyledText({ style, ...rest }: TextProps) {
@@ -50,7 +51,7 @@ export const Small = styledText(text.small, 'muted');
 export const Label = styledText(text.label, 'muted');
 export const Mono = styledText(text.mono, 'text2');
 
-/** The website's kicker: a green dot with a soft ring, then small mono capitals. */
+/* Надзаглавието от сайта: зелена точка с мек пръстен, после малки моноширинни главни букви. */
 export function Kicker({ children, style }: { children: string; style?: StyleProp<ViewStyle> }) {
   const s = useStyles();
   return (
@@ -61,9 +62,10 @@ export function Kicker({ children, style }: { children: string; style?: StylePro
   );
 }
 
-// --- Layout -------------------------------------------------------------------------------------------------------
+// --- Подредба
+// -------------------------------------------------------------------------------------------------------
 
-/** How far a page has scrolled, for a ScrollBar: pass `scrollY.onScroll` to an Animated scroll view. */
+/* Докъде е превъртяна страницата, за ScrollBar: подайте `scrollY.onScroll` на Animated ScrollView. */
 export function useScrollY() {
   const y = useSharedValue(0);
   const onScroll = useAnimatedScrollHandler((e) => {
@@ -72,7 +74,7 @@ export function useScrollY() {
   return { y, onScroll };
 }
 
-/** A scrolling page on the background colour. */
+/* Превъртаща се страница върху цвета на фона. */
 export function Screen({
   children,
   style,
@@ -97,8 +99,10 @@ export function Screen({
   );
 }
 
-/** The bar at the top of a page, like the website's header: see-through ground and a line under it once the page
- * scrolls; its title comes in once the page's big title has gone. `overlay` lays it over the page. */
+/**
+ * Лентата най-горе на страницата, като заглавната част на сайта: прозрачна основа и линия под нея, щом страницата се
+ * превърти; заглавието ѝ се появява, щом голямото заглавие изчезне. `overlay` я поставя върху страницата.
+ */
 export function ScrollBar({
   title,
   y,
@@ -135,7 +139,7 @@ export function ScrollBar({
   );
 }
 
-/** One clear title per screen, with an optional kicker above it and a short mono line under it. */
+/* Едно ясно заглавие на екран, с надзаглавие отгоре и кратък моноширинен ред отдолу по желание. */
 export function Header({ kicker, title, sub, right }: { kicker?: string; title: string; sub?: string; right?: ReactNode }) {
   const s = useStyles();
   return (
@@ -155,7 +159,7 @@ export function Card({ children, style }: { children: ReactNode; style?: StylePr
   return <View style={[s.card, style]}>{children}</View>;
 }
 
-/** A group under a small mono label, with an optional arrow link on the right. */
+/* Група под малък моноширинен етикет, с връзка със стрелка вдясно по желание. */
 export function Section({
   label,
   title,
@@ -208,7 +212,7 @@ export function ArrowLink({ label, onPress, style }: { label: string; onPress: (
   );
 }
 
-/** The website's specs: small mono names over big numbers, between thin lines. */
+/* Спецификациите от сайта: малки моноширинни имена над големи числа, между тънки линии. */
 export function Specs({ items, style }: { items: { label: string; value: number | string; suffix?: string }[]; style?: StyleProp<ViewStyle> }) {
   const s = useStyles();
   return (
@@ -229,7 +233,7 @@ export function Specs({ items, style }: { items: { label: string; value: number 
   );
 }
 
-/** A settings line: label and a short description on the left, a control (or value and chevron) on the right. */
+/* Ред с настройка: етикет и кратко описание вляво, контрола (или стойност и стрелка) вдясно. */
 export function Row({
   label,
   description,
@@ -273,7 +277,7 @@ export function Row({
   );
 }
 
-/** A question-and-answer line like the website's FAQ: a plus that turns into a minus, the answer rising in. */
+/* Ред с въпрос и отговор като ЧЗВ на сайта: плюс, който става минус, и отговор, който се вдига при появата. */
 export function Fold({ title, number, children, last }: { title: string; number?: string; children: ReactNode; last?: boolean }) {
   const s = useStyles();
   const reduce = useReducedMotion();
@@ -310,7 +314,7 @@ export function Fold({ title, number, children, last }: { title: string; number?
   );
 }
 
-/** Two to four choices side by side (a theme, a section, a quality); the raised piece slides to the chosen one. */
+/* Два до четири избора един до друг (тема, раздел, качество); повдигнатото парче се плъзга към избрания. */
 export function Segmented<T extends string>({
   options,
   value,
@@ -324,11 +328,11 @@ export function Segmented<T extends string>({
 }) {
   const s = useStyles();
   const reduce = useReducedMotion();
-  const [width, setWidth] = useState(0); // inside the padding
+  const [width, setWidth] = useState(0); // вътре в отстъпа
   const at = Math.max(0, options.findIndex((o) => o.value === value));
   const segment = width / options.length;
   const x = useSharedValue(0);
-  const placed = useRef(false); // the first placing does not slide in from the left
+  const placed = useRef(false); // първото поставяне не се плъзга отляво
   useEffect(() => {
     if (!segment) return;
     x.set(placed.current && !reduce ? withTiming(at * segment, { duration: 320, easing: ease }) : at * segment);
@@ -361,13 +365,14 @@ export function Segmented<T extends string>({
   );
 }
 
-// --- Controls -----------------------------------------------------------------------------------------------------
+// --- Контроли
+// -------------------------------------------------------------------------------------------------------
 
 type ButtonProps = {
   title: string;
-  sub?: string; // a small line under the title
+  sub?: string; // малък ред под заглавието
   onPress?: () => void;
-  variant?: 'brand' | 'primary' | 'secondary' | 'danger' | 'ghost'; // brand: the one main action of a screen
+  variant?: 'brand' | 'primary' | 'secondary' | 'danger' | 'ghost'; // brand: единственото главно действие на екрана
   size?: 'md' | 'lg';
   icon?: IconName;
   loading?: boolean;
@@ -412,7 +417,7 @@ export function Button({ title, sub, onPress, variant = 'primary', size = 'md', 
   );
 }
 
-/** A square glass tool button (the website's viewer tools), e.g. over the 3D view. */
+/* Квадратен стъклен бутон за инструмент (инструментите за преглед от сайта), например върху 3D изгледа. */
 export function IconButton({ icon, onPress, label, active }: { icon: IconName; onPress: () => void; label: string; active?: boolean }) {
   const c = useColors();
   const s = useStyles();
@@ -431,7 +436,7 @@ const BADGES = {
 } as const;
 export type BadgeKind = keyof typeof BADGES;
 
-/** The website's status pill: soft ground, a dot (breathing while it works) and the word. */
+/* Етикетът за състояние от сайта: мека основа, точка (пулсира, докато работи) и думата. */
 export function Badge({ kind, label }: { kind: BadgeKind; label?: string }) {
   const c = useColors();
   const s = useStyles();
@@ -444,7 +449,7 @@ export function Badge({ kind, label }: { kind: BadgeKind; label?: string }) {
   );
 }
 
-/** A text field whose border turns to the accent, with a soft ring, while it is in use. */
+/* Текстово поле, чиято рамка приема цвета за акцент с мек пръстен, докато се използва. */
 export function Field(props: TextInputProps & { invalid?: boolean; ref?: Ref<TextInputInstance> }) {
   const c = useColors();
   const s = useStyles();
@@ -481,7 +486,7 @@ export function ErrorText({ children }: { children: ReactNode }) {
   );
 }
 
-/** A quiet remark: an info icon and muted text, `warn` in the warning colour. */
+/* Тиха бележка: икона за информация и приглушен текст, `warn` в цвета за предупреждение. */
 export function Note({ children, warn }: { children: ReactNode; warn?: boolean }) {
   const c = useColors();
   const s = useStyles();
@@ -517,7 +522,7 @@ const useStyles = makeStyles((c) => ({
   spec: { flex: 1, paddingTop: space.lg, paddingRight: space.md, marginRight: space.md, gap: 6 },
   specLine: { borderRightWidth: 1, borderRightColor: c.line },
   specValue: { ...text.number, color: c.text },
-  // Full card width (over the card's padding), so a pressed row lights up edge to edge.
+  // На цялата ширина на картата (над отстъпа ѝ), така че натиснат ред да светне от край до край.
   row: {
     flexDirection: 'row',
     alignItems: 'center',

@@ -19,15 +19,15 @@ import Svg, { Circle, Defs, Ellipse, LinearGradient, Mask, Path, Pattern, Radial
 import { font, makeStyles, useColors } from '@/theme';
 import { ease } from './motion';
 
-// The website's stage (assets/style.css .factory): a soft radial ground, a dot grid that fades out to the edges, and
-// in the middle the Scanly cube (the site's own drawing) floating while a scan plane passes through it and the
-// phone's path circles it. A glass pill at the bottom walks through the steps.
+// Сцената от сайта (assets/style.css .factory): мека радиална основа, мрежа от точки, която избледнява към краищата,
+// и в средата кубът на Scanly (рисунката от сайта), носещ се, докато през него минава равнина на сканиране, а пътят
+// на телефона го обикаля. Стъклен етикет отдолу минава през стъпките.
 
-const CUBE = 124; // drawn size of the cube (its 200-unit drawing)
+const CUBE = 124; // нарисуван размер на куба (рисунката му е от 200 единици)
 const ORBIT_W = 250;
 const ORBIT_H = 64;
 
-/** One dot on the phone's path round the cube; behind the cube it dims and gets smaller. */
+/* Една точка от пътя на телефона около куба; зад куба потъмнява и намалява. */
 function Orbiter({ t, phase, color }: { t: SharedValue<number>; phase: number; color: string }) {
   const style = useAnimatedStyle(() => {
     const a = (t.value + phase) * 2 * Math.PI;
@@ -47,7 +47,7 @@ function Orbiter({ t, phase, color }: { t: SharedValue<number>; phase: number; c
 
 export type Journey = { title: string; icon: keyof typeof Ionicons.glyphMap }[];
 
-/** The glass pill at the bottom: one step after another, with a line that fills while it shows. */
+/* Стъкленият етикет отдолу: една стъпка след друга, с линия, която се запълва, докато стъпката се показва. */
 function JourneyPill({ steps }: { steps: Journey }) {
   const c = useColors();
   const s = useStyles();
@@ -112,9 +112,9 @@ export function Stage({
     return () => [float, sweep, orbit].forEach(cancelAnimation);
   }, [reduce, float, sweep, orbit]);
 
-  const k = CUBE / 200; // drawing units → points
+  const k = CUBE / 200; // единици от рисунката → точки
   const cube = useAnimatedStyle(() => ({ transform: [{ translateY: -5 + 10 * float.value }] }));
-  // The plane runs from the cube's top face (y 58) down to its bottom (y 142) in drawing units.
+  // Равнината минава от горната страна на куба (y 58) до долната (y 142), в единици от рисунката.
   const plane = useAnimatedStyle(() => ({
     transform: [{ translateY: (-5 + 10 * float.value + 84 * sweep.value) * k }],
     opacity: 0.55 + 0.45 * Math.sin(sweep.value * Math.PI),
@@ -147,7 +147,7 @@ export function Stage({
       </Svg>
 
       <View style={s.centre}>
-        {/* the phone's path, under the cube */}
+        {/* пътят на телефона, под куба */}
         <Svg width={ORBIT_W + 8} height={ORBIT_H + 8} style={s.orbit}>
           <Ellipse
             cx={(ORBIT_W + 8) / 2}
@@ -187,7 +187,7 @@ export function Stage({
             <Path d="M100 98V182M28 58 100 98 172 58" stroke="rgba(255,255,255,0.35)" strokeWidth={1} fill="none" />
           </Svg>
         </Animated.View>
-        {/* the scan plane slicing through it */}
+        {/* равнината на сканиране, която го пресича */}
         <Animated.View style={[s.cube, s.plane, plane]}>
           <Svg width={CUBE} height={CUBE} viewBox="0 0 200 200" style={{ overflow: 'visible' }}>
             <Path d="M100 4 196 58 100 112 4 58Z" fill={c.accentSoft} stroke={c.accent} strokeWidth={1.4} />

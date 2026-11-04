@@ -2,12 +2,12 @@ import { File, Paths } from 'expo-file-system';
 
 import { MATERIALS, type Infill, type Material } from './stress';
 
-// How long a print takes, how much plastic and what it costs: a rough estimate from the model's volume and surface
-// (backend mesh.geometry, at a 100 mm longest side; volume grows with the size cubed, surface squared), as a slicer
-// would count it for a common printer. FDM: walls of WALL_MM around the surface (2 lines of 0.4 mm; top and bottom
-// layers come to about the same), the infill's share of the rest, printed at FLOW_MM3_S on average (outer walls slower,
-// infill faster) plus LAYER_S per layer for moves and layer changes. Resin: solid, the time set by the layers alone.
-// No supports: they depend on how the model is laid on the plate.
+// Колко време отнема печатът, колко пластмаса и на каква цена: груба оценка от обема и повърхността на модела (сървър
+// mesh.geometry, при най-дълга страна 100 мм; обемът расте с куба на размера, повърхността с квадрата), както би го
+// изчислила програма за печат за обикновен принтер. FDM: стени с дебелина WALL_MM около повърхността (2 линии от 0,4
+// мм; горните и долните слоеве са горе-долу същото), дял на пълнежа от останалото, печат средно с FLOW_MM3_S
+// (външните стени по-бавно, пълнежът по-бързо) плюс LAYER_S на слой за движения и смяна на слоя. Смола: плътно,
+// времето зависи само от слоевете. Без подпори: те зависят от това как е поставен моделът върху плочата.
 
 const WALL_MM = 0.8;
 const LAYER_MM = 0.2;
@@ -15,13 +15,13 @@ const FLOW_MM3_S = 8;
 const LAYER_S = 4;
 const RESIN_LAYER_MM = 0.05;
 const RESIN_LAYER_S = 9;
-const POWER_KW: Record<Material, number> = { pla: 0.12, petg: 0.14, abs: 0.18, resin: 0.06 }; // printer's average draw
-export const KWH_EUR = 0.13; // electricity price in Bulgaria, about
+const POWER_KW: Record<Material, number> = { pla: 0.12, petg: 0.14, abs: 0.18, resin: 0.06 }; // средна консумация на принтера
+export const KWH_EUR = 0.13; // приблизителна цена на тока в България
 export const DEFAULT_EUR_PER_KG: Record<Material, number> = { pla: 20, petg: 22, abs: 20, resin: 35 };
 
 export type PrintEstimate = { grams: number; seconds: number; plasticEur: number; powerEur: number };
 
-/** volume100, area100, height100: at the 100 mm size; longestMm: the real longest side. */
+/* volume100, area100, height100: при размер 100 мм; longestMm: реалната най-дълга страна. */
 export function estimate(
   volume100: number,
   area100: number,
@@ -64,7 +64,7 @@ export function printTime(seconds: number): string {
 
 export const euro = (v: number) => (v < 0.01 ? '< 0,01 €' : `${v.toFixed(2).replace('.', ',')} €`);
 
-// The user's own plastic prices (€ per kg), kept on the phone.
+// Собствените цени на пластмасата на потребителя (€ за кг), пазени на телефона.
 const pricesFile = () => new File(Paths.document, 'plastic-prices.json');
 
 export function getPrices(): Record<Material, number> {

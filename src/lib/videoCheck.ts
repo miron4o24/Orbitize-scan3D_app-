@@ -5,11 +5,12 @@ import { decode } from 'jpeg-js';
 
 import { measure, THRESHOLDS, type FrameMetrics } from './quality';
 
-// A look at a few frames of a video on the phone, before it is uploaded: a dark or blurry video would cost a long wait
-// on the server for a poor model. Any trouble here (a phone that cannot read it back) just skips the check.
+// Преглед на няколко кадъра от видео на телефона преди качване: тъмно или размазано видео би струвало дълго чакане на
+// сървъра за лош модел. При какъвто и да е проблем тук (телефон, който не може да го прочете) проверката просто се
+// пропуска.
 
-const SAMPLES = [0.1, 0.3, 0.5, 0.7, 0.9]; // where in the video
-const SIDE = 384; // the size the thresholds are for
+const SAMPLES = [0.1, 0.3, 0.5, 0.7, 0.9]; // къде във видеото
+const SIDE = 384; // размерът, за който са праговете
 const READY_MS = 4000;
 
 function ready(player: VideoPlayer): Promise<boolean> {
@@ -30,7 +31,9 @@ function ready(player: VideoPlayer): Promise<boolean> {
 
 const median = (values: number[]) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];
 
-/** What is wrong with these frames, for the user; empty when they look fine. Most of the frames must show it. */
+/**
+ * Какво не е наред с тези кадри, за потребителя; празно, когато изглеждат добре. Трябва да се вижда в повечето кадри.
+ */
 export function problems(frames: FrameMetrics[]): string[] {
   const out: string[] = [];
   if (median(frames.map((f) => f.brightness)) < THRESHOLDS.minBrightness) out.push('Видеото е твърде тъмно. Добавете светлина.');

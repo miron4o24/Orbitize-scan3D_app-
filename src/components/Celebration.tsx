@@ -21,12 +21,12 @@ import { font, makeStyles, radius, space, text, useColors, type Palette } from '
 import type { IconName } from './ui';
 import { ease } from './motion';
 
-// Points earned, a weekly challenge done, a badge, a new level: a card drops in at the top of whatever screen is open,
-// its icon bursting, and leaves by itself (or at a tap). Several in a row come one after another.
+// Спечелени точки, изпълнено седмично предизвикателство, значка, ново ниво: най-горе на отворения екран се спуска
+// карта с избухваща икона и изчезва сама (или при докосване). Няколко поредни идват една след друга.
 
 const SPARKS = 10;
 
-/** The icon in its ring: the ring swells and fades, sparks fly out (big moments only). */
+/* Иконата в пръстена си: пръстенът набъбва и избледнява, а искри излитат (само при големи моменти). */
 function Burst({ icon, color, soft, sparks }: { icon: IconName; color: string; soft: string; sparks: boolean }) {
   const s = useStyles();
   const reduce = useReducedMotion();
@@ -131,7 +131,7 @@ function Card({ item }: { item: Queued }) {
   );
 }
 
-/** Mounted once, over every screen (app/_layout.tsx). */
+/* Монтира се веднъж, над всички екрани (app/_layout.tsx). */
 export function Celebrations() {
   const queue = useCelebrations();
   return queue.length ? <Card key={queue[0].id} item={queue[0]} /> : null;

@@ -12,7 +12,7 @@ import { font, makeStyles, radius, useColors } from '@/theme';
 import { ease, Skeleton } from './motion';
 import { Badge } from './ui';
 
-/** The 3D view's soft radial ground, behind a picture or an icon. */
+/* Меката радиална основа на 3D изгледа, зад изображение или икона. */
 export function ViewerGround({ id }: { id: string }) {
   const c = useColors();
   return (
@@ -28,13 +28,14 @@ export function ViewerGround({ id }: { id: string }) {
   );
 }
 
-/** The scan's picture from the server (a drawing of the model once it is done), or an icon while there is none. */
+/* Изображението на сканирането от сървъра (рисунка на модела, щом е готов) или икона, докато няма такова. */
 export function ScanThumb({ entry, zoom }: { entry: Entry; zoom?: SharedValue<number> }) {
   const c = useColors();
   const s = useStyles();
   const [failed, setFailed] = useState(false);
   const show = entry.thumb && !!entry.jobId && !failed;
-  // Another URL once done: the phone's image cache must not keep the video frame shown while processing.
+  // Друг адрес след завършване: кешът на изображения на телефона не бива да пази кадъра от видеото, показван по време
+  // на обработката.
   const uri = `${thumbUrl(entry.jobId ?? '')}${entry.status === 'done' ? '?v=model' : ''}`;
   const working = entry.status !== 'done' && entry.status !== 'failed';
   const scaled = useAnimatedStyle(() => ({ transform: [{ scale: zoom ? zoom.value : 1 }] }));
@@ -63,9 +64,12 @@ export function ScanThumb({ entry, zoom }: { entry: Entry; zoom?: SharedValue<nu
   );
 }
 
-/** A scan in a grid: picture on the 3D view's ground, then title and mono date. Over the picture: "AI" on an AI model,
- * and the status unless it is done (the usual case needs no word). All cards are the same height. Pressed, the card
- * dips and the picture leans in a little (the website's hover). */
+/**
+ * Сканиране в мрежа: изображение върху основата на 3D изгледа, после заглавие и моноширинна дата. Върху
+ * изображението: "AI" при AI модел и състоянието, ако не е готово (обичайният случай не се нуждае от дума). Всички
+ * карти са с еднаква височина. При натискане картата хлътва и изображението леко се навежда (ефектът при посочване от
+ * сайта).
+ */
 export function ScanCard({ entry, onPress, onLongPress }: { entry: Entry; onPress: () => void; onLongPress?: () => void }) {
   const c = useColors();
   const s = useStyles();
@@ -118,7 +122,7 @@ export function ScanCard({ entry, onPress, onLongPress }: { entry: Entry; onPres
   );
 }
 
-/** The shape of a card while the list loads. */
+/* Формата на карта, докато списъкът се зарежда. */
 export function ScanCardSkeleton() {
   const s = useStyles();
   return (

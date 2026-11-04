@@ -1,5 +1,5 @@
-// app.json, plus Firebase's file for push notifications once it is in the project. Without the file a build still works,
-// just with no notifications (a build fails on a file that is named here but missing).
+// app.json плюс файла на Firebase за известия, когато е в проекта. Без файла изграждането работи, но без известия
+// (изграждането се проваля, ако тук е посочен липсващ файл).
 const fs = require('fs');
 
 module.exports = ({ config }) => ({

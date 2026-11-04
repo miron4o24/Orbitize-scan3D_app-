@@ -10,14 +10,14 @@ import { font, makeStyles, radius, space, text, useColors } from '@/theme';
 import { CountUp, ease, PressScale } from './motion';
 import { Card, H2, Label, Small, type IconName } from './ui';
 
-// The account's points (lib/progress.ts) on the profile and the home screen: the level in a ring that fills towards
-// the next, the week's challenges, the badges.
+// Точките на профила (lib/progress.ts) в профила и на началния екран: нивото в пръстен, който се запълва към
+// следващото, седмичните предизвикателства и значките.
 
 const AnimatedCircle = Animated.createAnimatedComponent(Circle);
 
 const share = (p: Progress) => Math.min(1, Math.max(0, (p.points - p.level.from) / Math.max(1, p.level.to - p.level.from)));
 
-/** The level's number in a ring filled as far as the points have come towards the next level. */
+/* Номерът на нивото в пръстен, запълнен толкова, колкото точките са напреднали към следващото ниво. */
 function LevelRing({ progress, size }: { progress: Progress; size: number }) {
   const c = useColors();
   const s = useStyles();
@@ -54,7 +54,7 @@ function LevelRing({ progress, size }: { progress: Progress; size: number }) {
   );
 }
 
-/** A thin bar filled to `value` (0..1), growing in. */
+/* Тънка лента, запълнена до `value` (0..1), която нараства при появата. */
 export function Bar({ value, color }: { value: number; color?: string }) {
   const c = useColors();
   const s = useStyles();
@@ -73,7 +73,7 @@ export function Bar({ value, color }: { value: number; color?: string }) {
 
 const nextName = (p: Progress) => (p.level.to - p.points > 0 ? `${p.level.to - p.points} точки до следващото ниво` : 'Следващото ниво е близо');
 
-/** The level on the profile: ring, name, points and how far the next level is. */
+/* Нивото в профила: пръстен, име, точки и колко остава до следващото ниво. */
 export function LevelCard({ progress }: { progress: Progress }) {
   const c = useColors();
   const s = useStyles();
@@ -101,7 +101,7 @@ export function LevelCard({ progress }: { progress: Progress }) {
   );
 }
 
-/** The level on the home screen: one line that opens the profile. */
+/* Нивото на началния екран: един ред, който отваря профила. */
 export function LevelStrip({ progress, onPress }: { progress: Progress; onPress: () => void }) {
   const c = useColors();
   const s = useStyles();

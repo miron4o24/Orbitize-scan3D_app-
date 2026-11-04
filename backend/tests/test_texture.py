@@ -1,4 +1,4 @@
-"""Seam levelling and gap filling of the photo texture (app/texture.py), on a square of two patches."""
+"""Изравняване на шевовете и запълване на празнини в текстурата от снимки (app/texture.py) върху квадрат от две части."""
 
 import numpy as np
 
@@ -6,15 +6,15 @@ from app import texture as TX
 
 
 def two_patches():
-    """A unit square of two triangles that share an edge on the model but lie apart in the atlas: one patch grey 80,
-    the other grey 160 (two frames exposed differently), the rest of the atlas EMPTY."""
+    """Единичен квадрат от два триъгълника с общ ръб върху модела, но разделени в атласа: едната част е сива 80,
+    другата сива 160 (два кадъра с различна експозиция), а останалата част от атласа е EMPTY."""
     a = np.full((64, 64, 3), TX.EMPTY, np.uint8)
     a[4:28, 4:60] = 80
     a[36:60, 4:60] = 160
-    # Model vertices 0..3 (corners of the square); faces (0, 1, 2) and (0, 2, 3) share the edge 0-2.
+    # Върхове на модела 0..3 (ъглите на квадрата); стените (0, 1, 2) и (0, 2, 3) имат общ ръб 0-2.
     uv = np.array([
-        [[0.1, 0.9], [0.9, 0.9], [0.9, 0.6]],  # rows 6..26 of the atlas (v up)
-        [[0.1, 0.4], [0.9, 0.1], [0.1, 0.1]],  # rows 38..58
+        [[0.1, 0.9], [0.9, 0.9], [0.9, 0.6]],  # редове 6..26 от атласа (v нагоре)
+        [[0.1, 0.4], [0.9, 0.1], [0.1, 0.1]],  # редове 38..58
     ])  # fmt: skip
     corner = np.array([[0, 1, 2], [0, 2, 3]])
     return a, uv, corner
@@ -24,16 +24,16 @@ def test_patches_meet_and_the_gaps_take_their_colours():
     a, uv, corner = two_patches()
     out, covered, note = TX.level(a, uv, corner, np.ones(2, bool))
     assert "seam points" in note
-    assert (np.abs(out.astype(int) - TX.EMPTY).sum(2) >= 120).all()  # no EMPTY left between the patches
+    assert (np.abs(out.astype(int) - TX.EMPTY).sum(2) >= 120).all()  # между частите не остава EMPTY
     low, high = out[covered & (np.arange(64)[:, None] < 32)], out[covered & (np.arange(64)[:, None] >= 32)]
-    assert high.mean() - low.mean() < 40  # was 80 apart
-    assert 80 < low.mean() <= high.mean() < 160  # both moved towards each other (one face each: they meet)
+    assert high.mean() - low.mean() < 40  # разликата беше 80
+    assert 80 < low.mean() <= high.mean() < 160  # и двете се придвижиха една към друга (по една стена: срещат се)
 
 
 def test_rasterize_finds_each_texel_once():
     owner, bary = TX.rasterize(np.array([[[0, 0], [1, 0], [0, 1]], [[1, 0], [1, 1], [0, 1]]], float), 8, 8,
                                np.array([0, 1]))  # fmt: skip
-    assert (owner >= 0).all()  # the two triangles tile the whole square
+    assert (owner >= 0).all()  # двата триъгълника покриват целия квадрат
     assert np.allclose(bary.sum(2), 1, atol=1e-5)
 
 

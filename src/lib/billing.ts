@@ -4,8 +4,8 @@ import { Platform } from 'react-native';
 import { confirmGooglePurchase } from './api';
 import { updateProfile } from './session';
 
-// Pro through Google Play. The phone only shows the offer and takes the payment; the server checks each purchase with
-// Google before it counts (backend app/billing.py). Not in Expo Go, which has no store inside.
+// Pro през Google Play. Телефонът само показва предложението и приема плащането; сървърът проверява всяка покупка при
+// Google, преди да я зачете (сървър app/billing.py). Не работи в Expo Go, което няма вграден магазин.
 
 type Iap = typeof import('expo-iap');
 export type ProOffer = { price: string; sku: string; offerToken: string | null };
@@ -33,7 +33,7 @@ async function connect(iap: Iap) {
   connected = true;
 }
 
-/** Pro's price from the store; null when it cannot be bought on this phone. */
+/* Цената на Pro от магазина; null, когато на този телефон не може да се купи. */
 export async function proOffer(sku: string): Promise<ProOffer | null> {
   const iap = load();
   if (!iap) return null;
@@ -49,7 +49,7 @@ export async function proOffer(sku: string): Promise<ProOffer | null> {
   }
 }
 
-/** Pays and makes this account Pro. False when the user changed their mind; throws on trouble. */
+/* Плаща и прави този профил Pro. False, когато потребителят се откаже; при проблем хвърля грешка. */
 export function subscribe(offer: ProOffer): Promise<boolean> {
   const iap = load();
   if (!iap) return Promise.resolve(false);
@@ -64,7 +64,8 @@ export function subscribe(offer: ProOffer): Promise<boolean> {
       try {
         if (!purchase.purchaseToken) throw new Error('Покупката не можа да се провери.');
         updateProfile(await confirmGooglePurchase(purchase.purchaseToken));
-        // Only after the server has it: Google refunds what is not finished within 3 days, so nothing is lost on a failure.
+        // Само след като сървърът я има: Google възстановява сумата за незавършена покупка в рамките на 3 дни, така
+        // че при неуспех нищо не се губи.
         await iap.finishTransaction({ purchase, isConsumable: false });
         resolve(true);
       } catch (e) {
@@ -93,7 +94,7 @@ export function subscribe(offer: ProOffer): Promise<boolean> {
   });
 }
 
-/** An earlier purchase (a new phone, a reinstall) back on this account. True when one was found. */
+/* По-ранна покупка (нов телефон, повторно инсталиране) отново в този профил. True, когато е намерена. */
 export async function restore(sku: string): Promise<boolean> {
   const iap = load();
   if (!iap) return false;
@@ -102,6 +103,6 @@ export async function restore(sku: string): Promise<boolean> {
   const mine = purchases.find((p) => p.productId === sku && p.purchaseToken);
   if (!mine?.purchaseToken) return false;
   updateProfile(await confirmGooglePurchase(mine.purchaseToken));
-  await iap.finishTransaction({ purchase: mine, isConsumable: false }).catch(() => {}); // already finished
+  await iap.finishTransaction({ purchase: mine, isConsumable: false }).catch(() => {}); // вече е завършена
   return true;
 }

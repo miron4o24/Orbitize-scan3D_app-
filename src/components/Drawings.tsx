@@ -5,19 +5,19 @@ import Svg, { Line, Path, Text as SvgText } from 'react-native-svg';
 import { font, makeStyles, useColors } from '@/theme';
 import { useReveal } from './motion';
 
-// The website's feature drawings (index.html .bento): thin lines, an accent for the part that matters, and a small
-// movement that plays once the tile has scrolled into view (motion.Reveal).
+// Рисунките за функциите от сайта (index.html .bento): тънки линии, акцент върху важната част и малко движение, което
+// се изпълнява, щом плочката се превърти в изгледа (motion.Reveal).
 
-/** How far the tile's entrance has got (0..1), started `from` into it and stretched to the end. */
+/* Докъде е стигнала появата на плочката (0..1), започвайки `from` след началото и разтегната до края. */
 function useStage(from = 0) {
   const fallback = useSharedValue(1);
   const p = useReveal() ?? fallback;
   return useDerivedValue(() => Math.min(1, Math.max(0, (p.value - from) / (1 - from))));
 }
 
-const W = 260; // drawings are this wide and centred in their tile
+const W = 260; // рисунките са с тази ширина и центрирани в плочката си
 
-/** A ruler whose marker slides to 100 mm. */
+/* Линийка, чийто маркер се плъзга до 100 мм. */
 export function RulerDrawing() {
   const c = useColors();
   const s = useStyles();
@@ -62,7 +62,7 @@ function Chip({ p, i, name, note, first }: { p: SharedValue<number>; i: number; 
   );
 }
 
-/** The three files, coming up one after another; the one for printing is marked. */
+/* Трите файла, появяващи се един след друг; този за печат е отбелязан. */
 export function FilesDrawing() {
   const s = useStyles();
   const p = useStage(0.1);
@@ -75,7 +75,7 @@ export function FilesDrawing() {
   );
 }
 
-/** A floor seen in perspective, and the model growing onto it at its real size. */
+/* Под в перспектива и моделът, който израства върху него в реалния си размер. */
 export function RoomDrawing() {
   const c = useColors();
   const s = useStyles();
@@ -83,8 +83,8 @@ export function RoomDrawing() {
   const grow = useAnimatedStyle(() => ({ opacity: p.value, transform: [{ translateY: 18 * (1 - p.value) }, { scale: 0.4 + 0.6 * p.value }] }));
   const lines = [];
   for (let i = 0; i <= 8; i++) {
-    const x = 130 + (i - 4) * 16; // far edge
-    const bx = 130 + (i - 4) * 46; // near edge
+    const x = 130 + (i - 4) * 16; // далечен ръб
+    const bx = 130 + (i - 4) * 46; // близък ръб
     lines.push(<Line key={`d${i}`} x1={x} y1={52} x2={bx} y2={112} stroke={c.line} strokeWidth={1} />);
   }
   for (const [y, half] of [
@@ -113,7 +113,7 @@ export function RoomDrawing() {
   );
 }
 
-/** A share link with its switch sliding on. */
+/* Линк за споделяне с плъзгащ се превключвател. */
 export function ShareDrawing() {
   const c = useColors();
   const s = useStyles();
@@ -136,7 +136,7 @@ export function ShareDrawing() {
 const useStyles = makeStyles((c) => ({
   vis: { height: 120, alignItems: 'center', justifyContent: 'center' },
   row: { flexDirection: 'row', gap: 10 },
-  knob: { position: 'absolute', top: 18, left: '50%', marginLeft: W / 2 - 18, alignItems: 'center' }, // over the 100 mm mark
+  knob: { position: 'absolute', top: 18, left: '50%', marginLeft: W / 2 - 18, alignItems: 'center' }, // над отметката за 100 мм
   knobDot: { width: 8, height: 8, borderRadius: 4 },
   knobLine: { width: 1.4, height: 40 },
   chip: {

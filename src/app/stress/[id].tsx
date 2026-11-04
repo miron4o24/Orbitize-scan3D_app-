@@ -49,11 +49,11 @@ import {
 } from '@/lib/stress';
 import { font, makeStyles, radius, space, useColors } from '@/theme';
 
-// The stress test: will the printed object hold? The server works out the stresses for each kind of load once per
-// model (backend app/stress.py); here they are scaled to the weight or height, the plastic and the real size picked,
-// and painted onto the model, blue (calm) to red (breaks), live as the choices change.
+// Тестът за здравина: ще издържи ли отпечатаният предмет? Сървърът изчислява напреженията за всеки вид натоварване
+// веднъж за модел (сървър app/stress.py); тук те се мащабират към избраните тегло или височина, пластмаса и реален
+// размер и се оцветяват върху модела от синьо (спокойно) до червено (чупи се), на живо при промяна на изборите.
 
-// painted: the share of the strength per server MPa it is coloured for now.
+// painted: делът от якостта на MPa от сървъра, за който е оцветен в момента.
 type Loaded = { summary: StressSummary; model: Object3D; values: ArrayLike<number>; colors: BufferAttribute; painted?: number };
 
 const DEFAULT_LOAD: Record<StressCase, number> = { top: 2, hang: 1, side: 0.5, drop: 1 };
@@ -64,7 +64,7 @@ const VERDICTS: Record<Verdict, { title: string; icon: IconName }> = {
   break: { title: 'Ще се счупи', icon: 'close-circle-outline' },
 };
 
-/** An arrow along +y from the origin, `length` long. */
+/* Стрелка по +y от началото на координатите с дължина `length`. */
 function arrow(length: number, size: number, color: string) {
   const head = 0.07 * size;
   const material = new MeshBasicMaterial({ color });
@@ -77,7 +77,7 @@ function arrow(length: number, size: number, color: string) {
   return g;
 }
 
-/** The base it is held by, the force's arrow and the weakest point, around the model. */
+/* Основата, за която е закрепен, стрелката на силата и най-слабата точка около модела. */
 function addGuides(group: Group, model: Object3D, s: StressSummary, accent: string) {
   const box = new Box3().setFromObject(model);
   const dims = box.getSize(new Vector3());
@@ -98,12 +98,12 @@ function addGuides(group: Group, model: Object3D, s: StressSummary, accent: stri
   let dir: Vector3;
   let tail: Vector3;
   if (s.case === 'drop') {
-    dir = new Vector3(0, -1, 0); // the fall: over the object, pointing down
+    dir = new Vector3(0, -1, 0); // падането: над предмета, насочено надолу
     tail = new Vector3(centre.x, box.max.y + gap + length, centre.z);
   } else {
     dir = new Vector3(...(s.load_dir ?? [0, -1, 0])).normalize();
     const at = new Vector3(...(s.load_at ?? [centre.x, box.max.y, centre.z]));
-    // A push ends at the object; a pull (hanging) starts at it.
+    // Натискът завършва при предмета; опънът (окачване) започва от него.
     tail = s.case === 'hang' ? at.clone().addScaledVector(dir, gap) : at.clone().addScaledVector(dir, -(gap + length));
   }
   const a = arrow(length, size, accent);
@@ -111,7 +111,7 @@ function addGuides(group: Group, model: Object3D, s: StressSummary, accent: stri
   a.quaternion.setFromUnitVectors(up, dir);
   group.add(a);
 
-  // The weakest point, seen through the model.
+  // Най-слабата точка, видима през модела.
   const weak = new Vector3(...(s.weak as Vec3));
   const r = 0.022 * size;
   const halo = new Mesh(new SphereGeometry(r * 1.9, 20, 14), new MeshBasicMaterial({ color: '#ef4444', transparent: true, opacity: 0.35, depthTest: false }));
@@ -125,14 +125,14 @@ function addGuides(group: Group, model: Object3D, s: StressSummary, accent: stri
 
 async function loadCase(id: string, source: StressSource, kind: StressCase, accent: string): Promise<Loaded> {
   const summary = await stressSummary(id, source, kind);
-  // Named by the result too: a scan processed again gets new stresses.
+  // Именува се и по резултата: повторно обработено сканиране получава нови напрежения.
   const file = new File(Paths.cache, `stress-${source}-${id}-${kind}-${summary.elements}-${Math.round(summary.max_mpa * 1e6)}.glb`);
   if (!file.exists) await downloadStressModel(id, source, kind, file);
   let scene: Object3D;
   try {
     scene = await parseGlb(file, `stress-${id}-${kind}`);
   } catch (e) {
-    file.delete(); // likely a truncated download: the next try fetches it again
+    file.delete(); // вероятно прекъснато изтегляне: следващият опит го изтегля отново
     throw e;
   }
   let mesh: Mesh | null = null;
@@ -151,7 +151,7 @@ async function loadCase(id: string, source: StressSource, kind: StressCase, acce
   return { summary, model: group, values: values.array as ArrayLike<number>, colors };
 }
 
-/** Colours the model for stresses `per` times the server's, as a share of `strength` (unless it already is). */
+/* Оцветява модела за напрежения `per` пъти тези от сървъра, като дял от `strength` (освен ако вече е оцветен). */
 function paint(l: Loaded, per: number, strength: number) {
   const k = per / strength;
   if (l.painted === k) return;
@@ -179,7 +179,7 @@ export function ErrorBoundary({ retry }: ErrorBoundaryProps) {
   );
 }
 
-/** While the server works it out: the seconds so far, so a long first test does not look stuck. */
+/* Докато сървърът изчислява: изминалите секунди, за да не изглежда дългият първи тест зациклил. */
 function Waiting() {
   const s = useStyles();
   const [waited, setWaited] = useState(0);
@@ -224,8 +224,8 @@ export default function StressTest() {
     loadCase(id, source, kind, c.accent).then(
       (l) => {
         setResults((r) => ({ ...r, [kind]: l }));
-        checkProgress(true); // a first test of this kind earns points
-        refreshProfile().catch(() => {}); // the free plan's count of tested models
+        checkProgress(true); // първи тест от този вид носи точки
+        refreshProfile().catch(() => {}); // броят на тестваните модели в безплатния план
       },
       (e) => setErrors((er) => ({ ...er, [kind]: errorText(e) })),
     );
@@ -239,7 +239,7 @@ export default function StressTest() {
   const scale = o?.scale ?? 0;
   const strength = o?.strength ?? 1;
 
-  // A tick when the verdict turns: worse is felt.
+  // Потрепване при промяна на оценката: по-лошата се усеща.
   const verdict = o?.verdict;
   const lastVerdict = useRef<Verdict | undefined>(undefined);
   useEffect(() => {

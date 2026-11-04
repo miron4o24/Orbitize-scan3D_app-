@@ -17,8 +17,9 @@ type Props = {
   onDone: (spot: Spot) => void;
 };
 
-// The model over the whole screen to point at the place a text change is for ("smooth here", "make this red"): a tap
-// marks it with a dot, a drag turns the model. As FullscreenModel, the viewer drops its own small view meanwhile.
+// Моделът на целия екран, за да се посочи мястото на текстова промяна ("smooth here", "make this red"): докосване го
+// отбелязва с кръгче, влачене върти модела. Както при FullscreenModel, екранът за преглед междувременно маха малкия
+// си изглед.
 export function SpotPicker({ visible, model, initial, onClose, onDone }: Props) {
   const c = useColors();
   const s = useStyles();

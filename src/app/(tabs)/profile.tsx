@@ -80,7 +80,7 @@ function Guest() {
         <Header title="Не сте влезли" />
         <Appear index={1} style={s.guest}>
           <Small>Влезте, за да пазите моделите си на всеки телефон.</Small>
-          {/* The sign-in screen comes back once the guest mark is gone. */}
+          {/* Екранът за вход се връща, щом отметката за гост изчезне. */}
           <Button title="Вход или регистрация" icon="log-in-outline" onPress={() => clearSession()} />
         </Appear>
         <Appear index={2}>
@@ -98,7 +98,7 @@ function Guest() {
 function Account({ user }: { user: Profile }) {
   const c = useColors();
   const s = useStyles();
-  const [busy, setBusy] = useState<string | null>(null); // what is running, for its spinner
+  const [busy, setBusy] = useState<string | null>(null); // какво работи в момента, за индикатора му
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const scrollY = useScrollY();
@@ -107,7 +107,7 @@ function Account({ user }: { user: Profile }) {
 
   useFocusEffect(
     useCallback(() => {
-      refreshProfile().catch(() => {}); // fresh stats; offline keeps the last ones
+      refreshProfile().catch(() => {}); // нова статистика; без връзка остава последната
       checkProgress(true);
     }, []),
   );
@@ -198,7 +198,7 @@ function Account({ user }: { user: Profile }) {
     user.stats.published != null ? [user.stats.published, 'В общността'] : [user.stats.shared, 'Споделени'],
   ];
   const spinner = (what: string) => (busy === what ? <ActivityIndicator size="small" color={c.muted} /> : undefined);
-  // The free plan's limits; Pro has none to show.
+  // Ограниченията на безплатния план; при Pro няма какво да се покаже.
   const limits = (
     [
       ['stress', 'Тестове за здравина'],

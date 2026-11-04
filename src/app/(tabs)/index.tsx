@@ -21,8 +21,8 @@ import { checkProgress, useProgress } from '@/lib/progress';
 import { useSession } from '@/lib/session';
 import { makeStyles, space, text, useColors } from '@/theme';
 
-// Home: a headline, the button that starts a scan and the scans. Until the first scan, the stage with the cube walks
-// through the three steps.
+// Начален екран: заглавие, бутонът за започване на сканиране и сканиранията. До първото сканиране сцената с куба
+// минава през трите стъпки.
 
 const JOURNEY: Journey = [
   { title: 'Обиколете предмета', icon: 'phone-portrait-outline' },
@@ -43,14 +43,14 @@ export default function Home() {
   const firstTime = !loading && !hasScans;
   const progress = useProgress();
 
-  const canAi = !!user && aiAvailable(); // re-read whenever the session (profile) changes
+  const canAi = !!user && aiAvailable(); // прочита се отново при всяка промяна на сесията (профила)
   const aiTitle = `${PRO_INFO.single.label} · ${PRO_INFO.single.time}`;
   const scanTitle = `${SCAN_INFO.label} · ${SCAN_INFO.time}`;
 
   useFocusEffect(
     useCallback(() => {
       checkProgress();
-      refreshProfile().catch(() => {}); // Pro switched on or off by the owner
+      refreshProfile().catch(() => {}); // Pro, включен или изключен от собственика
     }, []),
   );
 
@@ -69,7 +69,7 @@ export default function Home() {
   const scan = () => router.push('/capture');
   const filmAi = () => router.push({ pathname: '/capture', params: { ai: '1' } });
 
-  // A video filmed earlier: with both ways on offer, the user says which.
+  // Видео, заснето по-рано: при наличие на двата начина потребителят казва кой.
   const upload = () => {
     if (!canAi) return pickVideo();
     Alert.alert('Какъв модел?', undefined, [

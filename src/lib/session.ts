@@ -4,8 +4,8 @@ import { useSyncExternalStore } from 'react';
 
 import type { ProMethod } from './api';
 
-// Who is using the app: a signed-in account (server session token in secure storage, the profile in a file so the
-// app opens signed in without the network), or nobody yet (sign-in screen).
+// Кой използва приложението: влязъл профил (сесийният ключ е в защитено хранилище, а профилът във файл, за да се
+// отваря приложението влязло и без мрежа) или все още никой (екран за вход).
 
 export type Profile = {
   id: string;
@@ -13,16 +13,17 @@ export type Profile = {
   name: string;
   google_picture: string | null;
   has_avatar: boolean;
-  created: number; // Unix seconds
-  stats: { scans: number; done: number; seconds: number; shared: number; published?: number }; // published: newer servers
-  // Pro: may make AI models; ai: which ones the server has keys for; owner: the Pro page (newer servers)
+  created: number; // секунди по Unix
+  stats: { scans: number; done: number; seconds: number; shared: number; published?: number }; // published: по-нови сървъри
+  // Pro: може да създава AI модели; ai: за кои сървърът има ключове; owner: страницата за Pro (по-нови сървъри)
   pro?: boolean;
-  pro_until?: number | null; // Pro by payment: until when (Unix seconds)
-  billing?: boolean; // Pro can be bought in the app (the server is set up for it)
-  pro_product?: string; // its store product
+  pro_until?: number | null; // Pro чрез плащане: до кога (секунди по Unix)
+  billing?: boolean; // Pro може да се купи в приложението (сървърът е настроен за това)
+  pro_product?: string; // продуктът му в магазина
   owner?: boolean;
   ai?: Partial<Record<ProMethod, boolean>>;
-  // The free plan's counted uses (backend app/plans.py): limit null on Pro; refs: the models already counted
+  // Броените използвания от безплатния план (сървър app/plans.py): limit е null при Pro; refs: вече преброените
+  // модели
   limits?: Record<LimitKind, { used: number; limit: number | null; refs: string[] }>;
 };
 
@@ -32,7 +33,7 @@ export type Session = { kind: 'account'; token: string; user: Profile } | null;
 
 const TOKEN_KEY = 'session_token';
 const profileFile = () => new File(Paths.document, 'profile.json');
-const guestFile = () => new File(Paths.document, 'guest'); // left by older versions, which had guests
+const guestFile = () => new File(Paths.document, 'guest'); // остатък от по-стари версии, които имаха гости
 
 function load(): Session {
   try {
@@ -40,12 +41,12 @@ function load(): Session {
     const token = SecureStore.getItem(TOKEN_KEY);
     const f = profileFile();
     if (token && f.exists) return { kind: 'account', token, user: JSON.parse(f.textSync()) as Profile };
-  } catch {} // unreadable: sign in again
+  } catch {} // не се чете: влезте отново
   return null;
 }
 
 let current: Session = load();
-let avatarVersion = Date.now(); // changes when the own photo changes, so cached pictures reload
+let avatarVersion = Date.now(); // променя се при смяна на собствената снимка, за да се презаредят кешираните изображения
 const listeners = new Set<() => void>();
 
 function emit(next: Session) {
@@ -71,7 +72,7 @@ export async function signedIn(token: string, user: Profile) {
   emit({ kind: 'account', token, user });
 }
 
-/** A fresh profile from the server (name, photo or stats changed). */
+/* Нов профил от сървъра (променени име, снимка или статистика). */
 export function updateProfile(user: Profile) {
   if (current?.kind !== 'account') return;
   if (user.has_avatar !== current.user.has_avatar) avatarVersion = Date.now();
@@ -84,7 +85,7 @@ export function avatarChanged() {
   if (current) emit({ ...current });
 }
 
-/** Forgets the account on this phone (the server session is ended by auth.signOut). */
+/* Забравя профила на този телефон (сесията на сървъра се приключва от auth.signOut). */
 export async function clearSession() {
   await SecureStore.deleteItemAsync(TOKEN_KEY).catch(() => {});
   if (profileFile().exists) profileFile().delete();

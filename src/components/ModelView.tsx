@@ -27,14 +27,18 @@ import {
   type Object3D,
 } from 'three';
 
-/** A point on the model: shares (0-1) of its bounding box along its own (glTF) x, y and z axes. The server turns it
- * back into the model's coordinates (backend app/edit.py spot_point). */
+/**
+ * Точка върху модела: дялове (0-1) от ограничаващата му кутия по собствените му (glTF) оси x, y и z. Сървърът я
+ * превръща обратно в координати на модела (сървър app/edit.py spot_point).
+ */
 export type Spot = readonly [number, number, number];
 
-/** background: the radial gradient behind the model, centre → edge colour (#rrggbb). beforeDraw: runs before each
- * drawing, and a new one draws again (the stress test recolours the model in place). onPick: a tap on the model
- * (not a drag) picks the point under the finger, and tells the model's size in its own axes; spot: a point to mark with
- * a dot; marks: several, joined by a line (measuring). */
+/**
+ * background: радиалният градиент зад модела, цвят от центъра към ръба (#rrggbb). beforeDraw: изпълнява се преди
+ * всяко рисуване, а нова функция рисува отново (тестът за здравина оцветява модела на място). onPick: докосване на
+ * модела (не влачене) избира точката под пръста и съобщава размера на модела в собствените му оси; spot: точка,
+ * отбелязана с кръгче; marks: няколко, свързани с линия (измерване).
+ */
 type Props = {
   model: Object3D;
   wireframe: boolean;
@@ -50,8 +54,8 @@ type Stage = {
   renderer: WebGLRenderer;
   scene: Scene;
   camera: PerspectiveCamera;
-  orbit: Group; // user rotation and zoom
-  fit: Group; // scales the model into a 2-unit cube
+  orbit: Group; // завъртане и мащабиране от потребителя
+  fit: Group; // мащабира модела до куб с ръб 2 единици
   backdrop: ShaderMaterial;
 };
 
@@ -60,8 +64,8 @@ function rgb(hex: string) {
   return new Vector3(r, g, b);
 }
 
-// The gradient as a screen-filling quad drawn first. Its colours go out as they are (no colour-space step in the
-// shader), so they match the app's own colours exactly.
+// Градиентът като четириъгълник на целия екран, нарисуван пръв. Цветовете му излизат непроменени (без преобразуване
+// на цветовото пространство в шейдъра), затова съвпадат точно с цветовете на приложението.
 function backdrop() {
   const material = new ShaderMaterial({
     uniforms: { inner: { value: new Vector3() }, outer: { value: new Vector3() } },
@@ -79,13 +83,13 @@ function backdrop() {
 }
 
 const INITIAL = { rx: 0.35, ry: 0.6, zoom: 1 };
-const TAP_MOVE = 8; // a touch that moves less than this (points) and ends within TAP_MS is a tap, not a turn
+const TAP_MOVE = 8; // докосване, което се мести по-малко от това (точки) и завършва в рамките на TAP_MS, е натискане, а не завъртане
 const TAP_MS = 400;
 const SPOT_COLOR = 0xff3d2e;
-const SPOT_SIZE = 0.018; // the dot's radius, as a share of the model's largest side
+const SPOT_SIZE = 0.018; // радиусът на кръгчето като дял от най-голямата страна на модела
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
-// three.js renders into a canvas; expo-gl only provides the WebGL context, so hand three a minimal stand-in.
+// three.js рисува върху канава; expo-gl дава само контекста на WebGL, затова подаваме на three минимален заместител.
 function createStage(gl: ExpoWebGLRenderingContext): Stage {
   const { drawingBufferWidth: width, drawingBufferHeight: height } = gl;
   const canvas = {
@@ -116,16 +120,16 @@ function createStage(gl: ExpoWebGLRenderingContext): Stage {
   return { gl, renderer, scene, camera, orbit, fit, backdrop: material };
 }
 
-const INTRO_TURN = 1.1; // radians the model turns into place as it appears
+const INTRO_TURN = 1.1; // радианите, на които моделът се завърта на мястото си при появата
 const INTRO_MS = 1400;
 
-// One finger orbits, two fingers pinch-zoom. Renders only when something changes: after its short turn into place
-// as it appears, nothing animates.
+// Един пръст върти, два мащабират. Рисува само при промяна: след краткото завъртане при появата нищо не се анимира.
 export function ModelView({ model, wireframe, background, beforeDraw, spot, marks, onPick }: Props) {
   const reduce = useReducedMotion();
   const [view, setView] = useState(() => (reduce ? INITIAL : { ...INITIAL, ry: INITIAL.ry - INTRO_TURN }));
   const [stage, setStage] = useState<Stage | null>(null);
-  // touched: the turn stops for good at the first touch. The rest is what a tap needs, kept current for the handlers.
+  // touched: завъртането спира окончателно при първото докосване. Останалото е нужно при натискане и се поддържа
+  // актуално за обработчиците.
   const live = useRef({
     view,
     touched: false,
@@ -142,7 +146,7 @@ export function ModelView({ model, wireframe, background, beforeDraw, spot, mark
     let start = { ...INITIAL, dist: 0, at: 0 };
     const current = () => live.current.view;
     return PanResponder.create({
-      // Capture: the GLView below would otherwise claim the touches.
+      // Прихващане: иначе GLView отдолу би поел докосванията.
       onStartShouldSetPanResponderCapture: () => true,
       onMoveShouldSetPanResponderCapture: () => true,
       onPanResponderGrant: () => {
@@ -167,7 +171,7 @@ export function ModelView({ model, wireframe, background, beforeDraw, spot, mark
     });
   });
 
-  // The point of the model under a tap, as a Spot.
+  // Точката от модела под докосването, като Spot.
   function pick(x: number, y: number) {
     const { stage: st, model: m, box, size, onPick: picked } = live.current;
     if (!st || !box || !picked || !size.width || !size.height) return;
@@ -182,7 +186,7 @@ export function ModelView({ model, wireframe, background, beforeDraw, spot, mark
     picked([share(local.x, box.min.x, d.x), share(local.y, box.min.y, d.y), share(local.z, box.min.z, d.z)], [d.x, d.y, d.z]);
   }
 
-  // The turn into place, once the GL surface is there.
+  // Завъртането на място, щом повърхността на GL е налична.
   useEffect(() => {
     if (!stage || reduce) return;
     const from = INITIAL.ry - INTRO_TURN;
@@ -199,12 +203,13 @@ export function ModelView({ model, wireframe, background, beforeDraw, spot, mark
 
   useEffect(() => () => stage?.renderer.dispose(), [stage]);
 
-  // Centre the model and fit it into a 2-unit cube. Measured detached, so a re-run never compounds the offset.
+  // Центрира модела и го вписва в куб с ръб 2 единици. Измерва се отделно, така че повторно изпълнение никога не
+  // натрупва отместването.
   useEffect(() => {
     if (!stage) return;
     model.removeFromParent();
     const box = new Box3().setFromObject(model);
-    live.current.box = box; // in the model's own axes: it is measured detached
+    live.current.box = box; // в собствените оси на модела: измерва се отделно
     const size = box.getSize(new Vector3());
     const centre = new Group();
     centre.position.copy(box.getCenter(new Vector3()).negate());
@@ -223,8 +228,8 @@ export function ModelView({ model, wireframe, background, beforeDraw, spot, mark
     });
   }, [model, wireframe]);
 
-  // The picked points as dots on the model (in its own axes, so they turn with it), two joined by a line that shows
-  // through the model. Not hit by taps themselves.
+  // Избраните точки като кръгчета върху модела (в собствените му оси, за да се въртят с него), като две се свързват с
+  // линия, видима през модела. Самите те не се улавят от докосвания.
   const shown = JSON.stringify(marks ?? (spot ? [spot] : []));
   useEffect(() => {
     const box = live.current.box;

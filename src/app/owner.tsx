@@ -8,8 +8,9 @@ import { shortDate } from '@/lib/dates';
 import { useSession } from '@/lib/session';
 import { makeStyles, useColors } from '@/theme';
 
-// The owner's page (backend app/accounts.py OWNER_EMAILS): who is Pro, until Pro is a paid plan. The server checks
-// the owner again on every call. The AI services' keys are the app's and are set on the server, not here.
+// Страницата на собственика (сървър app/accounts.py OWNER_EMAILS): кой е с Pro, докато Pro не стане платен план.
+// Сървърът проверява собственика при всяко извикване. Ключовете на AI услугите са на приложението и се задават на
+// сървъра, не тук.
 
 export default function Owner() {
   const session = useSession();
@@ -31,7 +32,7 @@ export default function Owner() {
     );
   }, []);
 
-  // A short pause after typing before asking the server.
+  // Кратка пауза след въвеждането, преди да се попита сървърът.
   useEffect(() => {
     if (!owner) return;
     const t = setTimeout(() => search(query), 350);

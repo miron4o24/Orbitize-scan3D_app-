@@ -19,12 +19,12 @@ export default function Community() {
   const scrollY = useScrollY();
   const account = session?.kind === 'account';
   const [sort, setSort] = useState<PostSort>('new');
-  const [posts, setPosts] = useState<Post[] | null>(null); // null: the first page is loading
+  const [posts, setPosts] = useState<Post[] | null>(null); // null: първата страница се зарежда
   const [next, setNext] = useState<number | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [more, setMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const asked = useRef(0); // only the latest request's answer is shown
+  const asked = useRef(0); // показва се само отговорът на последната заявка
 
   const load = useCallback(
     async (pulled?: boolean) => {
@@ -49,7 +49,8 @@ export default function Community() {
     [account, sort],
   );
 
-  // Fresh on every visit (likes change on a post's page, and others post meanwhile) and on another sort.
+  // Наново при всяко посещение (харесванията се променят на страницата на публикацията, а други публикуват
+  // междувременно) и при друго подреждане.
   useFocusEffect(
     useCallback(() => {
       load();
@@ -76,7 +77,7 @@ export default function Community() {
   function changeSort(v: PostSort) {
     if (v === sort) return;
     setPosts(null);
-    setSort(v); // a new load, so the focus effect asks again
+    setSort(v); // ново зареждане, за да попита отново ефектът при фокус
   }
 
   const open = (p: Post) => router.push({ pathname: '/community/[id]', params: { id: p.id } });

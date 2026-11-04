@@ -37,20 +37,20 @@ def test_motion_measures_change_between_frames():
 
 
 def test_pick_spreads_frames_by_movement_not_time():
-    # 10 frames standing still, then 10 frames moving: almost all picks should come from the moving part.
+    # 10 неподвижни кадъра, после 10 движещи се: почти всички избрани трябва да са от движещата се част.
     moved = np.array([0.0] * 10 + [1.0] * 10)
     scores = np.ones(20)
     picks = V.pick(scores, 10, moved)
     assert sum(p >= 10 for p in picks) >= 8
     assert picks == sorted(set(picks))
-    # Nothing moved at all: back to equal time slices.
+    # Нищо не се е движило: обратно към равни участъци по време.
     assert V.pick(scores, 4, np.zeros(20)) == V.pick(scores, 4)
 
 
 def test_frame_count_bounds():
     assert V.frame_count(30 * V.CANDIDATE_FPS) == 30 * V.FRAMES_PER_S
     assert V.frame_count(5 * V.CANDIDATE_FPS) == V.MIN_FRAMES
-    assert V.frame_count(10) == 10  # never more frames than candidates
+    assert V.frame_count(10) == 10  # никога повече кадри от кандидатите
     assert V.frame_count(600 * V.CANDIDATE_FPS) == V.MAX_FRAMES
 
 
@@ -60,15 +60,15 @@ def test_extract_frames_from_real_video(tmp_path):
     def sh(_step, argv):
         subprocess.run([str(a) for a in argv], check=True)
 
-    # Portrait phone-style clip, larger than the frame size cap (4K, for the photo texture) so the scale filter is
-    # exercised.
+    # Вертикален клип като от телефон, по-голям от ограничението за кадри (4K, за текстурата от снимки), за да се
+    # задейства филтърът за мащабиране.
     clip = tmp_path / "video.mp4"
     sh("", [FFMPEG, "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=1800x4000:rate=30:duration=20",
             "-pix_fmt", "yuv420p", clip])  # fmt: skip
     photos, work = tmp_path / "photos", tmp_path / "work"
     photos.mkdir()
     work.mkdir()
-    (photos / "img_9999.jpg").write_bytes(b"stale")  # left over from an earlier run
+    (photos / "img_9999.jpg").write_bytes(b"stale")  # остатък от по-ранно изпълнение
 
     n = extract_frames(clip, photos, work, sh)
     names = sorted(p.name for p in photos.iterdir())

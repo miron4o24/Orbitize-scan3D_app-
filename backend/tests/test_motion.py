@@ -1,6 +1,7 @@
-"""app/motion.py on a synthetic scan: an oval cylinder filmed in two circles, low then high, with exact outlines and
-the phone's orientation as the app records it (W3C angles from Android's sensor, the video starting 0.8 s after the
-recording was requested). Oval, as on a round object neither the delay nor the heading would show."""
+"""app/motion.py върху изкуствено сканиране: овален цилиндър, заснет в два кръга, първо ниско и после високо, с точни
+очертания и положението на телефона, както го записва приложението (ъгли по W3C от сензора на Android, видеото започва
+0,8 с след заявяването на записа). Овален, защото при кръгъл предмет не биха се виждали нито закъснението, нито
+посоката."""
 
 import json
 
@@ -13,16 +14,16 @@ from scipy.spatial.transform import Rotation
 from app import motion as MO
 from app import segment as S
 
-W, H = 540, 960  # portrait video frames
+W, H = 540, 960  # вертикални видео кадри
 FOCAL = 0.77 * H
-RX, RY, HALF = 0.6, 0.4, 0.375  # the cylinder, centred on the origin: 1.2 x 0.8 x 0.75
+RX, RY, HALF = 0.6, 0.4, 0.375  # цилиндърът, центриран в началото на координатите: 1,2 x 0,8 x 0,75
 DELAY = 0.8
-LOOP = 20.0  # s per circle
+LOOP = 20.0  # секунди за кръг
 
 
 def android_angles(R: np.ndarray) -> np.ndarray:
-    """What the app records for phone-to-world rotation R: expo-sensors' DeviceMotion.rotation on Android is
-    (-azimuth, -pitch, roll) of SensorManager.getOrientation."""
+    """Какво записва приложението за завъртането R от телефона към света: DeviceMotion.rotation от expo-sensors на
+    Android е (-azimuth, -pitch, roll) от SensorManager.getOrientation."""
     r = R.reshape(-1, 9)
     azimuth, pitch, roll = np.arctan2(r[:, 1], r[:, 4]), np.arcsin(-r[:, 7]), np.arctan2(-r[:, 6], r[:, 8])
     return np.stack([-azimuth, -pitch, roll], -1)
@@ -35,8 +36,8 @@ def test_device_matrices_match_android():
 
 
 def path(t: np.ndarray):
-    """Camera centres and camera-to-world rotations at video times t: a low circle, then a high one, the pace, the
-    distance and the aim wandering a little."""
+    """Центрове на камерите и завъртания от камерата към света във видео времена t: нисък кръг, после висок, като
+    темпото, разстоянието и насочването леко се отклоняват."""
     az = 2 * np.pi * t / LOOP + 0.4 + 0.25 * np.sin(2 * np.pi * t / 8)
     rise = np.clip((t - LOOP + 1.5) / 3, 0, 1)
     el = np.radians(8 + 37 * rise * rise * (3 - 2 * rise))
@@ -46,22 +47,23 @@ def path(t: np.ndarray):
     fwd = (aim - c) / np.linalg.norm(aim - c, axis=1, keepdims=True)
     right = np.cross(fwd, [0, 0, 1.0])
     right /= np.linalg.norm(right, axis=1, keepdims=True)
-    return c, np.stack([right, np.cross(fwd, right), fwd], -1)  # columns: camera x (right), y (down), z (forward)
+    return c, np.stack([right, np.cross(fwd, right), fwd], -1)  # колони: камера x (надясно), y (надолу), z (напред)
 
 
 def outline(c: np.ndarray, C: np.ndarray) -> np.ndarray:
-    """The cylinder's exact mask (as segment.py stores it) from camera centre c, camera-to-world rotation C."""
+    """Точната маска на цилиндъра (както я пази segment.py) от центъра на камерата c и завъртането от камерата към
+    света C."""
     s = S.MASK_SCALE
     u, v = np.meshgrid((np.arange(W // s) + 0.5) * s, (np.arange(H // s) + 0.5) * s)
     d = np.stack([(u - W / 2) / FOCAL, (v - H / 2) / FOCAL, np.ones_like(u)], -1) @ C.T
-    k = np.array([1 / RX, 1 / RY])  # squashed so the side is the unit circle
+    k = np.array([1 / RX, 1 / RY])  # сплескано, така че страната да е единичната окръжност
     cs, ds = c[:2] * k, d[..., :2] * k
     a = (ds**2).sum(-1)
     b = 2 * (cs * ds).sum(-1)
     disc = b * b - 4 * a * ((cs**2).sum() - 1)
     hit_t = (-b - np.sqrt(np.maximum(disc, 0))) / (2 * np.maximum(a, 1e-12))
-    hit = (disc >= 0) & (hit_t > 0) & (np.abs(c[2] + hit_t * d[..., 2]) <= HALF)  # the side
-    for zc in (-HALF, HALF):  # the caps
+    hit = (disc >= 0) & (hit_t > 0) & (np.abs(c[2] + hit_t * d[..., 2]) <= HALF)  # страната
+    for zc in (-HALF, HALF):  # основите
         tc = (zc - c[2]) / np.where(np.abs(d[..., 2]) > 1e-12, d[..., 2], 1e-12)
         hit |= (tc > 0) & (((cs + tc[..., None] * ds) ** 2).sum(-1) <= 1)
     return np.where(hit, 255, 0).astype(np.uint8)
@@ -69,7 +71,7 @@ def outline(c: np.ndarray, C: np.ndarray) -> np.ndarray:
 
 @pytest.fixture(scope="module")
 def scan(tmp_path_factory):
-    """A job directory as the pipeline leaves it: photos, frames.json, motion.json, and the photo masks."""
+    """Папка на задача, каквато я оставя обработката: снимки, frames.json, motion.json и маските на снимките."""
     job = tmp_path_factory.mktemp("job")
     (job / "photos").mkdir()
     times = np.arange(80) * 0.5
@@ -81,9 +83,9 @@ def scan(tmp_path_factory):
         Image.new("RGB", (W, H), (200, 40, 40)).save(job / "photos" / name)
     np.savez_compressed(job / "masks.npz", **masks)
     (job / MO.FRAME_TIMES).write_text(json.dumps({f"img_{i + 1:04d}.jpg": t for i, t in enumerate(times)}))
-    s = np.arange(0, 2 * LOOP + 2, 0.02)  # sensor times: since the recording was requested
+    s = np.arange(0, 2 * LOOP + 2, 0.02)  # времена на сензора: от заявяването на записа
     _, C = path(np.clip(s - DELAY, 0, None))
-    compass = Rotation.from_euler("z", 1.0).as_matrix()  # the sensor's north is not the synthetic world's +y
+    compass = Rotation.from_euler("z", 1.0).as_matrix()  # северът на сензора не е +y на изкуствения свят
     angles = android_angles(compass @ C @ MO.CAM_FROM_DEVICE)
     (job / MO.MOTION).write_text(json.dumps({"samples": np.c_[s, angles].tolist()}))
     return job
@@ -95,7 +97,7 @@ def test_fit(scan):
         masks = {n: z[n] for n in z.files}
     fr = MO.frames(sorted(masks), times, masks, S.MASK_SCALE, (W, H))
     dev, score, delay = MO.fit(fr, samples, S.MASK_SCALE, FOCAL)
-    # The delay shows only weakly (and matters as little: the shape below came out the same from -0.2 to 1.8 s).
+    # Закъснението се вижда слабо (и е също толкова маловажно: формата по-долу излезе еднаква от -0,2 до 1,8 с).
     assert score > 0.85 and -0.5 <= delay <= 2.0
     np.testing.assert_allclose(dev, MO.device_rotations(samples, fr.times + delay))
 
@@ -103,12 +105,12 @@ def test_fit(scan):
 def test_gravity_up_in_the_camera_solvers_coordinates(scan):
     from app import mesh as M
 
-    # The camera solver's world is turned, scaled and shifted any way: X' = 2.5 Q X + s.
+    # Светът на решаващия алгоритъм за камерите е завъртян, мащабиран и изместен произволно: X' = 2.5 Q X + s.
     Q = Rotation.from_euler("xyz", [0.7, -1.1, 2.0]).as_matrix()
     times = json.loads((scan / MO.FRAME_TIMES).read_text())
-    names = sorted(times)[:25]  # only part of the low circle: image up does not average to vertical here
+    names = sorted(times)[:25]  # само част от ниския кръг: посоката нагоре на изображението тук не се осреднява до вертикала
     c, C = path(np.array([times[n] for n in names]))
-    R = np.einsum("ij,njk->nik", Q, C).transpose(0, 2, 1)  # world' -> camera
+    R = np.einsum("ij,njk->nik", Q, C).transpose(0, 2, 1)  # свят' -> камера
     t = -np.einsum("nij,nj->ni", R, 2.5 * c @ Q.T + [3, -1, 4])
     v = M.Views(R, t, np.tile([FOCAL, FOCAL, W / 2, H / 2], (len(names), 1)), names)
     up, spread = MO.gravity_up(scan, v)
@@ -121,19 +123,19 @@ def test_main_builds_the_cylinder(scan):
     assert info["frames"] == 80 and info["score"] > 0.9 and json.loads(out.with_suffix(".json").read_text()) == info
     mesh = trimesh.load(out, force="mesh")
     assert mesh.is_watertight
-    # Across: the oval's axes (turned by the compass), from the spread of the surface.
+    # Напречно: осите на овала (завъртени от компаса), от разпределението на повърхността.
     xy = mesh.vertices[:, :2] - mesh.vertices[:, :2].mean(0)
     axes = xy @ np.linalg.svd(xy, full_matrices=False)[2].T
     long, short = np.ptp(axes, axis=0)
     assert short / long == pytest.approx(RY / RX, abs=0.06)
-    # The height: no wedge below the table, a small cone on top (seen from 8° above at the lowest).
+    # Височината: без клин под масата, с малък конус отгоре (видян в най-ниската точка от 8° отгоре).
     assert mesh.extents[2] / long == pytest.approx(HALF / RX, abs=0.07)
 
 
 def test_main_needs_the_phone_to_go_around(scan, tmp_path):
-    """Outlines agree whatever the poses when all frames look from one side: no shape then."""
+    """Очертанията съвпадат при всякакви положения, когато всички кадри гледат от една страна: тогава няма форма."""
     data = json.loads((scan / MO.MOTION).read_text())
-    data["samples"] = [[t, 0.3, 1.2, 0.05] for t, *_ in data["samples"]]  # stuck sensor
+    data["samples"] = [[t, 0.3, 1.2, 0.05] for t, *_ in data["samples"]]  # заседнал сензор
     job = tmp_path
     (job / MO.MOTION).write_text(json.dumps(data))
     (job / MO.FRAME_TIMES).write_text((scan / MO.FRAME_TIMES).read_text())

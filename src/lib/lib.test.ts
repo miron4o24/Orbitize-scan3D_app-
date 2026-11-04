@@ -19,7 +19,7 @@ function image(fn: (x: number, y: number) => number) {
   return measure(px, W, H);
 }
 
-// Deterministic pseudo-random texture, like a real textured object.
+// Детерминирана псевдослучайна шарка, като при реален предмет с шарка.
 const noise = (x: number, y: number) => ((Math.sin(x * 12.9898 + y * 78.233) * 43758.5453) % 1 + 1) % 1;
 
 test('sharp texture passes, flat image is rejected as blurry', () => {
@@ -51,20 +51,21 @@ const close = (a: Vec3, b: Vec3) => a.every((v, i) => Math.abs(v - b[i]) < 1e-9)
 test('view direction: flat phone looks down, upright phone looks north', () => {
   assert.ok(close(viewDir({ alpha: 0, beta: 0, gamma: 0 }), [0, 0, -1]));
   assert.ok(close(viewDir({ alpha: 0, beta: Math.PI / 2, gamma: 0 }), [0, 1, 0]));
-  // Turning left by 90° (alpha) points the upright phone west.
+  // Завъртане наляво на 90° (alpha) насочва изправения телефон на запад.
   assert.ok(close(viewDir({ alpha: Math.PI / 2, beta: Math.PI / 2, gamma: 0 }), [-1, 0, 0]));
 });
 
 test('elevation and usable aim', () => {
   const tilt = (deg: number) => (deg * Math.PI) / 180;
-  const v = viewDir({ alpha: 0, beta: tilt(60), gamma: 0 }); // 30° below horizon
+  const v = viewDir({ alpha: 0, beta: tilt(60), gamma: 0 }); // 30° под хоризонта
   assert.equal(Math.round(elevation(v)), -30);
   assert.equal(isUsableAim(v), true);
-  assert.equal(isUsableAim(viewDir({ alpha: 0, beta: tilt(120), gamma: 0 })), false); // aimed upward
-  assert.equal(isUsableAim(viewDir({ alpha: 0, beta: 0, gamma: 0 })), false); // straight down
+  assert.equal(isUsableAim(viewDir({ alpha: 0, beta: tilt(120), gamma: 0 })), false); // насочен нагоре
+  assert.equal(isUsableAim(viewDir({ alpha: 0, beta: 0, gamma: 0 })), false); // право надолу
 });
 
-// Walks `turnDeg` around the object at `degPerS`, looking `downDeg` below the horizon; 20 Hz like the app.
+// Обикаля `turnDeg` около предмета със скорост `degPerS`, гледайки `downDeg` под хоризонта; 20 Hz, както в
+// приложението.
 function walk(o: OrbitTracker, from: number, turnDeg: number, degPerS: number, downDeg: number, t0: number) {
   const rad = (d: number) => (d * Math.PI) / 180;
   const steps = Math.round((turnDeg / degPerS) * 20);
@@ -81,7 +82,7 @@ test('orbit: two circles, the second from higher up, complete the scan', () => {
   assert.ok(o.firstLoopFraction > 0.5 && o.firstLoopFraction < 1);
   t = walk(o, 200, 160, 12, 10, t);
   assert.equal(o.state.loop, 1);
-  // Going round again at the same height does not count for the second circle.
+  // Втора обиколка на същата височина не се брои за втория кръг.
   t = walk(o, 360, 120, 12, 10, t);
   assert.equal(o.state.aim, 'higher');
   assert.equal(o.state.covered[1].filter(Boolean).length, 0);
@@ -91,7 +92,7 @@ test('orbit: two circles, the second from higher up, complete the scan', () => {
 
 test('orbit: the first circle only counts near the object’s height', () => {
   const o = new OrbitTracker();
-  walk(o, 0, 360, 12, 40, 0); // filmed from well above, like a 6 cm speaker from standing height
+  walk(o, 0, 360, 12, 40, 0); // заснет доста отгоре, като колонка от 6 см от височината на изправен човек
   assert.equal(o.state.aim, 'lower');
   assert.equal(o.state.covered[0].filter(Boolean).length, 0);
 });
@@ -100,7 +101,7 @@ test('orbit: the second circle must not look down too steeply', () => {
   const o = new OrbitTracker();
   const t = walk(o, 0, 360, 12, 10, 0);
   assert.equal(o.state.loop, 1);
-  walk(o, 360, 360, 12, 70, t); // nearly straight down: no overlap with the first circle
+  walk(o, 360, 360, 12, 70, t); // почти право надолу: без припокриване с първия кръг
   assert.equal(o.state.aim, 'lower');
   assert.equal(o.state.covered[1].filter(Boolean).length, 0);
 });
@@ -109,7 +110,7 @@ test('orbit: turning too fast covers nothing', () => {
   const o = new OrbitTracker();
   walk(o, 0, 360, 45, 10, 0);
   assert.equal(o.state.pace, 'fast');
-  // Only the first ~0.5 s counts, while the smoothed speed catches up.
+  // Брои се само първата около 0,5 с, докато заглаждането на скоростта навакса.
   assert.ok(o.state.covered[0].filter(Boolean).length <= 4, `${o.state.covered[0].filter(Boolean).length}`);
   assert.equal(o.state.loop, 0);
 });
@@ -117,7 +118,7 @@ test('orbit: turning too fast covers nothing', () => {
 test('print export: Y-up model becomes Z-up and is scaled to the requested size', async () => {
   const { BoxGeometry, Mesh } = await import('three');
   const { exportForPrint } = await import('./exportModel.ts');
-  const tall = new Mesh(new BoxGeometry(1, 4, 2)); // height on Y, like a glTF model
+  const tall = new Mesh(new BoxGeometry(1, 4, 2)); // височина по Y, като при модел glTF
   const stl = exportForPrint(tall, 'stl', 80) as Uint8Array;
   const dv = new DataView(stl.buffer, stl.byteOffset, stl.byteLength);
   const tris = dv.getUint32(80, true);
@@ -132,7 +133,7 @@ test('print export: Y-up model becomes Z-up and is scaled to the requested size'
         max[a] = Math.max(max[a], x);
       }
   const ext = max.map((m, a) => m - min[a]);
-  assert.ok(Math.abs(ext[2] - 80) < 1e-3, `z extent ${ext[2]}`); // old Y (height) is now Z
+  assert.ok(Math.abs(ext[2] - 80) < 1e-3, `z extent ${ext[2]}`); // старото Y (височина) сега е Z
   assert.ok(Math.abs(ext[0] - 20) < 1e-3 && Math.abs(ext[1] - 40) < 1e-3, `${ext}`);
   assert.match(exportForPrint(tall, 'obj', 80) as string, /^v /m);
 });

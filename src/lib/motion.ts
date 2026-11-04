@@ -1,15 +1,16 @@
-// The phone's orientation while filming, for the server's route for plain objects (backend/app/motion.py): it places
-// the frames by how the phone was turned when photo matching cannot. Each sample is
-// [seconds since the recording was requested, alpha, beta, gamma] (radians, W3C device orientation).
+// Положението на телефона по време на записа, за пътя на сървъра за едноцветни предмети (backend/app/motion.py):
+// поставя кадрите според завъртането на телефона, когато съпоставянето на снимките не може. Всяка проба е [секунди от
+// заявяването на записа, alpha, beta, gamma] (радиани, положение на устройството по W3C).
 export type MotionSample = [number, number, number, number];
 
-// One reading as the listener got it: [phone clock ms, sensor timestamp s, alpha, beta, gamma].
+// Едно показание, както го е получил слушателят: [часовник на телефона в мс, времева отметка на сензора в с, alpha,
+// beta, gamma].
 export type RawMotion = [number, number, number, number, number];
 
 const round = (x: number, digits: number) => Math.round(x * 10 ** digits) / 10 ** digits;
 
-// The sensor's own timestamps are exact but count from another origin; the times the listener ran are on the
-// recording's clock but late by a varying delay. So: sensor times, shifted by the median difference.
+// Отметките на сензора са точни, но се броят от друго начало; времената на слушателя са по часовника на записа, но
+// закъсняват с променливо време. Затова: времена на сензора, отместени с медианната разлика.
 export function motionSamples(raw: RawMotion[], startedAt: number): MotionSample[] {
   const ok = raw.filter((r) => r.every(Number.isFinite));
   if (ok.length === 0) return [];

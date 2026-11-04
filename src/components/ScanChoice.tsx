@@ -8,8 +8,10 @@ import type { IconName } from './ui';
 
 const ON_BRAND = '#ffffff';
 
-/** A way to start a model, on Home: an icon, the name, how long it takes, one small line. `highlight` is the one on
- * the brand gradient. */
+/**
+ * Начин за започване на модел на началния екран: икона, име, колко време отнема и един малък ред. `highlight` е този
+ * върху градиента на марката.
+ */
 export function ScanChoice({
   title,
   time,
