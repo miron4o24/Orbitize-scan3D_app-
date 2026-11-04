@@ -1,20 +1,16 @@
-"""The stress test: will the printed object hold? A linear-elastic finite element analysis of the model.
-
-The model (model.ply: z up, standing on z = 0) is filled with cubes, each an 8-node brick element, CELLS of them along
-its longest side. The cubes of the bottom layer are held at their underside; the load depends on the case:
-
-- top:  a weight pressing straight down on the top (the upward faces in the highest TOP_BAND of the object)
-- hang: the base fastened to a ceiling, a weight hanging from the far end (the top pulled away from the base)
-- side: the base held, a push sideways on the top, across the object's narrower side (its weaker way)
-- drop: the object's own weight, which the app turns into a fall from a height (energy balance, lib/stress.ts)
-
-In linear elasticity the stresses grow in proportion to the load, do not depend on the stiffness when the forces are
-given (one isotropic material), and with the object's size L go as 1/LÂ² (a given weight) or as L (its own weight).
-So each case is solved once per model, at REF_MM and for 1 kg (own weight: at RHO_REF), and the app scales the result
-to the weight, height, material and real size the user picks, while they pick it. Results are kept next to the model.
-
-Stresses are von Mises equivalent stresses in MPa, evaluated at the element corners and averaged per node, so a part's
-surface gets its surface stress (bending peaks there)."""
+"""Тестът за здравина: ще издържи ли отпечатаният предмет? Линейно-еластичен анализ с крайни елементи на модела.
+Моделът (model.ply: z нагоре, стои върху z = 0) се запълва с кубове, всеки тухлен елемент с 8 възела, по CELLS на
+най-дългата му страна. Кубовете от долния слой са закрепени отдолу; натоварването зависи от случая. top: тежест,
+натискаща право надолу отгоре (обърнатите нагоре стени в най-високата част TOP_BAND от предмета). hang: основата е
+закрепена за таван, а от далечния край виси тежест (върхът се дърпа от основата). side: основата е закрепена, а
+върхът се бута настрани през по-тясната страна на предмета (по-слабата му посока). drop: собственото тегло на
+предмета, което приложението превръща в падане от височина (енергиен баланс, lib/stress.ts). При линейна
+еластичност напреженията растат пропорционално на товара, не зависят от твърдостта при зададени сили (един
+изотропен материал), а с размера L на предмета вървят като 1/L² (зададено тегло) или като L (собствено тегло).
+Затова всеки случай се решава веднъж за модел, при REF_MM и за 1 кг (собствено тегло: при RHO_REF), а приложението
+мащабира резултата към избраните от потребителя тегло, височина, материал и реален размер, докато той избира.
+Резултатите се пазят до модела. Напреженията са еквивалентни по фон Мизес в MPa, изчислени в ъглите на елементите и
+осреднени за възел, така че повърхността на частта получава повърхностното си напрежение (огъването има пик там)."""
 
 import json
 import logging
@@ -34,20 +30,20 @@ from scipy.spatial import cKDTree
 from . import mesh as M
 
 CASES = ("top", "hang", "side", "drop")
-VERSION = 1  # results of another version are made again
+VERSION = 1  # резултати от друга версия се правят наново
 REF_MM = 100.0
-CELLS = 64  # elements along the longest side
-MAX_ELEMENTS = 70_000  # coarser past this: time and memory
-NU = 0.35  # Poisson's ratio of printing plastics (PLA, PETG, ABS, resins: 0.33-0.40)
-E_REF = 1e9  # Pa: the drop's sag is given at this stiffness and RHO_REF; the app scales by the material's
+CELLS = 64  # елементи по най-дългата страна
+MAX_ELEMENTS = 70_000  # по-грубо отвъд това: време и памет
+NU = 0.35  # коефициент на Поасон за пластмаси за печат (PLA, PETG, ABS, смоли: 0,33-0,40)
+E_REF = 1e9  # Pa: провисването при падане е дадено при тази твърдост и RHO_REF; приложението го мащабира по материала
 RHO_REF = 1000.0  # kg/mÂ³
 G = 9.81
-TOP_BAND = 0.08  # share of the height, at the top, that the load acts on
-BASE_LAYERS = 1  # node layers above the held underside left out of the peak: the clamp's own corner is not the object's
+TOP_BAND = 0.08  # дял от височината отгоре, върху който действа товарът
+BASE_LAYERS = 1  # слоеве възли над закрепената долна страна, изключени от пика: ъгълът на самото закрепване не е на предмета
 VIEW_FACES = 60_000
 RTOL = 1e-6
 TIMEOUT_S = 900
-USER_ERROR = 2  # the test's process: exit code for a StressError (its message on stderr)
+USER_ERROR = 2  # процесът на теста: изходен код за StressError (съобщението е в stderr)
 _lock = threading.Lock()
 log = logging.getLogger("uvicorn.error")
 
@@ -56,21 +52,21 @@ class StressError(Exception):
     pass
 
 
-# --- The brick element ------------------------------------------------------------------------------------------
+# --- Тухленият елемент ----------------------------------------------------------------------------------------------
 
-CORNERS = np.array([[a, b, c] for c in (0, 1) for b in (0, 1) for a in (0, 1)])  # node n = a + 2b + 4c
+CORNERS = np.array([[a, b, c] for c in (0, 1) for b in (0, 1) for a in (0, 1)])  # възел n = a + 2b + 4c
 SIGNS = 2 * CORNERS - 1
 
 
 def strain_matrix(xi: np.ndarray) -> np.ndarray:
-    """B (6 x 24) of a unit cube at natural coordinates xi (each -1..1): strains [xx yy zz xy yz zx] (engineering
-    shears) from the 8 nodes' displacements [x y z] in node order."""
+    """B (6 x 24) на единичен куб при естествени координати xi (всяка от -1 до 1): деформации [xx yy zz xy yz zx]
+    (инженерни срязвания) от преместванията [x y z] на 8-те възела по реда им."""
     t = 1 + SIGNS * xi
     d = np.empty((8, 3))
     d[:, 0] = SIGNS[:, 0] * t[:, 1] * t[:, 2]
     d[:, 1] = SIGNS[:, 1] * t[:, 0] * t[:, 2]
     d[:, 2] = SIGNS[:, 2] * t[:, 0] * t[:, 1]
-    d /= 4  # dN/dxi = d/8, and dxi/dx = 2 on a unit cube
+    d /= 4  # dN/dxi = d/8 и dxi/dx = 2 при единичен куб
     B = np.zeros((6, 24))
     for n, (dx, dy, dz) in enumerate(d):
         B[:, 3 * n] = [dx, 0, 0, dy, 0, dz]
@@ -80,7 +76,7 @@ def strain_matrix(xi: np.ndarray) -> np.ndarray:
 
 
 def elasticity(nu: float) -> np.ndarray:
-    """Isotropic stress-strain matrix for E = 1."""
+    """Изотропна матрица напрежение-деформация за E = 1."""
     lam, mu = nu / ((1 + nu) * (1 - 2 * nu)), 1 / (2 * (1 + nu))
     D = np.zeros((6, 6))
     D[:3, :3] = lam
@@ -90,13 +86,13 @@ def elasticity(nu: float) -> np.ndarray:
 
 
 def element_stiffness(nu: float) -> np.ndarray:
-    """24 x 24 stiffness of a unit cube with E = 1 (2 x 2 x 2 Gauss points); a cube of side h with modulus E has E h
-    times this."""
+    """Твърдост 24 x 24 на единичен куб с E = 1 (2 x 2 x 2 точки на Гаус); куб със страна h и модул E има E h пъти
+    това."""
     D = elasticity(nu)
     K = np.zeros((24, 24))
     for s in SIGNS:
         B = strain_matrix(s / np.sqrt(3))
-        K += B.T @ D @ B / 8  # the Jacobian of a unit cube: (1/2)Â³
+        K += B.T @ D @ B / 8  # якобианът на единичен куб: (1/2)³
     return K
 
 
@@ -105,20 +101,19 @@ def von_mises(s: np.ndarray) -> np.ndarray:
     return np.sqrt(0.5 * ((xx - yy) ** 2 + (yy - zz) ** 2 + (zz - xx) ** 2) + 3 * (xy**2 + yz**2 + zx**2))
 
 
-# --- Model to elements ------------------------------------------------------------------------------------------
+# --- От модел към елементи ------------------------------------------------------------------------------------------
 
 
 def voxels(mesh: trimesh.Trimesh, pitch: float) -> tuple[np.ndarray, np.ndarray]:
-    """Cubes whose centre is inside the model: occupancy (nx, ny, nz) and the low corner of cube (0, 0, 0).
-
-    By the centre rather than by touching the surface: that would make every part about a cube thicker, and a thin
-    part's bending stress goes with the cube of its thickness. Inside: an odd number of surface crossings below the
-    centre, along the vertical line through it (all columns at once: each triangle finds the column centres over it).
-    A column with an odd count in all (an opening in the surface) is filled from the surface's cubes instead."""
+    """Кубове, чийто център е в модела: заетост (nx, ny, nz) и долният ъгъл на куб (0, 0, 0). По центъра, а не по
+    докосване на повърхността: иначе всяка част би станала с около куб по-дебела, а напрежението при огъване на тънка
+    част върви с куба на дебелината ѝ. Вътре: нечетен брой пресичания на повърхността под центъра по вертикалата през
+    него (всички колони наведнъж: всеки триъгълник намира центровете на колони над себе си). Колона с общо нечетен
+    брой (отвор в повърхността) вместо това се запълва от кубовете на повърхността."""
     lo, hi = mesh.bounds
     n = np.maximum(np.ceil((hi - lo) / pitch).astype(int), 1)
     origin = (lo + hi) / 2 - n * pitch / 2
-    # A tiny irrational nudge: a line through a vertex or along an edge would count it twice or not at all.
+    # Съвсем малко ирационално побутване: линия през връх или по ръб иначе би го броила двойно или никак.
     cx = origin[0] + (np.arange(n[0]) + 0.5) * pitch + pitch * 1.3e-6 * np.sqrt(2)
     cy = origin[1] + (np.arange(n[1]) + 0.5) * pitch + pitch * 1.1e-6 * np.sqrt(3)
     cz = origin[2] + (np.arange(n[2]) + 0.5) * pitch
@@ -130,7 +125,7 @@ def voxels(mesh: trimesh.Trimesh, pitch: float) -> tuple[np.ndarray, np.ndarray]
     j0 = np.ceil((tlo[:, 1] - cy[0]) / pitch).astype(int).clip(0, n[1])
     j1 = np.floor((thi[:, 1] - cy[0]) / pitch).astype(int).clip(-1, n[1] - 1)
     ni, nj = np.maximum(i1 - i0 + 1, 0), np.maximum(j1 - j0 + 1, 0)
-    t = np.repeat(np.arange(len(tri)), ni * nj)  # one (triangle, column) pair per column centre in its box
+    t = np.repeat(np.arange(len(tri)), ni * nj)  # по една двойка (триъгълник, колона) за център на колона в кутията му
     within = np.arange(len(t)) - np.repeat(np.cumsum(ni * nj) - ni * nj, ni * nj)
     ci = i0[t] + within % np.maximum(ni[t], 1)
     cj = j0[t] + within // np.maximum(ni[t], 1)
@@ -146,7 +141,7 @@ def voxels(mesh: trimesh.Trimesh, pitch: float) -> tuple[np.ndarray, np.ndarray]
     z = (w0 * a[:, 2] + w1 * b[:, 2] + w2 * c[:, 2])[hit]
     col = (ci * n[1] + cj)[hit]
 
-    # Each crossing turns "inside" over for every centre above it.
+    # Всяко пресичане обръща "вътре" за всеки център над него.
     flips = np.zeros((n[0] * n[1], n[2] + 1), np.int32)
     np.add.at(flips, (col, np.searchsorted(cz, z)), 1)
     occ = (np.cumsum(flips, 1)[:, :-1] % 2).astype(bool).reshape(n[0], n[1], n[2])
@@ -163,21 +158,21 @@ def voxels(mesh: trimesh.Trimesh, pitch: float) -> tuple[np.ndarray, np.ndarray]
 
 
 def held_part(occ: np.ndarray) -> np.ndarray:
-    """The cubes joined by whole faces to the bottom layer: what is not would float free (and pieces joined only by an
-    edge or a corner would turn on it)."""
-    lab, _ = label(occ)  # face neighbours
+    """Кубовете, свързани с цели стени към долния слой: останалите биха се носели свободно (а части, свързани само с
+    ръб или ъгъл, биха се въртели около него)."""
+    lab, _ = label(occ)  # съседи по стена
     held = np.unique(lab[:, :, 0][occ[:, :, 0]])
     return np.isin(lab, held[held > 0])
 
 
 class Model:
-    """The elements of a filled model: cube indices, their nodes and degrees of freedom."""
+    """Елементите на запълнен модел: индекси на кубовете, техните възли и степени на свобода."""
 
     def __init__(self, keep: np.ndarray, origin: np.ndarray, pitch: float):
         self.keep, self.origin, self.pitch = keep, origin, pitch
         self.cubes = np.argwhere(keep)  # (ne, 3)
         nx, ny, nz = keep.shape
-        corners = self.cubes[:, None, :] + CORNERS[None]  # (ne, 8, 3) grid nodes
+        corners = self.cubes[:, None, :] + CORNERS[None]  # (ne, 8, 3) възли на мрежата
         flat = (corners[..., 0] * (ny + 1) + corners[..., 1]) * (nz + 1) + corners[..., 2]
         ids, local = np.unique(flat, return_inverse=True)
         self.nodes_grid = np.stack(np.unravel_index(ids, (nx + 1, ny + 1, nz + 1)), 1)  # (nn, 3)
@@ -190,16 +185,16 @@ class Model:
         return self.origin + self.nodes_grid * self.pitch
 
     def node_index(self, grid: np.ndarray) -> np.ndarray:
-        """Local node numbers of grid nodes (each must belong to the model)."""
+        """Местни номера на възли на мрежата (всеки трябва да принадлежи на модела)."""
         nx, ny, nz = self.keep.shape
         key = (self.nodes_grid[:, 0] * (ny + 1) + self.nodes_grid[:, 1]) * (nz + 1) + self.nodes_grid[:, 2]
         want = (grid[:, 0] * (ny + 1) + grid[:, 1]) * (nz + 1) + grid[:, 2]
-        return np.searchsorted(key, want)  # key is sorted: np.unique made it
+        return np.searchsorted(key, want)  # ключът е сортиран: np.unique го е направил
 
 
 def build(mesh: trimesh.Trimesh) -> tuple[Model, float]:
-    """The model's elements at a pitch giving about CELLS along the longest side, coarser if that would be more than
-    MAX_ELEMENTS; and the share of the model's cubes left out (pieces not joined to the base)."""
+    """Елементите на модела при стъпка за около CELLS по най-дългата страна, по-груба, ако това е над MAX_ELEMENTS; и
+    делът от кубовете на модела, който отпада (части, несвързани с основата)."""
     pitch = mesh.extents.max() / CELLS
     for _ in range(4):
         occ, origin = voxels(mesh, pitch)
@@ -212,11 +207,12 @@ def build(mesh: trimesh.Trimesh) -> tuple[Model, float]:
     return Model(keep, origin, pitch), 1 - keep.sum() / occ.sum()
 
 
-# --- Loads ------------------------------------------------------------------------------------------------------
+# --- Товари ---------------------------------------------------------------------------------------------------------
 
 
 def top_faces(keep: np.ndarray) -> np.ndarray:
-    """Upward faces with nothing on them in the top TOP_BAND of the object: (n, 3) grid nodes of their low corner."""
+    """Обърнати нагоре стени без нищо върху тях в най-горната част TOP_BAND от предмета: (n, 3) възли на мрежата от
+    долния им ъгъл."""
     above = np.zeros_like(keep)
     above[:, :, :-1] = keep[:, :, 1:]
     faces = np.argwhere(keep & ~above)
@@ -226,7 +222,7 @@ def top_faces(keep: np.ndarray) -> np.ndarray:
 
 
 def face_load(m: Model, faces: np.ndarray, force: np.ndarray) -> np.ndarray:
-    """`force` (N, a 3-vector) shared evenly by the faces, a quarter of each face's share on each of its corners."""
+    """`force` (N, 3-вектор), разделена поравно между стените, с четвърт от дела на всяка стена върху всеки ъгъл."""
     f = np.zeros(m.ndof)
     corners = (faces[:, None, :] + np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]])[None]).reshape(-1, 3)
     nodes = m.node_index(corners)
@@ -236,19 +232,19 @@ def face_load(m: Model, faces: np.ndarray, force: np.ndarray) -> np.ndarray:
 
 
 def weight_load(m: Model, rho: float) -> np.ndarray:
-    """Each cube's own weight (density rho, kg/mÂ³), an eighth on each of its corners, downwards."""
+    """Собственото тегло на всеки куб (плътност rho, кг/м³), с една осма върху всеки ъгъл, надолу."""
     f = np.zeros(m.ndof)
     each = rho * (m.pitch / 1000) ** 3 * G / 8
     np.add.at(f, 3 * m.enodes.ravel() + 2, -each)
     return f
 
 
-# --- Solving ----------------------------------------------------------------------------------------------------
+# --- Решаване -------------------------------------------------------------------------------------------------------
 
 
 def solve(m: Model, K: np.ndarray, f: np.ndarray, held: np.ndarray) -> np.ndarray:
-    """Displacements (m) for the nodal forces f (N), with the held degrees of freedom at 0. Conjugate gradients with the
-    element matrices applied directly (never assembled: memory stays small), Jacobi preconditioned."""
+    """Премествания (м) за възловите сили f (N), със закрепените степени на свобода при 0. Спрегнати градиенти с
+    директно прилагани елементни матрици (никога не се сглобяват: паметта остава малка), с предусловие на Якоби."""
     h = m.pitch / 1000
     free = np.ones(m.ndof, bool)
     free[held] = False
@@ -269,7 +265,7 @@ def solve(m: Model, K: np.ndarray, f: np.ndarray, held: np.ndarray) -> np.ndarra
 
 
 def nodal_stress(m: Model, u: np.ndarray) -> np.ndarray:
-    """Von Mises stress (MPa) per node: at each element's corners, averaged over the elements sharing a node."""
+    """Напрежение по фон Мизес (MPa) за възел: в ъглите на всеки елемент, осреднено за елементите с общ възел."""
     D = elasticity(NU) * E_REF
     ue = u[m.edofs]  # (ne, 24)
     h = m.pitch / 1000
@@ -282,9 +278,9 @@ def nodal_stress(m: Model, u: np.ndarray) -> np.ndarray:
 
 
 def smoothed(m: Model, v: np.ndarray) -> np.ndarray:
-    """Each node's value averaged with its (up to 6) neighbours along the grid lines. A cube model's inner corners are
-    infinitely sharp, where a real object is rounded, and the stress there would grow without end as the cubes get
-    smaller: a stress over about a cube's width is what a part's strength is measured against."""
+    """Стойността на всеки възел, осреднена със (до 6) съседи по линиите на мрежата. Вътрешните ъгли на кубичен модел
+    са безкрайно остри, където истинският предмет е заоблен, и напрежението там би растяло без край при по-малки
+    кубове: напрежението на ширина около куб е това, с което се сравнява якостта на частта."""
     nx, ny, nz = m.keep.shape
     g = m.nodes_grid
     key = (g[:, 0] * (ny + 1) + g[:, 1]) * (nz + 1) + g[:, 2]
@@ -299,17 +295,17 @@ def smoothed(m: Model, v: np.ndarray) -> np.ndarray:
     return total / count
 
 
-# --- One case ---------------------------------------------------------------------------------------------------
+# --- Един случай ----------------------------------------------------------------------------------------------------
 
 
 def to_glb(p: np.ndarray) -> np.ndarray:
-    """Model coordinates (z up) to the GLB's (y up), as mesh.Y_UP."""
+    """Координати на модела (z нагоре) към тези на GLB (y нагоре), като mesh.Y_UP."""
     p = np.asarray(p, float)
     return np.stack([p[..., 0], p[..., 2], -p[..., 1]], -1)
 
 
 def analyse(mesh: trimesh.Trimesh, case: str) -> tuple[dict, np.ndarray, np.ndarray]:
-    """The case on `mesh` (at REF_MM): the summary, and the nodes' positions (mm) and stresses (MPa)."""
+    """Случаят върху `mesh` (при REF_MM): обобщението и позициите (мм) и напреженията (MPa) на възлите."""
     started = time.time()
     m, dropped = build(mesh)
     K = element_stiffness(NU)
@@ -320,7 +316,7 @@ def analyse(mesh: trimesh.Trimesh, case: str) -> tuple[dict, np.ndarray, np.ndar
         f = weight_load(m, RHO_REF)
         u = solve(m, K, f, held)
         weight = -f[2::3]
-        # The weight's mean sag: the energy the own weight stores is (1/2) * weight * this.
+        # Средното провисване от теглото: енергията от собственото тегло е (1/2) * тегло * това.
         summary["sag_m"] = float((weight * -u[2::3]).sum() / weight.sum())
     else:
         faces = top_faces(m.keep)
@@ -352,8 +348,8 @@ def analyse(mesh: trimesh.Trimesh, case: str) -> tuple[dict, np.ndarray, np.ndar
 
 
 def view_values(view: trimesh.Trimesh, pts: np.ndarray, vm: np.ndarray, pitch: float) -> np.ndarray:
-    """The stress at the view mesh's vertices: from the nearest nodes, weighted by nearness; -1 where no node is near
-    (a thin piece the elements could not hold)."""
+    """Напрежението във върховете на мрежата за показване: от най-близките възли, претеглено по близост; -1, където
+    няма близък възел (тънка част, която елементите не са могли да закрепят)."""
     d, i = cKDTree(pts).query(view.vertices, k=8, distance_upper_bound=1.5 * pitch)
     ok = np.isfinite(d)
     w = np.where(ok, 1 / (d + 0.25 * pitch), 0.0)
@@ -362,7 +358,7 @@ def view_values(view: trimesh.Trimesh, pts: np.ndarray, vm: np.ndarray, pitch: f
     return np.where(ok.any(1), out, -1.0).astype(np.float32)
 
 
-# --- Kept results -----------------------------------------------------------------------------------------------
+# --- Запазени резултати ---------------------------------------------------------------------------------------------
 
 
 def paths(job: Path, case: str) -> tuple[Path, Path]:
@@ -370,7 +366,7 @@ def paths(job: Path, case: str) -> tuple[Path, Path]:
 
 
 def make(job: Path, case: str):
-    """Works the case out for the job's model and keeps the summary and the coloured-by-the-app model."""
+    """Изчислява случая за модела на задачата и пази обобщението и модела, оцветяван от приложението."""
     js, glb = paths(job, case)
     model = job / "model.ply"
     mesh = trimesh.load(model, force="mesh")
@@ -390,11 +386,10 @@ def make(job: Path, case: str):
 
 
 def result(job: Path, case: str) -> dict:
-    """The case's summary, made now if missing or older than the model (re-processed).
-
-    Made in a process of its own (`python -m app.stress <job> <case>`): this OpenBLAS crashes the whole process when
-    two threads multiply matrices at once (seen with a thumbnail being drawn), and the server's threads do. A crash
-    there costs this one test, not the server and the scans it is processing. One at a time: each uses a core fully."""
+    """Обобщението на случая, направено сега, ако липсва или е по-старо от модела (повторно обработен). Прави се в
+    собствен процес (`python -m app.stress <задача> <случай>`): този OpenBLAS срива целия процес, когато две нишки
+    умножават матрици едновременно (наблюдавано при рисуване на миниатюра), а нишките на сървъра го правят. Срив там
+    струва само този тест, а не сървъра и обработваните сканирания. По един наведнъж: всеки заема цяло ядро."""
     if case not in CASES:
         raise StressError("Тестът не е намерен.")
     js, glb = paths(job, case)
@@ -431,12 +426,13 @@ def model_glb(job: Path, case: str) -> bytes:
     return paths(job, case)[1].read_bytes()
 
 
-# --- For the endpoints (app/main.py: own scans; app/community.py: posts) ----------------------------------------
+# --- За крайните точки (app/main.py: собствени сканирания; app/community.py: публикации)
+# -----------------------------
 
 
 def summary_response(job_id: str, case: str, user_id: str | None) -> dict:
-    """The case's summary for a finished scan (made on the first request: up to a minute), and its points."""
-    from . import jobs, progress  # here: the test's own process (below) needs neither
+    """Обобщението на случая за завършено сканиране (прави се при първата заявка: до минута) и точките му."""
+    from . import jobs, progress  # тук: собственият процес на теста (по-долу) не се нуждае и от двете
 
     if case not in CASES:
         raise HTTPException(404, "Тестът не е намерен.")
@@ -450,8 +446,8 @@ def summary_response(job_id: str, case: str, user_id: str | None) -> dict:
 
 
 def model_response(job_id: str, case: str) -> Response:
-    """The model with its stresses per vertex (the "_STRESS" attribute: MPa at the summary's reference size and load,
-    -1 where a piece could not be tested), which the app colours."""
+    """Моделът с напреженията за всеки връх (атрибут "_STRESS": MPa при опорните размер и товар от обобщението, -1
+    където част не е могла да се тества), който приложението оцветява."""
     from . import jobs
 
     if case not in CASES:
@@ -463,7 +459,7 @@ def model_response(job_id: str, case: str) -> Response:
     return Response(data, media_type=M.MEDIA_TYPES["glb"], headers={"Cache-Control": "private, max-age=300"})
 
 
-if __name__ == "__main__":  # result() runs this: python -m app.stress <job dir> <case>
+if __name__ == "__main__":  # result() изпълнява това: python -m app.stress <папка на задачата> <случай>
     try:
         make(Path(sys.argv[1]), sys.argv[2])
     except StressError as e:

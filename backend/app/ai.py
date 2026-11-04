@@ -1,18 +1,16 @@
-"""Pro's AI models: a model from any video (or photos) in a few minutes, in place of the scan pipeline (app/pipeline.py).
-
-single: free, on the server's CPU, ~4-5 minutes: the frames are placed in 3D (COLMAP), AI cuts the object out of
-them, the depth measured between them and AI depth are fused within those outlines and the photos texture it
-(app/outline.py). TripoSR's guess from one frame (app/single3d.py, the back guessed) when the frames cannot be
-placed. The two below need paid services and stay off until their keys are set.
-claude: Claude looks at a few frames and designs the object from solid parts (boxes, cylinders, outlines pulled up,
-profiles turned round...), each added or cut away in order. The parts are built and joined here into one closed
-mesh, drawn (app/render.py) and shown back to Claude once to correct. Clean, flat-faced and true to size for made
-things (boxes, brackets, cups, knobs, stands); a figure or an animal comes out as a rough stand-in.
-photo: Meshy's image-to-3D (a paid service) shapes any object from up to four frames from around it (Claude picks
-them when it can); what no frame shows is guessed, and the sizes are proportions only.
-
-Keys are the app's, not the users': ANTHROPIC_API_KEY / MESHY_API_KEY in the environment, else set with the API
-token (PUT /admin/ai; kept in the database's settings table and never sent back)."""
+"""AI моделите на Pro: модел от всяко видео (или снимки), вместо обработката на сканиране (app/pipeline.py). single:
+безплатен, на процесора на сървъра: кадрите се разполагат в 3D (COLMAP), AI изрязва предмета от тях, а измерената
+между тях дълбочина и AI дълбочината се сливат в тези очертания и снимките стават текстура (app/outline.py).
+Предположението на TripoSR от един кадър (app/single3d.py, гърбът е предположен), когато кадрите не могат да се
+разположат. Двата метода по-долу изискват платени услуги и остават изключени, докато не се зададат ключовете им.
+claude: езиков модел гледа няколко кадъра и проектира предмета от плътни части (кутии, цилиндри, изтеглени очертания,
+завъртени профили...), всяка добавена или изрязана по ред. Частите се изграждат и съединяват тук в една затворена
+мрежа, рисуват се (app/render.py) и се показват веднъж за корекция. Чисто, с плоски страни и верен размер за
+изработени предмети (кутии, скоби, чаши, копчета, стойки); фигура или животно излиза като груб заместител. photo:
+услугата image-to-3D на Meshy (платена) оформя всеки предмет от до четири кадъра около него; това, което никой кадър
+не показва, се предполага, а размерите са само пропорции. Ключовете са на приложението, а не на потребителите:
+ANTHROPIC_API_KEY / MESHY_API_KEY от средата, иначе се задават с API ключа (PUT /admin/ai; пазят се в таблицата с
+настройки на базата данни и никога не се връщат)."""
 
 import base64
 import io
@@ -47,17 +45,17 @@ NEEDS = {"claude": "anthropic", "photo": "meshy"}
 
 MODEL = os.environ.get("AI_CLAUDE_MODEL", "claude-opus-5-5")
 EFFORT = os.environ.get("AI_EFFORT", "high")
-CANDIDATES = 120  # frames read from the video; the sharpest of evenly spread groups are sent
+CANDIDATES = 120  # кадри, прочетени от видеото; изпращат се най-резките от равномерно разпределени групи
 CLAUDE_FRAMES = 6
-MESHY_FRAMES = 4  # the most Meshy's multi-image-to-3d takes
-SEND_SIDE = 1280  # frames are sent this size (long side)
-REVIEWS = int(os.environ.get("AI_REVIEWS", "1"))  # rounds of "here is your model drawn, correct it"
-SECTIONS = 96  # segments around round parts: smooth at print size
+MESHY_FRAMES = 4  # най-много, колкото приема multi-image-to-3d на Meshy
+SEND_SIDE = 1280  # кадрите се изпращат с този размер (дълга страна)
+REVIEWS = int(os.environ.get("AI_REVIEWS", "1"))  # кръгове "ето нарисувания ти модел, поправи го"
+SECTIONS = 96  # сегменти около кръгли части: гладко при размера за печат
 MESHY = "https://api.meshy.ai/openapi/v1"
 MESHY_WAIT_S = 20 * 60
 
 
-# --- Keys -----------------------------------------------------------------------------------------------------------
+# --- Ключове --------------------------------------------------------------------------------------------------------
 
 
 def key(service: str) -> str | None:
@@ -65,7 +63,7 @@ def key(service: str) -> str | None:
 
 
 def set_key(service: str, value: str):
-    db.set_setting(f"ai_key_{service}", value)  # "" removes it
+    db.set_setting(f"ai_key_{service}", value)  # "" го премахва
 
 
 def key_status() -> dict:
@@ -78,13 +76,13 @@ def key_status() -> dict:
 
 
 def available() -> dict:
-    """What Pro can use on this server; express: the ~5 minute scan (app/pipeline.py), edit: text changes (app/edit.py;
-    plain requests work without its language model), both always there."""
+    """Какво може да използва Pro на този сървър; express: сканирането за около 5 минути (app/pipeline.py), edit:
+    текстови промени (app/edit.py; простите заявки работят без езиковия му модел), и двете винаги са налични."""
     paid = {method: bool(key(service)) for method, service in NEEDS.items()}
     return {"express": True, "edit": True, "single": single3d.ready()} | paid
 
 
-# --- Frames ---------------------------------------------------------------------------------------------------------
+# --- Кадри ----------------------------------------------------------------------------------------------------------
 
 
 def duration(video: Path) -> float:
@@ -100,10 +98,10 @@ def sharpness(path: Path) -> float:
 
 
 def frames(job: Path, sh: Callable[[str, list], None]) -> list[Path]:
-    """The video's frames (up to CANDIDATES, evenly spread) as photos/img_0001.jpg..., or the uploaded photos."""
+    """Кадрите от видеото (до CANDIDATES, равномерно разпределени) като photos/img_0001.jpg... или качените снимки."""
     photos, video = job / "photos", job / P.VIDEO
     if video.exists():
-        for p in photos.glob("*.jp*g"):  # a retry reads the video again
+        for p in photos.glob("*.jp*g"):  # повторен опит чете видеото отново
             p.unlink()
         seconds = duration(video)
         fps = min(4.0, CANDIDATES / seconds) if seconds > 0 else 2.0
@@ -117,7 +115,7 @@ def frames(job: Path, sh: Callable[[str, list], None]) -> list[Path]:
 
 
 def spread(found: list[Path], count: int) -> list[Path]:
-    """The sharpest frame of each of `count` even groups: the object from around, without blur."""
+    """Най-рязкият кадър от всяка от `count` равни групи: предметът отвсякъде, без размазване."""
     groups = np.array_split(np.arange(len(found)), min(count, len(found)))
     return [found[max(g, key=lambda i: sharpness(found[i]))] for g in groups if len(g)]
 
@@ -135,7 +133,7 @@ def image_block(data: bytes, media: str = "image/jpeg") -> dict:
     return {"type": "image", "source": {"type": "base64", "media_type": media, "data": base64.b64encode(data).decode()}}
 
 
-# --- Claude ---------------------------------------------------------------------------------------------------------
+# --- Езиков модел ---------------------------------------------------------------------------------------------------
 
 NUM = {"type": "number"}
 NUMS = {"type": "array", "items": NUM}
@@ -213,7 +211,7 @@ REVIEW = ("This is your design, built and drawn from the front right and a littl
 
 
 def ask_claude(client, messages: list) -> tuple[dict, list]:
-    """One design: the parsed answer and the assistant turn to keep in the conversation."""
+    """Един проект: разчетеният отговор и репликата на асистента за пазене в разговора."""
     import anthropic
 
     try:
@@ -225,7 +223,7 @@ def ask_claude(client, messages: list) -> tuple[dict, list]:
             thinking={"type": "adaptive"},
             output_config={"effort": EFFORT, "format": {"type": "json_schema", "schema": DESIGN}},
             betas=["server-side-fallback-2026-07-01"],
-            fallbacks="default",  # a classifier's false decline is re-run on another model, not a failed model
+            fallbacks="default",  # погрешен отказ от класификатора се изпълнява отново на друг модел, а не като неуспешен модел
         ) as stream:
             msg = stream.get_final_message()
     except anthropic.AuthenticationError:
@@ -254,7 +252,7 @@ def vec(v, n: int, fill: float = 0.0) -> np.ndarray:
 
 
 def part_mesh(p: dict) -> trimesh.Trimesh | None:
-    """One part, placed; None when its sizes make no solid."""
+    """Една поставена част; None, когато размерите ѝ не дават плътно тяло."""
     shape = p.get("shape")
     size = np.clip(vec(p.get("size"), 3), 0, 5000)
     r, r2, h = (float(np.clip(p.get(k) or 0, 0, 5000)) for k in ("radius", "radius2", "height"))
@@ -282,7 +280,7 @@ def part_mesh(p: dict) -> trimesh.Trimesh | None:
     elif shape == "extrude" and len(pts) >= 3 and h > 0:
         from shapely.geometry import Polygon
 
-        poly = Polygon(pts).buffer(0)  # a self-crossing outline made valid
+        poly = Polygon(pts).buffer(0)  # самопресичащо се очертание, направено валидно
         if poly.geom_type != "Polygon" or poly.area <= 0:
             if poly.geom_type != "MultiPolygon":
                 return None
@@ -306,8 +304,8 @@ def colour(text: str) -> np.ndarray:
 
 
 def build(design: dict) -> tuple[trimesh.Trimesh, int]:
-    """The parts joined in order (manifold3d does the joins); coloured by the nearest added part. Also how many
-    parts could not be built."""
+    """Частите, съединени по ред (съединенията прави manifold3d); оцветени по най-близката добавена част. Също колко
+    части не са могли да се изградят."""
     model, added, skipped = None, [], 0
     for p in design.get("parts") or []:
         m = part_mesh(p)
@@ -365,7 +363,7 @@ def by_claude(job: Path, work: Path, found: list[Path], step: Callable[[str], No
             model, skipped = build(fixed)
             design = fixed
             P.note(job, f"claude review: {len(design.get('parts') or [])} parts ({skipped} not buildable)")
-        except P.Failed as e:  # the first design stands
+        except P.Failed as e:  # първият проект остава
             P.note(job, f"claude review failed ({e}); keeping the first design")
             break
     real = float(model.extents.max())
@@ -384,8 +382,8 @@ PICK = {
 
 
 def claude_picks(found: list[Path]) -> tuple[list[Path], str] | None:
-    """Claude chooses the frames that show the object best from different sides; None without a key or on any
-    trouble (the frames are then spread evenly)."""
+    """Езиковият модел избира кадрите, които най-добре показват предмета от различни страни; None без ключ или при
+    какъвто и да е проблем (кадрите тогава се разпределят равномерно)."""
     if not key("anthropic"):
         return None
     import anthropic
@@ -464,7 +462,7 @@ def by_photo(job: Path, found: list[Path], step: Callable[[str], None]) -> tuple
         if not isinstance(g, trimesh.Trimesh):
             continue
         try:
-            g.visual = g.visual.to_color()  # the texture as vertex colours: what the viewer and the drawing show
+            g.visual = g.visual.to_color()  # текстурата като цветове на върховете: това показват екранът за преглед и рисунката
         except Exception:
             pass
         g.apply_transform(transform)
@@ -472,38 +470,39 @@ def by_photo(job: Path, found: list[Path], step: Callable[[str], None]) -> tuple
     if not pieces:
         raise P.Failed("AI върна празен модел. Опитайте отново.")
     model = trimesh.util.concatenate(pieces)
-    model.apply_transform(trimesh.transformations.rotation_matrix(np.pi / 2, [1, 0, 0]))  # glTF Y up -> Z up
+    model.apply_transform(trimesh.transformations.rotation_matrix(np.pi / 2, [1, 0, 0]))  # glTF с Y нагоре -> Z нагоре
     return model, {"object": name, "suitable": True, "real_mm": None}
 
 
-# --- The free AI model: AI outlines and depth from the whole video (app/outline.py) ---------------------------------
+# --- Безплатният AI модел: AI очертания и дълбочина от цялото видео (app/outline.py)
+# ---------------------------------
 
-# Frames the camera solver places: two quick circles in 33 s gave 24 frames 30° apart, and no more than 4 of them
-# could be placed together; 48 are ~15° apart, as a quick scan's (app/video.py). Each is matched with its neighbours
-# and a sparse set across the video (pipeline.match_pairs), and the object is cut out of every one: the shape is
-# measured and fused from all 48 (from every other one, Frodo's head and body came out lumpy, the hand and sword one
-# blob: each spot seen by half as many frames, its depth noise averaged half as much). About 7 minutes on the server
-# instead of 4.5; the user chose detail over time (2026-11-01). With finer frames and fusion (app/outline.py) ~14.
+# Кадрите, които решаващият алгоритъм за камерите разполага: два бързи кръга за 33 с дадоха 24 кадъра през 30° и не
+# повече от 4 можеха да се разположат заедно; 48 са през около 15°, като при бързо сканиране (app/video.py). Всеки се
+# съпоставя със съседите си и с рядък набор през видеото (pipeline.match_pairs), а предметът се изрязва от всеки:
+# формата се измерва и слива от всичките 48 (от всеки втори главата и тялото на Фродо излизаха на бучки, а ръката и
+# мечът едно петно: всяко място е виждано от двойно по-малко кадри и шумът на дълбочината му се осреднява двойно
+# по-малко). Потребителят избра детайла пред времето (2026-11-01).
 AI_FRAMES = 48
 MASK_EVERY = 1
-MIN_FRAMES = 10  # fewer frames extracted: TripoSR from one frame alone
-# Frames placed right (consistent with the object's outline) the shape is made from; fewer: TripoSR from one frame.
-# A count, not a share of the frames cut out: with every other frame cut out, half of 24 was 12; cutting out all 48
-# made it 24, and a drill whose two circles came out as two pieces (best piece: 19 placed right)
-# went to the one-frame model, a blob with the suitcase handle stuck to it (job f4e8, 2026-11-01).
+MIN_FRAMES = 10  # извлечени са по-малко кадри: TripoSR само от един кадър
+# Правилно разположени кадри (съгласувани с очертанията на предмета), от които се прави формата; при по-малко: TripoSR
+# от един кадър. Брой, а не дял от изрязаните кадри: при изрязване на всеки втори половината от 24 бяха 12;
+# изрязването на всичките 48 го направи 24, а дрелка, чиито два кръга излязоха на две части (най-добрата част: 19
+# правилно разположени), отиде при модела от един кадър, петно със залепена дръжка на куфар (задача f4e8, 2026-11-01).
 MIN_PLACED = 12
-SINGLE_CANDIDATES = 8  # (one frame alone) frames the object is looked for in; the best one is modelled
+SINGLE_CANDIDATES = 8  # (само един кадър) кадри, в които се търси предметът; моделира се най-добрият
 
 
 def single(job: Path, work: Path, flat_base: bool, set_state: Callable[[str], None],
            sh: Callable[[str, list], None], tune: dict | None = None) -> dict:  # fmt: skip
-    """The AI model from the whole video; TripoSR from one frame when its frames cannot be placed in 3D (a very
-    short or blurry video, a plain object on a plain table)."""
+    """AI моделът от цялото видео; TripoSR от един кадър, когато кадрите не могат да се разположат в 3D (много кратко
+    или размазано видео, едноцветен предмет върху едноцветна маса)."""
     photos, video = job / "photos", job / P.VIDEO
     if video.exists():
         try:
             P.extract_frames(video, photos, work, sh, P.frames_to_take(job, AI_FRAMES))
-        except P.Failed as e:  # too short for the camera solver; TripoSR needs one frame
+        except P.Failed as e:  # твърде кратко за решаващия алгоритъм за камерите; TripoSR иска един кадър
             P.note(job, f"AI model: {e}")
         P.merge_more_frames(job, photos)
     found = sorted(photos.glob("*.jp*g"))
@@ -512,11 +511,11 @@ def single(job: Path, work: Path, flat_base: bool, set_state: Callable[[str], No
             report = from_video(job, work, photos, len(found), flat_base, set_state, sh, tune)
             if report is not None:
                 return report
-        except Exception as e:  # whatever went wrong, the model from one frame is still worth making
-            if type(e).__name__ == "Cancelled":  # app/jobs.py's (importing it here would be circular)
+        except Exception as e:  # каквото и да се е объркало, моделът от един кадър пак си заслужава
+            if type(e).__name__ == "Cancelled":  # от app/jobs.py (импортирането му тук би било циклично)
                 raise
             P.note(job, f"AI model from all the frames: failed ({e!r}); making it from one frame")
-            TX.clear(job)  # a texture made for that model, if it got so far
+            TX.clear(job)  # текстура, направена за този модел, ако се е стигнало дотам
     if not found:
         found = frames(job, sh)
     set_state("reconstructing")
@@ -529,44 +528,43 @@ def single(job: Path, work: Path, flat_base: bool, set_state: Callable[[str], No
 def from_video(job: Path, work: Path, photos: Path, n_photos: int, flat_base: bool,
                set_state: Callable[[str], None], sh: Callable[[str, list], None],
                tune: dict | None = None) -> dict | None:  # fmt: skip
-    """The frames placed in 3D; the object cut out of them by AI and sharpened by MobileSAM; the shape inside all
-    of those outlines; the depth measured between the frames (OpenMVS) with AI depth (app/depth.py) fused onto it
-    (app/fuse.py): the relief no outline shows (a base's rim, arms, folds, hair); the photo texture over it
-    (app/outline.py). None when too few frames could be placed."""
+    """Кадрите, разположени в 3D; предметът, изрязан от тях с AI и уточнен с MobileSAM; формата вътре във всички тези
+    очертания; измерената между кадрите дълбочина (OpenMVS) с AI дълбочина (app/depth.py), слети върху нея
+    (app/fuse.py): релефът, който очертанията не показват (ръб на основа, ръце, гънки, коса); текстурата от снимки
+    върху него (app/outline.py). None, когато твърде малко кадри могат да се разположат."""
     best, placed, stray, all_masks, _ = P.solve_cameras(job, work, photos, n_photos, sh, paired=True,
                                                         mask_every=MASK_EVERY, features=(tune or {}).get("features"))  # fmt: skip
     return model_from_solved(job, work, photos, flat_base, set_state, sh, best, placed, stray, all_masks, tune)
 
 
-ROUNDS = 2  # MobileSAM passes, each prompted from the shape of the outlines the pass before gave
+ROUNDS = 2  # проходи на MobileSAM, всеки с подсказки от формата на очертанията от предишния
 
 
 def model_from_solved(job: Path, work: Path, photos: Path, flat_base: bool, set_state: Callable[[str], None],
                       sh: Callable[[str, list], None], best: Path | None, placed: int, stray: list[str],
                       all_masks: dict[str, np.ndarray], tune: dict | None = None) -> dict | None:  # fmt: skip
-    """from_video after the cameras: placed frames (`placed` of them agreeing with the object finder's outlines, the
-    `stray` ones not) and the finder's masks.
-
-    The finder's masks decide only where to start. On a drill standing on a suitcase it took in the suitcase, its
-    handle, a chair or a box behind, or left out the handle or the chuck, in 26 of 48 frames whose cameras were all
-    right (one piece, job 988c): judged by those masks, the 26 were dropped, and the shape was made from 22 frames,
-    some of them still wrong, with the handle carved to a stalk. So the shape of the frames that agree prompts
-    MobileSAM in every placed frame (outlines_from_3d, ROUNDS times), and only frames whose sharpened outline still
-    disagrees with the others are dropped."""
+    """from_video след камерите: разположени кадри (`placed` от тях съгласувани с очертанията на търсача на предмета,
+    `stray` несъгласувани) и маските на търсача. Те решават само откъде да се започне. При дрелка върху куфар той
+    включваше куфара, дръжката му, стол или кутия отзад или пропускаше дръжката или патронника в 26 от 48 кадъра с
+    напълно верни камери (едно цяло, задача 988c): съдени по тези маски, 26-те отпадаха, а формата се правеше от 22
+    кадъра, някои от тях все още грешни, с издълбана до стъбло дръжка. Затова формата от съгласуваните кадри дава
+    подсказки на MobileSAM за всеки разположен кадър (outlines_from_3d, ROUNDS пъти) и отпадат само кадри, чиито
+    уточнени очертания все още се разминават с другите."""
     if best is None or placed < MIN_PLACED:
         P.note(job, f"AI model: only {placed} of the {len(all_masks)} frames with the object cut out placed in 3D; "
                "making it from one frame")  # fmt: skip
         return None
-    tune = {k: v for k, v in (tune or {}).items() if v}  # app/main.py Tune: a test job's settings
+    tune = {k: v for k, v in (tune or {}).items() if v}  # Tune от app/main.py: настройките на тестова задача
     if tune:
         P.note(job, f"AI model: test settings {tune}")
-    # Same 14 minutes, sharper print: on a drill its logo and label came out crisper, fewer faces unseen (11% -> 7%).
+    # Същите 14 минути, по-остър печат: при дрелка логото и етикетът излязоха по-ясни, с по-малко невидени стени (11%
+    # -> 7%).
     if not tune.get("no_refine"):
         best = P.refine_cameras(job, work, best, sh)
     side = tune.get("side", OL.SIDE)
     solved = best
-    # One size for everything after this, as an express scan's: the depth maps, the AI depth and the masks must
-    # share their pixels (AI depth at 1920 against depth maps at 1280 fitted no frame).
+    # Един размер за всичко след това, както при експресно сканиране: картите на дълбочината, AI дълбочината и маските
+    # трябва да делят пикселите си (AI дълбочина при 1920 спрямо карти при 1280 не пасваше на нито един кадър).
     dense = work / "dense"
     sh("undistorting", [P.COLMAP, "image_undistorter", "--image_path", photos, "--input_path", best,
         "--output_path", dense, "--output_type", "COLMAP", "--max_image_size", str(side)])  # fmt: skip
@@ -589,7 +587,7 @@ def model_from_solved(job: Path, work: Path, photos: Path, flat_base: bool, set_
         cloud = M.clean_cloud(pts, None, np.c_[cols / 255.0, np.ones(len(cols))], first, first_masks, S.MASK_SCALE, up)
         P.note(job, f"AI model: {len(views)} frames placed, {placed} agreeing with the object finder's outlines, "
                f"{len(cloud.points)} of the solver's points on the object")  # fmt: skip
-    except M.MeshError:  # too few points on a plain object: the outlines alone place it
+    except M.MeshError:  # твърде малко точки върху едноцветен предмет: само очертанията го разполагат
         cloud = outline_cloud(first, first_masks, up)
         if cloud is None:
             raise P.Failed("the frames' outlines give no shape")
@@ -599,7 +597,7 @@ def model_from_solved(job: Path, work: Path, photos: Path, flat_base: bool, set_
     if keep.sum() < MIN_PLACED:
         P.note(job, f"AI model: only {keep.sum()} frames agree on the object's outline; making it from one frame")
         return None
-    if not keep.all():  # frames whose outline still disagrees: out of the dense matching and the shape
+    if not keep.all():  # кадри с очертания, които още се разминават: извън гъстото съпоставяне и формата
         dropped = [n for n, k in zip(views.names, keep) if not k]
         kept = P.drop_stray(work, dense / "sparse", dropped, sh, "outline_kept")
         shutil.rmtree(dense / "sparse")
@@ -626,10 +624,11 @@ def model_from_solved(job: Path, work: Path, photos: Path, flat_base: bool, set_
 
 def outlines_from_3d(job: Path, work: Path, dense: Path, views: M.Views, masks: list[np.ndarray], agreed: np.ndarray,
                      cloud: M.Cloud, pts: np.ndarray, sh) -> tuple[list[np.ndarray], np.ndarray, bool]:  # fmt: skip
-    """The object's outline in every placed frame (undistorted `views`, the finder's `masks`): the shape of the frames
-    whose outlines agree (`agreed` at first) prompts MobileSAM in all of them (pipeline.sharpened_masks); the frames
-    whose new outline agrees with the others' (mesh.consistent_frames) give the next round's shape. Returns (the
-    masks, which frames agree, whether MobileSAM's are used); the finder's own when MobileSAM could not be used."""
+    """Очертанията на предмета във всеки разположен кадър (коригирани `views`, `masks` на търсача): формата от кадрите
+    със съгласувани очертания (първоначално `agreed`) дава подсказки на MobileSAM за всички
+    (pipeline.sharpened_masks); кадрите с нови очертания, съгласувани с другите (mesh.consistent_frames), дават
+    формата за следващия кръг. Връща (маските, кои кадри са съгласувани, дали се използват тези на MobileSAM);
+    собствените на търсача, когато MobileSAM не може да се използва."""
     current, trusted, sharpened = list(masks), agreed.copy(), False
     for round_ in range(ROUNDS):
         idx = np.flatnonzero(trusted)
@@ -642,7 +641,7 @@ def outlines_from_3d(job: Path, work: Path, dense: Path, views: M.Views, masks: 
         keep = M.consistent_frames(views, sharp, S.MASK_SCALE)
         P.note(job, f"AI model: outlines round {round_ + 1}: {keep.sum()} of {len(views)} frames agree "
                f"(before: {trusted.sum()})")  # fmt: skip
-        if keep.sum() < MIN_PLACED:  # MobileSAM's outlines agree too little: the last ones stay
+        if keep.sum() < MIN_PLACED:  # очертанията на MobileSAM са твърде несъгласувани: остават последните
             break
         current, trusted, sharpened = sharp, keep, True
     return current, trusted, sharpened
@@ -650,12 +649,12 @@ def outlines_from_3d(job: Path, work: Path, dense: Path, views: M.Views, masks: 
 
 def texture_frames(work: Path, solved: Path, stray: list[str], masks: dict[str, np.ndarray],
                    sh: Callable[[str, list], None]) -> tuple[Path, dict[str, np.ndarray]]:  # fmt: skip
-    """The frames the photo texture is made from: those with the object cut out and placed right, and also those
-    in between, never cut out (when MASK_EVERY > 1), whose neighbours on both sides in the video were placed right:
-    twice as many frames, so each face gets a straighter, closer view (Frodo: the texture came from 19 of 48 frames,
-    6.7% of the faces seen by none). The frames between take a neighbour's cut-out to measure their sharpness on.
-    With every frame cut out, these are the frames placed right.
-    Returns (the camera model of those frames, {frame: mask})."""
+    """Кадрите, от които се прави текстурата: тези с изрязан и правилно разположен предмет, а също и неизрязаните
+    между тях (при MASK_EVERY > 1), чиито съседи от двете страни във видеото са правилно разположени: двойно повече
+    кадри, така че всяка стена получава по-прав и по-близък изглед (Фродо: текстурата идваше от 19 от 48 кадъра, а
+    6,7% от стените не се виждаха от нито един). Кадрите между тях взимат изрязването на съсед, за да се измери
+    рязкостта им. Когато всеки кадър е изрязан, това са правилно разположените кадри. Връща (модела на камерите на
+    тези кадри, {кадър: маска})."""
     names = P.read_views(solved).names
     placed = set(names)
     good = {n for n in names if n in masks and n not in stray}
@@ -672,8 +671,8 @@ def texture_frames(work: Path, solved: Path, stray: list[str], masks: dict[str, 
 
 
 def outline_cloud(views: M.Views, masks: list[np.ndarray], up: np.ndarray | None) -> M.Cloud | None:
-    """A stand-in for the solver's points when few are on the object: the outline shape's voxels (coarse), turned
-    so that z is up. No table is known; the lowest point is the floor."""
+    """Заместител на точките от решаващия алгоритъм, когато малко от тях са върху предмета: вокселите на формата от
+    очертанията (груби), завъртени така, че z да е нагоре. Маса не е известна; най-ниската точка е подът."""
     grid = M.hull_grid(views, masks, S.MASK_SCALE)
     if grid is None or len(grid[0]) < 10:
         return None
@@ -696,18 +695,19 @@ def by_single(job: Path, work: Path, found: list[Path], sh: Callable[[str, list]
     return model, {"object": "", "suitable": True, "real_mm": None}
 
 
-# --- The job --------------------------------------------------------------------------------------------------------
+# --- Задачата -------------------------------------------------------------------------------------------------------
 
 
 def run(job: Path, method: str, flat_base: bool, set_state: Callable[[str], None], sh: Callable[[str, list], None],
         step: Callable[[str], None], tune: dict | None = None) -> dict:  # fmt: skip
-    """step(name): what the app shows now (raises if the job was cancelled). Returns the print report."""
+    """step(name): какво показва приложението в момента (хвърля грешка, ако задачата е отказана). Връща отчета за
+    печата."""
     if not available().get(method):
         raise P.Failed("Тази AI услуга още не е включена. Опитайте по-късно.")
     work = job / "work"
-    shutil.rmtree(work, ignore_errors=True)  # a retried job's
+    shutil.rmtree(work, ignore_errors=True)  # от повторно изпълнена задача
     work.mkdir(parents=True)
-    TX.clear(job)  # a scan's photo texture, if this job was a scan before
+    TX.clear(job)  # текстура от снимки от сканиране, ако задачата преди е била сканиране
     set_state("reconstructing")
     if method == "single":
         return single(job, work, flat_base, set_state, sh, tune)
@@ -716,7 +716,7 @@ def run(job: Path, method: str, flat_base: bool, set_state: Callable[[str], None
     if method == "claude":
         model, info = by_claude(job, work, found, step)
         set_state("cleaning")
-        out = M.make_printable(model, float(model.bounds[0, 2]), False, smoothing=0)  # designed standing on z = 0
+        out = M.make_printable(model, float(model.bounds[0, 2]), False, smoothing=0)  # проектиран да стои върху z = 0
     else:
         model, info = by_photo(job, found, step)
         set_state("cleaning")

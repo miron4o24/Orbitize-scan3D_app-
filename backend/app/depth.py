@@ -1,21 +1,17 @@
-"""AI depth for the object in each frame (Depth Anything V2 Small, ONNX on the CPU), to carve the visual hull.
-
-The outlines give a shape that is never too small, but they cannot show a dip (a speaker's grille sunk inside its
-rim) and leave a dome over a flat top seen only from above. A monocular depth network sees both, up to an unknown
-scale and offset per frame, which is fitted to 3D points that are known (dense points, or the hull's walls). A point
-of the hull is then empty when the frames that see it see the surface behind it, on average, by more than
-CARVE_MARGIN. Averaged, the frames' small errors cancel; as points stacked from 80 frames (the way this was done
-before), they made rough, striped surfaces with flaps at the edges, and a box came out a third too flat.
-
-Runs as its own process (pipeline step "estimating depth"):
-    python depth.py <images dir> <inputs.npz> <out.npz> [<crops.npz>]
-inputs.npz: R (n,3,3), t (n,3), K (n,4) fx fy cx cy, names (n,), masks_<i> (uint8, any size), refs (m,3) world
-points on the object's surface, ref_weights (m,), probes (k,3) world points inside the hull, margin (world units),
-agree (the hull's level).
-out.npz: limit (k,) the most each probe's hull share may be (see mesh.visual_hull), fits: frames fitted, used: whether
-that was enough to carve (else limit is all 1).
-crops.npz (optional): each frame's depth crop for app/fuse.py: disp_<i>, box_<i> (x0, y0, x1, y1), inner_<i>.
-"""
+"""AI дълбочина за предмета във всеки кадър (Depth Anything V2 Small, ONNX на процесора) за издълбаване на обвивката
+от очертанията. Очертанията дават форма, която никога не е твърде малка, но не могат да покажат вдлъбнатина
+(решетка на колонка, потънала в ръба ѝ) и оставят купол над плосък връх, виждан само отгоре. Невронна мрежа за
+дълбочина от един кадър вижда и двете с точност до неизвестен мащаб и отместване за всеки кадър, които се напасват
+към известни 3D точки (гъсти точки или стените на обвивката). Точка от обвивката е празна, когато кадрите, които я
+виждат, виждат повърхността зад нея средно с повече от CARVE_MARGIN. При осредняване малките грешки на кадрите се
+компенсират; като точки, натрупани от 80 кадъра (както беше преди), те даваха груби, раирани повърхности с ръбове и
+кутия излизаше с една трета по-плоска. Работи като собствен процес (стъпка "estimating depth"): python depth.py
+<папка с изображения> <inputs.npz> <out.npz> [<crops.npz>]. inputs.npz: R (n,3,3), t (n,3), K (n,4) fx fy cx cy,
+names (n,), masks_<i> (uint8, всякакъв размер), refs (m,3) световни точки върху повърхността на предмета,
+ref_weights (m,), probes (k,3) световни точки вътре в обвивката, margin (световни единици), agree (нивото на
+обвивката). out.npz: limit (k,) най-големият дял на обвивката за всяка проба (вижте mesh.visual_hull), fits:
+напаснати кадри, used: дали това стига за издълбаване (иначе limit е изцяло 1). crops.npz (незадължително):
+изрязването с дълбочина на всеки кадър за app/fuse.py: disp_<i>, box_<i> (x0, y0, x1, y1), inner_<i>."""
 
 import os
 import sys
@@ -28,7 +24,7 @@ from scipy import ndimage
 
 if __package__:
     from . import parallel as PAR
-else:  # run as a script (fuse.py and motion.py import this as part of the package)
+else:  # изпълнение като скрипт (fuse.py и motion.py го импортират като част от пакета)
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from app import parallel as PAR
 
@@ -38,13 +34,13 @@ MODEL = Path(
     )
 )
 MODEL_URL = "https://huggingface.co/onnx-community/depth-anything-v2-small/resolve/main/onnx/model.onnx"
-SIZE = 518  # the network's native resolution (long side of the object crop)
-MAX_SIDE = 1920  # frames are scaled down to this first (see predict)
-MAX_ERROR = 0.05  # median relative depth error of a frame's fit; worse frames are left out
-# Of the object's size: how far behind a point the frames must see the surface, on average, to carve it. The fits are
-# a few tenths of a percent of the distance off (0.2-1% on a box).
+SIZE = 518  # собствената разделителна способност на мрежата (дългата страна на изрязването на предмета)
+MAX_SIDE = 1920  # кадрите първо се смаляват до това (вижте predict)
+MAX_ERROR = 0.05  # медианна относителна грешка на дълбочината при напасване на кадър; по-лошите кадри отпадат
+# От размера на предмета: колко зад точка кадрите трябва да виждат повърхността средно, за да я издълбаят.
+# Напасванията се разминават с няколко десети от процента от разстоянието (0,2-1% при кутия).
 CARVE_MARGIN = 0.03
-MAX_CARVE = 0.3  # share of the hull's volume carving may remove; more means the fits went wrong
+MAX_CARVE = 0.3  # дял от обема на обвивката, който издълбаването може да премахне; повече означава грешно напасване
 MEAN, STD = np.array([0.485, 0.456, 0.406]), np.array([0.229, 0.224, 0.225])
 
 
@@ -57,7 +53,7 @@ def session():
 
 
 def disparity(sess, crop: Image.Image) -> np.ndarray:
-    """Relative inverse depth (bigger = nearer) at the crop's size."""
+    """Относителна обратна дълбочина (по-голямо = по-близо) при размера на изрязването."""
     w, h = crop.size
     s = SIZE / max(w, h)
     iw, ih = max(14, round(w * s / 14) * 14), max(14, round(h * s / 14) * 14)
@@ -67,8 +63,8 @@ def disparity(sess, crop: Image.Image) -> np.ndarray:
 
 
 def front_depths(Xc: np.ndarray, w: np.ndarray, fx, fy, cx, cy, box, cell=6):
-    """Project camera-space points; keep per `cell`-pixel square only the nearest (the visible surface).
-    Returns u, v, z, weight of the kept points inside box (x0, y0, x1, y1)."""
+    """Проектира точки в пространството на камерата; за всеки квадрат от `cell` пиксела пази само най-близката
+    (видимата повърхност). Връща u, v, z и теглото на запазените точки в кутията (x0, y0, x1, y1)."""
     x0, y0, x1, y1 = box
     z = Xc[:, 2]
     ok = z > 1e-9
@@ -90,9 +86,9 @@ def front_depths(Xc: np.ndarray, w: np.ndarray, fx, fy, cx, cy, box, cell=6):
 
 
 def fit_scale(d: np.ndarray, inv_z: np.ndarray, w: np.ndarray):
-    """inv_z ~ a d + b, robustly (iteratively drops the worst 30%). Returns (a, b) and the median relative depth
-    error. (A tilt term across the crop was tried: smoother layers, but points fitted the outlines worse.)
-    The least squares written out, as this runs on many frames at once (app/parallel.py)."""
+    """inv_z ~ a d + b, устойчиво (итеративно отпадат най-лошите 30%). Връща (a, b) и медианната относителна грешка на
+    дълбочината. (Пробван беше наклон през изрязването: по-гладки слоеве, но точките пасваха по-зле на очертанията.)
+    Най-малките квадрати са написани изрично, защото това работи върху много кадри наведнъж (app/parallel.py)."""
     d, inv_z, w = np.asarray(d, np.float64), np.asarray(inv_z, np.float64), np.asarray(w, np.float64)
     keep = np.ones(len(d), bool)
     coef = np.zeros(2)
@@ -101,7 +97,7 @@ def fit_scale(d: np.ndarray, inv_z: np.ndarray, w: np.ndarray):
         s, sd, sy = wk.sum(), (wk * dk).sum(), (wk * yk).sum()
         sdd, sdy = (wk * dk * dk).sum(), (wk * dk * yk).sum()
         det = s * sdd - sd * sd
-        # All the same depth: no slope to find (a <= 0 means no fit to the callers).
+        # Всичко е с еднаква дълбочина: няма наклон за намиране (a <= 0 значи за извикващите, че няма напасване).
         if det > 1e-12 * s * sdd:
             coef = np.array([(s * sdy - sd * sy) / det, (sdd * sy - sd * sdy) / det])
         else:
@@ -115,19 +111,19 @@ def fit_scale(d: np.ndarray, inv_z: np.ndarray, w: np.ndarray):
 
 @dataclass
 class Frame:
-    """One frame's object crop: what the network saw and what it returned. Arrays cover the box only."""
+    """Изрязването на предмета от един кадър: какво вижда мрежата и какво връща. Масивите покриват само кутията."""
 
-    box: tuple[int, int, int, int]  # x0, y0, x1, y1 in the image
-    disp: np.ndarray  # (h, w) network output
-    inner: np.ndarray  # (h, w) object pixels well inside the outline
+    box: tuple[int, int, int, int]  # x0, y0, x1, y1 в изображението
+    disp: np.ndarray  # (h, w) изход на мрежата
+    inner: np.ndarray  # (h, w) пиксели на предмета доста навътре от очертанието
     R: np.ndarray
     t: np.ndarray
     K: np.ndarray
 
 
 def predict(sess, image: Image.Image, mask: np.ndarray, R, t, K) -> Frame | None:
-    # Frames above MAX_SIDE (4K video, kept for the photo texture) are scaled down, their camera with them: the
-    # network sees 518 pixels anyway, and every fitted frame's crop stays in memory.
+    # Кадри над MAX_SIDE (4K видео, пазено за текстурата) се смаляват заедно с камерата си: мрежата така или иначе
+    # вижда 518 пиксела, а изрязването на всеки напаснат кадър остава в паметта.
     s = MAX_SIDE / max(image.size)
     if s < 1:
         image = image.resize((max(1, round(image.size[0] * s)), max(1, round(image.size[1] * s))), Image.BILINEAR)
@@ -140,14 +136,14 @@ def predict(sess, image: Image.Image, mask: np.ndarray, R, t, K) -> Frame | None
     x0, x1, y0, y1 = xs.min(), xs.max() + 1, ys.min(), ys.max() + 1
     pad = int(0.2 * max(x1 - x0, y1 - y0))
     bx0, by0, bx1, by1 = box = (max(0, x0 - pad), max(0, y0 - pad), min(W, x1 + pad), min(H, y1 + pad))
-    # Depth edges blur into the background: use only pixels well inside the outline.
+    # Ръбовете на дълбочината се размазват към фона: използват се само пиксели доста навътре от очертанието.
     erode = max(2, int(0.02 * max(x1 - x0, y1 - y0)))
     inner = ndimage.binary_erosion(m[by0:by1, bx0:bx1], iterations=erode)
     return Frame(box, disparity(sess, image.crop(box)), inner, R, t, K)
 
 
 def fit(f: Frame, refs: np.ndarray, ref_w: np.ndarray):
-    """This frame's (a, b) from the reference points it sees. None if they do not fit."""
+    """(a, b) на кадъра от опорните точки, които вижда. None, ако не пасват."""
     fx, fy, cx, cy = f.K
     x0, y0, _, _ = f.box
     u, v, z, w = front_depths(PAR.turned(refs, f.R) + f.t, ref_w, fx, fy, cx, cy, f.box)
@@ -163,8 +159,8 @@ def fit(f: Frame, refs: np.ndarray, ref_w: np.ndarray):
 
 def fit_frames(photos: list[Path], masks: list, R, t, K, refs: np.ndarray, ref_w: np.ndarray,
                seen: dict | None = None):  # fmt: skip
-    """Each frame's depth crop and its scale (a, b) fitted to the known points, for the frames that fit.
-    seen: if given, gets every frame's crop that showed the object, by frame index (fitted or not)."""
+    """Изрязването с дълбочина на всеки кадър и мащабът му (a, b), напаснат към известните точки, за напаснатите
+    кадри. seen: ако е дадено, получава изрязването на всеки кадър с предмет по индекс (напаснат или не)."""
 
     def one(sess, i):
         p = photos[i]
@@ -188,17 +184,19 @@ def fit_frames(photos: list[Path], masks: list, R, t, K, refs: np.ndarray, ref_w
 
 
 def enough(fits: list, n_frames: int) -> bool:
-    """Whether the depth fits enough frames to be trusted (a real speaker: 79 of 80; plain synthetic pictures: 14)."""
+    """Дали дълбочината пасва на достатъчно кадри, за да ѝ се вярва (истинска колонка: 79 от 80; едноцветни изкуствени
+    изображения: 14)."""
     return len(fits) >= max(3, n_frames / 2)
 
 
 def carve_limit(fits: list, points: np.ndarray, margin: float, agree: float) -> np.ndarray:
-    """For world points inside the hull: the most their hull share may be. From how far behind each point the frames
-    that see it (well inside the outline) see the surface, on average, each clipped to 2 margins so one bad frame
-    cannot carve alone: `agree` (the hull's level) at the margin, solid in front of it, falling to empty beyond it.
-    Frames that see the surface in front of a point vote too (unlike mesh.free_space_limit's measured points): AI depth
-    is too rough to carve on the frames looking at it alone, which mangled a mug's inside. Points seen by fewer than 3
-    frames keep 1. Smooth across points, so the carved surface is too (a yes/no per voxel left terraces)."""
+    """За световни точки в обвивката: най-големият им дял в нея. Определя се от това колко зад всяка точка кадрите,
+    които я виждат (доста навътре от очертанието), виждат повърхността средно, всеки ограничен до 2 граници, за да
+    не може един лош кадър да издълбае сам: `agree` (нивото на обвивката) при границата, плътно пред нея и спадане
+    до празно отвъд нея. Гласуват и кадрите, виждащи повърхността пред точка (за разлика от измерените точки на
+    mesh.free_space_limit): AI дълбочината е твърде груба, за да се издълбава само с гледащите кадри, което
+    разваляше вътрешността на чаша. Точки, видени от под 3 кадъра, запазват 1. Гладко между точките, така че и
+    издълбаната повърхност е гладка (да/не за всеки воксел оставяше тераси)."""
     seen = np.zeros(len(points), np.int32)
     behind = np.zeros(len(points))
     for f, (a, b) in fits:
@@ -215,7 +213,7 @@ def carve_limit(fits: list, points: np.ndarray, margin: float, agree: float) -> 
         ok, c, r = ok[on], c[on], r[on]
         inv = a * f.disp[r, c] + b
         seen[ok] += 1
-        far = 1 / np.maximum(inv, 1e-9) - z[ok]  # how far beyond the point this frame sees the surface
+        far = 1 / np.maximum(inv, 1e-9) - z[ok]  # колко отвъд точката този кадър вижда повърхността
         behind[ok] += np.where(inv > 1e-9, np.clip(far, -2 * margin, 2 * margin), 2 * margin)
     mean = behind / np.maximum(seen, 1)
     share = agree + (margin - mean) * (1 - agree) / (0.2 * margin)
@@ -223,7 +221,7 @@ def carve_limit(fits: list, points: np.ndarray, margin: float, agree: float) -> 
 
 
 def save_crops(path: Path, seen: dict) -> None:
-    """The frames' depth crops, for app/fuse.py (which fits them to OpenMVS's depth maps instead)."""
+    """Изрязванията с дълбочина на кадрите за app/fuse.py (който ги напасва към картите на дълбочината на OpenMVS)."""
     arrays = {}
     for i, f in seen.items():
         arrays |= {f"disp_{i}": f.disp.astype(np.float32), f"box_{i}": np.array(f.box), f"inner_{i}": f.inner}

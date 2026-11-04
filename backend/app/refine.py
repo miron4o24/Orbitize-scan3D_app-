@@ -1,24 +1,20 @@
-"""Surer object masks once the cameras are known: MobileSAM (promptable segmentation) prompted from 3D, checked
-against the visual hull.
-
-IS-Net (app/segment.py) finds the object in each frame on its own and errs in a good share of them: it takes in a
-chair behind a drill's handle, a label next to a figure, a strip of the table; it leaves out a black trigger, a
-figure's face, its base. 3D knows better. The visual hull (where most masks agree) shows where the object is in
-every frame: its view gives MobileSAM a box, points deep inside it say "object", and measured points well outside it
-(the table, labels, the room) say "not object". MobileSAM returns four candidates; the one most like the hull's view
-is kept, cut to near the hull's view (a chair it took in goes) and joined with the hull's core (a part it left out
-comes back). On 8 frames of a drill where IS-Net erred in 5: no chair, the whole handle, chuck and bit, the full
-battery, with edges that follow the picture.
-
-Runs as its own process (pipeline step "sharpening the outlines"):
-    python refine.py <images dir> <inputs.npz> <out.npz> [<cache dir>]
-inputs.npz: names (n,), R (n,3,3), t (n,3), K (n,4) fx fy cx cy (world -> camera, as mesh.Views), masks_<i> (uint8
-at 1/MASK_SCALE of the frame), tight (k,3) world points inside the hull, loose (m,3) inside a looser hull (half the
-frames agree), deep (j,3) well inside the hull, outside (l,3) measured world points well outside the loose hull, step
-(the hull grid's cell, world units). out.npz: masks_<i> as the input's (the old mask where MobileSAM found nothing
-that fits), used (n,) bool. Cache dir: what MobileSAM's slow half saw in each frame's crop, for the next round: only its
-quick half depends on the prompts that change.
-"""
+"""По-сигурни маски на предмета, след като камерите са известни: MobileSAM (сегментиране с подсказки), подсказван от
+3D и проверяван спрямо обвивката от очертанията. IS-Net (app/segment.py) намира предмета във всеки кадър
+самостоятелно и греши в голяма част от тях: включва стол зад дръжка на дрелка, етикет до фигура, ивица маса;
+пропуска черен спусък, лице на фигура, основата ѝ. 3D знае по-добре. Обвивката (където повечето маски са съгласни)
+показва къде е предметът във всеки кадър: изгледът ѝ дава на MobileSAM кутия, точки дълбоко в нея казват "предмет",
+а измерени точки доста извън нея (маса, етикети, стая) казват "не е предмет". MobileSAM връща четири кандидата;
+запазва се най-подобният на изгледа на обвивката, изрязан близо до него (включеният стол отпада) и съединен с
+ядрото на обвивката (пропусната част се връща). При 8 кадъра от дрелка, в които IS-Net греши в 5: без стол, с
+цялата дръжка, патронник и свредло, цялата батерия и ръбове, следващи изображението. Работи като собствен процес
+(стъпка "sharpening the outlines"): python refine.py <папка с изображения> <inputs.npz> <out.npz> [<папка за кеш>].
+inputs.npz: names (n,), R (n,3,3), t (n,3), K (n,4) fx fy cx cy (свят -> камера, като mesh.Views), masks_<i> (uint8
+при 1/MASK_SCALE от кадъра), tight (k,3) световни точки в обвивката, loose (m,3) в по-свободна обвивка (половината
+кадри са съгласни), deep (j,3) доста навътре в обвивката, outside (l,3) измерени световни точки доста извън
+свободната обвивка, step (клетката на мрежата на обвивката, световни единици). out.npz: masks_<i> както на входа
+(старата маска, където MobileSAM не намери нищо подходящо), used (n,) bool. Папка за кеш: какво е видяла бавната
+половина на MobileSAM в изрязването на всеки кадър, за следващия кръг: само бързата му половина зависи от
+променящите се подсказки."""
 
 import os
 import sys
@@ -32,21 +28,21 @@ from scipy import ndimage
 if __package__:
     from . import parallel as PAR
     from . import segment as S
-else:  # run as a script: import the package by its path
+else:  # изпълнение като скрипт: импортира пакета по пътя му
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from app import parallel as PAR
     from app import segment as S
 
 MODEL_DIR = Path(os.environ.get("SAM_MODEL_DIR", Path(__file__).resolve().parent.parent / "tools" / "sam"))
 ENCODER, DECODER = MODEL_DIR / "mobile_sam_image_encoder.onnx", MODEL_DIR / "sam_mask_decoder_multi.onnx"
-SIZE = 1024  # MobileSAM's input: the long side
-CROP = 1.5  # side of the crop given to MobileSAM, in loose-hull sizes
-POSITIVE, NEGATIVE = 6, 8  # prompt points
-NEAR = 0.04  # of the object's size in the frame: how far MobileSAM's mask may reach beyond the loose hull's view
-CORE = 0.08  # and how far inside the hull's view the object is taken as certain
-MIN_FIT = 0.5  # the least overlap with the hull's view for MobileSAM's mask to be used
-SPECK = 0.02  # parts of a mask under this share of its biggest part are specks of background
-SAME_CROP = 1.3  # another round's crop is the same one (its picture's meaning already known) up to this much too big
+SIZE = 1024  # входът на MobileSAM: дългата страна
+CROP = 1.5  # страна на изрязването за MobileSAM, в размери на свободната обвивка
+POSITIVE, NEGATIVE = 6, 8  # точки за подсказка
+NEAR = 0.04  # от размера на предмета в кадъра: докъде може да стига маската на MobileSAM извън изгледа на свободната обвивка
+CORE = 0.08  # и колко навътре в изгледа на обвивката предметът се приема за сигурен
+MIN_FIT = 0.5  # най-малкото припокриване с изгледа на обвивката, за да се използва маската на MobileSAM
+SPECK = 0.02  # части от маска под този дял от най-голямата ѝ част са петънца фон
+SAME_CROP = 1.3  # изрязването от следващ кръг е същото (значението на изображението му вече е известно), ако е твърде голямо до толкова
 
 
 def sessions():
@@ -60,7 +56,7 @@ def sessions():
 
 
 def embedding(enc, crop: Image.Image) -> np.ndarray:
-    """MobileSAM's slow half: what it sees in the crop, whatever is asked of it after."""
+    """Бавната половина на MobileSAM: какво вижда в изрязването, каквото и да го питат после."""
     W, H = crop.size
     s = SIZE / max(W, H)
     a = np.asarray(crop.convert("RGB").resize((max(1, round(W * s)), max(1, round(H * s))), Image.BILINEAR), np.float32)
@@ -68,15 +64,15 @@ def embedding(enc, crop: Image.Image) -> np.ndarray:
 
 
 def candidates(dec, emb: np.ndarray, size: tuple[int, int], box, points, labels) -> list[np.ndarray]:
-    """MobileSAM's four masks (bool, crop size) for a box (x0, y0, x1, y1) and points (label 1 object, 0 not). emb: the
-    embedding of the crop (of `size`: width, height)."""
+    """Четирите маски на MobileSAM (bool, размер на изрязването) за кутия (x0, y0, x1, y1) и точки (етикет 1 предмет,
+    0 не е). emb: вграждането на изрязването (с размер `size`: ширина, височина)."""
     W, H = size
     s = SIZE / max(W, H)
     pts = np.array([box[:2], box[2:], *points], np.float32).reshape(-1, 2) * s
     feed = {
         "image_embeddings": emb,
         "point_coords": pts[None],
-        "point_labels": np.array([2, 3, *labels], np.float32)[None],  # 2, 3: the box's corners
+        "point_labels": np.array([2, 3, *labels], np.float32)[None],  # 2, 3: ъглите на кутията
         "mask_input": np.zeros((1, 1, 256, 256), np.float32),
         "has_mask_input": np.zeros(1, np.float32),
         "orig_im_size": np.array([H, W], np.float32),
@@ -86,7 +82,7 @@ def candidates(dec, emb: np.ndarray, size: tuple[int, int], box, points, labels)
 
 
 def project(X: np.ndarray, R, t, K):
-    """Pixel positions (n, 2) and depths of world points."""
+    """Позиции в пиксели (n, 2) и дълбочини на световни точки."""
     Xc = PAR.turned(X, R) + t
     z = Xc[:, 2]
     zs = np.where(z > 1e-9, z, np.inf)
@@ -94,7 +90,7 @@ def project(X: np.ndarray, R, t, K):
 
 
 def spread(uv: np.ndarray, k: int) -> np.ndarray:
-    """k of the points, spread out (farthest point sampling from the one nearest their middle)."""
+    """k от точките, разпръснати (подбор на най-далечна точка, започвайки от най-близката до средата им)."""
     if len(uv) <= k:
         return uv
     pick = [int(np.argmin(np.linalg.norm(uv - uv.mean(0), axis=1)))]
@@ -106,7 +102,7 @@ def spread(uv: np.ndarray, k: int) -> np.ndarray:
 
 
 def view(uv: np.ndarray, z: np.ndarray, shape, radius: float) -> np.ndarray:
-    """Where points (pixels in the crop) cover the crop, each drawn `radius` pixels wide."""
+    """Къде точки (пиксели в изрязването) покриват изрязването, всяка нарисувана с ширина `radius` пиксела."""
     out = np.zeros(shape, bool)
     u, v = np.round(uv[:, 0]).astype(int), np.round(uv[:, 1]).astype(int)
     ok = (z > 0) & (u >= 0) & (v >= 0) & (u < shape[1]) & (v < shape[0])
@@ -116,7 +112,7 @@ def view(uv: np.ndarray, z: np.ndarray, shape, radius: float) -> np.ndarray:
 
 
 def tidy(m: np.ndarray) -> np.ndarray:
-    """Without specks (parts under SPECK of the biggest) and with small holes filled, as segment.py's masks."""
+    """Без петънца (части под SPECK от най-голямата) и с малки запълнени дупки, като маските на segment.py."""
     lab, n = ndimage.label(m)
     if n > 1:
         areas = np.bincount(lab.ravel())[1:]
@@ -130,8 +126,8 @@ def tidy(m: np.ndarray) -> np.ndarray:
 
 
 def cached_crop(saved: Path | None, bx: tuple, x0, y0, x1, y1):
-    """The (crop, embedding) an earlier round left for this frame, if that crop still holds all of this round's object
-    at about the same size; else None."""
+    """(Изрязването, вграждането), оставени от по-ранен кръг за този кадър, ако това изрязване още съдържа целия
+    предмет от този кръг при приблизително същия размер; иначе None."""
     if saved is None or not saved.exists():
         return None
     with np.load(saved) as c:
@@ -143,8 +139,8 @@ def cached_crop(saved: Path | None, bx: tuple, x0, y0, x1, y1):
 
 def refine_frame(enc, dec, image: Image.Image, R, t, K, z: dict, step: float, old: np.ndarray,
                  saved: Path | None = None) -> np.ndarray | None:  # fmt: skip
-    """The frame's mask (bool, full size), or None if the hull is not in view or MobileSAM found nothing that fits.
-    old: the frame's first mask (uint8, small). saved: where this frame's embedding is kept between rounds."""
+    """Маската на кадъра (bool, пълен размер) или None, ако обвивката не е в изгледа или MobileSAM не намери нищо
+    подходящо. old: първата маска на кадъра (uint8, малка). saved: къде се пази вграждането на кадъра между кръговете."""
     W, H = image.size
     uvl, zl = project(z["loose"], R, t, K)
     front = zl > 0
@@ -181,7 +177,7 @@ def refine_frame(enc, dec, image: Image.Image, R, t, K, z: dict, step: float, ol
     cands = candidates(dec, emb, (shape[1], shape[0]), box, [*pos, *neg], [1] * len(pos) + [0] * len(neg))
 
     zmed = float(np.median(zl[front]))
-    radius = 0.5 * step * K[0] / zmed + 1  # a hull cell's half width in pixels
+    radius = 0.5 * step * K[0] / zmed + 1  # половин ширина на клетка от обвивката в пиксели
     uvt, zt = project(z["tight"], R, t, K)
     tight = view(uvt - off, zt, shape, radius)
     loose = view(uvl - off, zl, shape, radius)
@@ -193,8 +189,8 @@ def refine_frame(enc, dec, image: Image.Image, R, t, K, z: dict, step: float, ol
         return None
     obj = np.sqrt(tight.sum())
     near = ndimage.binary_dilation(loose, iterations=max(2, int(NEAR * obj)))
-    # The hull's core comes back only where the first mask had it too: the hull also fills gaps between parts that
-    # this frame sees through (the table between a figure's cloak and its leg), which both masks rightly leave out.
+    # Ядрото на обвивката се връща само където го е имало и първата маска: обвивката запълва и процепи между части,
+    # през които този кадър вижда (масата между наметалото и крака на фигура), които и двете маски правилно пропускат.
     core = ndimage.binary_erosion(tight, iterations=max(2, int(CORE * obj)))
     first = np.asarray(Image.fromarray(old).resize((W, H), Image.BILINEAR))[bx[1] : bx[3], bx[0] : bx[2]] > 127
     out = np.zeros((H, W), bool)

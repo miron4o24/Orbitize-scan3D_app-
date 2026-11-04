@@ -1,12 +1,10 @@
-"""A 3D model from one frame (TripoSR, MIT: VAST-AI-Research/TripoSR, weights stabilityai/TripoSR), on the CPU: Pro's
-AI model when the video's frames cannot be placed in 3D (app/ai.py). Picks the best frame by the object masks
-(app/segment.py), cuts the object out onto grey as TripoSR expects, and turns its triplane into a coloured mesh by
-marching cubes here (scikit-image, not torchmcubes, which needs compiling on Windows). What the frame does not show
-is guessed.
-
-Runs as its own process (step "ai modelling"), so torch's memory is freed afterwards and the step can be cancelled:
-    python single3d.py <frames dir> <masks.npz> <out.ply>
-Writes <out>.json with the frame used. TripoSR's code and weights are in tools/triposr (scripts/models.ps1)."""
+"""3D модел от един кадър (TripoSR, MIT: VAST-AI-Research/TripoSR, тегла stabilityai/TripoSR) на процесора: AI моделът
+на Pro, когато кадрите от видеото не могат да се разположат в 3D (app/ai.py). Избира най-добрия кадър по маските на
+предмета (app/segment.py), изрязва предмета върху сив фон, както очаква TripoSR, и превръща триплана му в цветна
+мрежа с marching cubes тук (scikit-image, не torchmcubes, който изисква компилиране на Windows). Това, което
+кадърът не показва, се предполага. Работи като собствен процес (стъпка "ai modelling"), затова паметта на torch се
+освобождава след това и стъпката може да се отказва: python single3d.py <папка с кадри> <masks.npz> <out.ply>.
+Записва <out>.json с използвания кадър. Кодът и теглата на TripoSR са в tools/triposr (scripts/models.ps1)."""
 
 import json
 import os
@@ -20,12 +18,12 @@ from scipy import ndimage
 
 HERE = Path(__file__).resolve().parent
 TOOLS = Path(os.environ.get("TRIPOSR_DIR", HERE.parent / "tools" / "triposr"))
-CODE = TOOLS / "code"  # the repository (tsr/)
+CODE = TOOLS / "code"  # хранилището (tsr/)
 WEIGHTS = TOOLS / "weights"  # config.yaml, model.ckpt
-MASK_SCALE = 4  # app/segment.py's
-FOREGROUND = 0.85  # share of the square the object fills (TripoSR's default)
-RESOLUTION = 320  # marching cubes grid: finer than TripoSR's 256 for print detail
-THRESHOLD = 25.0  # TripoSR's density level of the surface
+MASK_SCALE = 4  # от app/segment.py
+FOREGROUND = 0.85  # дял от квадрата, запълнен от предмета (подразбиращото се за TripoSR)
+RESOLUTION = 320  # мрежа за marching cubes: по-фина от 256 на TripoSR за детайл при печат
+THRESHOLD = 25.0  # нивото на плътност на повърхността при TripoSR
 CHUNK = 32768
 
 
@@ -38,16 +36,16 @@ def sharpness(im: Image.Image) -> float:
     return float(ndimage.laplace(g).var())
 
 
-# A mask that took in background (TripoSR then builds it as part of the object: a suitcase handle as "wings", a
-# chair standing behind a figure's head as a black "leaf") has an unusual shape: cut to its box and scaled to a
-# square, it overlaps the other frames' masks less. Only the more typical half are modelled from (the chair's frame
-# 0.46 against a median 0.62, the handle's 0.46 and 0.41 against 0.73), and none much wider than the others.
-TOO_WIDE = 1.3  # of the frames' median width (the handle: 78% of the frame against 37%)
-SHAPE_SIDE = 64  # masks are compared at this size
+# Маска, включила фон (тогава TripoSR го изгражда като част от предмета: дръжка на куфар като "крила", стол зад
+# главата на фигура като черно "листо"), има необичайна форма: изрязана до кутията си и мащабирана до квадрат, тя се
+# припокрива по-малко с маските на другите кадри. Моделира се само от по-типичната половина (кадърът със стола 0,46
+# спрямо медиана 0,62, тези с дръжката 0,46 и 0,41 спрямо 0,73) и от нито един много по-широк от другите.
+TOO_WIDE = 1.3  # от медианната ширина на кадрите (дръжката: 78% от кадъра спрямо 37%)
+SHAPE_SIDE = 64  # маските се сравняват при този размер
 
 
 def shape_of(on: np.ndarray) -> np.ndarray:
-    """A mask cut to its box, centred in a square, at SHAPE_SIDE."""
+    """Маска, изрязана до кутията си и центрирана в квадрат при SHAPE_SIDE."""
     ys, xs = np.nonzero(on)
     crop = on[ys.min() : ys.max() + 1, xs.min() : xs.max() + 1]
     side = max(crop.shape)
@@ -58,8 +56,8 @@ def shape_of(on: np.ndarray) -> np.ndarray:
 
 
 def best_frame(frames: list[Path], masks: dict) -> tuple[Path, np.ndarray]:
-    """The frame to model from: the object's mask of a typical shape and width (see TOO_WIDE), the whole object in
-    view (not cut by the frame's edge), big and sharp."""
+    """Кадърът за моделиране: маска на предмета с типична форма и ширина (вижте TOO_WIDE), с целия предмет в изгледа
+    (неотрязан от ръба на кадъра), голям и рязък."""
     found = []
     for f in frames:
         m = masks.get(f.name)
@@ -89,11 +87,11 @@ def best_frame(frames: list[Path], masks: dict) -> tuple[Path, np.ndarray]:
 
 
 def cut_out(frame: Path, m: np.ndarray) -> Image.Image:
-    """The object on grey, centred in a square it fills FOREGROUND of (TripoSR's input)."""
+    """Предметът върху сив фон, центриран в квадрат, който запълва с дял FOREGROUND (входът на TripoSR)."""
     with Image.open(frame) as im:
         rgb = np.asarray(im.convert("RGB"), np.float32) / 255
     alpha = np.asarray(Image.fromarray(m).resize((rgb.shape[1], rgb.shape[0]), Image.BILINEAR), np.float32) / 255
-    alpha = np.clip((alpha - 0.3) / 0.4, 0, 1)[..., None]  # the soft edge kept, faint background dropped
+    alpha = np.clip((alpha - 0.3) / 0.4, 0, 1)[..., None]  # мекият ръб се пази, слабият фон отпада
     img = rgb * alpha + 0.5 * (1 - alpha)
     ys, xs = np.nonzero(alpha[..., 0] > 0.5)
     y0, y1, x0, x1 = ys.min(), ys.max() + 1, xs.min(), xs.max() + 1
@@ -105,9 +103,9 @@ def cut_out(frame: Path, m: np.ndarray) -> Image.Image:
 
 
 def main(frames_dir: Path, masks_file: Path, out: Path):
-    # TripoSR's code imports rembg and torchmcubes, neither used here: stand-ins (app/triposr_shims).
+    # Кодът на TripoSR импортира rembg и torchmcubes, които не се използват тук: заместители (app/triposr_shims).
     sys.path[:0] = [str(CODE), str(HERE / "triposr_shims")]
-    os.environ.setdefault("HF_HOME", str(TOOLS / "hf"))  # the image encoder's config.json, fetched once
+    os.environ.setdefault("HF_HOME", str(TOOLS / "hf"))  # config.json на кодировчика на изображения, изтеглен веднъж
     import torch
     from skimage import measure
     from tsr.system import TSR
@@ -138,7 +136,7 @@ def main(frames_dir: Path, masks_file: Path, out: Path):
         del grid, density
         print(f"shape in {time.time() - t:.0f} s", flush=True)
         verts, faces, _, _ = measure.marching_cubes(vol, level=THRESHOLD)
-        verts = verts / (RESOLUTION - 1) * 2 * r - r  # grid index -> TripoSR's coordinates (Z up)
+        verts = verts / (RESOLUTION - 1) * 2 * r - r  # индекс в мрежата -> координатите на TripoSR (Z нагоре)
         color = model.renderer.query_triplane(model.decoder, torch.from_numpy(verts).float(), code)["color"]
     colors = (np.clip(color.numpy(), 0, 1) * 255).astype(np.uint8)
 
