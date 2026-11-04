@@ -1,9 +1,9 @@
-# One-time setup of the backend on Windows Server 2025 / Windows 11, without WSL or Docker:
-# Visual C++ runtime, COLMAP and OpenMVS (CPU builds), Python packages, .env. Safe to run again.
-# PowerShell as Administrator, in the backend folder:
+﻿# Еднократна инсталация на сървъра под Windows Server 2025 / Windows 11, без WSL и Docker:
+# Visual C++, COLMAP и OpenMVS (за процесор), Python пакети, .env. Може да се изпълнява повторно.
+# PowerShell като администратор, в папка backend:
 #   powershell -ExecutionPolicy Bypass -File scripts\setup-windows.ps1
 $ErrorActionPreference = 'Stop'
-$ProgressPreference = 'SilentlyContinue' # the progress bar makes Invoke-WebRequest ~10x slower
+$ProgressPreference = 'SilentlyContinue' # лентата за напредък прави Invoke-WebRequest около 10 пъти по-бавен
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $root = Split-Path $PSScriptRoot -Parent
 $tools = Join-Path $root 'tools'
@@ -74,7 +74,7 @@ if (Test-Path $envFile) {
   [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
   $token = -join ($bytes | ForEach-Object { $_.ToString('x2') })
   $text = "API_TOKEN=$token`nPORT=8010`nMAX_IMAGE_SIZE=1600`nMAX_VIDEO_MB=600`n"
-  [IO.File]::WriteAllText($envFile, $text) # UTF-8 without BOM
+  [IO.File]::WriteAllText($envFile, $text) # UTF-8 без BOM
   Write-Host "Created $envFile with a new API_TOKEN. Put the same token in the app's .env.local." -ForegroundColor Yellow
 }
 

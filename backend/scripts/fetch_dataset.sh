@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Downloads the Middlebury "templeRing" multi-view dataset (47 photos, 640x480) and converts it to JPEG,
-# so the pipeline can be tested without the phone app. Output: backend/samples/templeRing/*.jpg
+# Изтегля данните "templeRing" на Middlebury (47 снимки, 640x480) и ги преобразува в JPEG,
+# за да може обработката да се тества без приложението. Резултат: backend/samples/templeRing/*.jpg
 set -euo pipefail
 cd "$(dirname "$0")/.."
 out=samples/templeRing

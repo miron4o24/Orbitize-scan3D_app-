@@ -1,5 +1,5 @@
-# Dot-source from the other Windows scripts: . (Join-Path $PSScriptRoot 'env.ps1')
-# Loads backend\.env into this process and puts the COLMAP and OpenMVS that setup-windows.ps1 installed on PATH.
+﻿# Зарежда се от другите скриптове за Windows: . (Join-Path $PSScriptRoot 'env.ps1')
+# Зарежда backend\.env в този процес и добавя в PATH инсталираните от setup-windows.ps1 COLMAP и OpenMVS.
 $root = Split-Path $PSScriptRoot -Parent
 $envFile = Join-Path $root '.env'
 if (-not (Test-Path $envFile)) { throw "Missing $envFile. Run scripts\setup-windows.ps1 first." }

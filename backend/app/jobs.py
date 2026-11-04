@@ -307,6 +307,9 @@ class Worker:
                 thumbnail(job_id)  # изображението на модела, създадено сега, а не при първата заявка от списък
             except OSError:
                 pass
+            from . import ar  # файлът за преглед се прави сега, за да се отвори моделът веднага
+
+            ar.view_file(d)
         except Cancelled:
             pass
         except (pipeline.Failed, MeshError) as e:

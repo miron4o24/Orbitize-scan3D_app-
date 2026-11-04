@@ -1,5 +1,6 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { File, Paths } from 'expo-file-system';
+import { Image } from 'expo-image';
 import { router, useLocalSearchParams, type ErrorBoundaryProps } from 'expo-router';
 import * as Sharing from 'expo-sharing';
 import { useEffect, useState } from 'react';
@@ -16,6 +17,8 @@ import { PrintHelper } from '@/components/PrintHelper';
 import { SpotPicker } from '@/components/SpotPicker';
 import { Badge, Button, Card, ErrorText, Field, H2, H3, IconButton, Label, Note, Row, Screen, Section, Segmented, Small, Title } from '@/components/ui';
 import {
+  authHeaders,
+  downloadForViewing,
   downloadResult,
   downloadSpin,
   editModel,
@@ -26,6 +29,7 @@ import {
   renameScan,
   shareScan,
   shareUrl,
+  thumbUrl,
   unpublishScan,
   unshareScan,
   type Report,
@@ -49,7 +53,7 @@ async function loadModel(id: string, jobId: string | undefined): Promise<Object3
   const file = modelFile(id);
   if (!file.exists) {
     if (!jobId) throw new Error('Моделът вече не е наличен.');
-    await downloadResult(jobId, 'glb', file);
+    await downloadForViewing(jobId, file);
   }
   try {
     return await parseGlb(file, `scan-${id}`);
@@ -187,11 +191,15 @@ export default function Viewer() {
       if (!model || !mmValid) return;
       setScan(updateScan(id, { longestMm: mm }));
       let file = modelFile(id);
-      if (format !== 'glb') {
+      if (format === 'glb' && jobId) {
+        // Изнасянето е с пълните детайли, а показваният модел е лекият файл за преглед.
+        file = new File(Paths.cache, `scan-${id}-full.glb`);
+        if (!file.exists) await downloadResult(jobId, 'glb', file);
+      } else if (format !== 'glb') {
         file = new File(Paths.cache, `scan-${id}-${Math.round(mm)}mm.${format}`);
-        if (surface === 'smooth' && jobId) {
+        if (jobId) {
           if (file.exists) file.delete();
-          await downloadResult(jobId, format, file, mm, SMOOTH_PASSES);
+          await downloadResult(jobId, format, file, mm, surface === 'smooth' ? SMOOTH_PASSES : undefined);
         } else file.writeSync(exportForPrint(model, format, mm));
       }
       const mime = FORMATS.find((f) => f.format === format)!.mime;
@@ -372,7 +380,16 @@ export default function Viewer() {
           </View>
         ) : (
           <View style={s.loading}>
-            <Skeleton style={s.loadingBlock} />
+            {jobId ? (
+              <Image
+                source={{ uri: `${thumbUrl(jobId)}?v=model`, headers: authHeaders() }}
+                style={s.loadingPicture}
+                contentFit="contain"
+                transition={200}
+              />
+            ) : (
+              <Skeleton style={s.loadingBlock} />
+            )}
             <Label>Зареждане на модела…</Label>
           </View>
         )}
@@ -868,6 +885,7 @@ const useStyles = makeStyles((c) => ({
   preview: { height: '42%', backgroundColor: c.viewer[1], borderBottomWidth: 1, borderBottomColor: c.line },
   loading: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: space.md },
   loadingBlock: { width: 120, height: 120, borderRadius: radius.md },
+  loadingPicture: { width: 240, height: 240, borderRadius: radius.md },
   floatTop: {
     position: 'absolute',
     left: 0,
