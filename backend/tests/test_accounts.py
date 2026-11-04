@@ -72,7 +72,7 @@ def finished_scan(client, h, frames=8):
 def test_google_client_id_set_remotely_by_admin(client):
     # accounts: входът с имейл работи (базата данни е достатъчна); за Google първо е нужен идентификатор на клиента.
     assert client.get("/health").json() == {"ok": True, "accounts": True, "database": "ok", "google_client_id": None,
-                                         "version": "2026-11-04-orbitize", "stress": True, "progress": True, "pro": True}
+                                         "version": "2026-11-04-table", "stress": True, "progress": True, "pro": True}
     assert client.post("/auth/google", json={"id_token": "g1:a@example.com"}).status_code == 503
     assert client.put("/admin/settings", json={"google_client_id": CLIENT_ID}).status_code == 401
     r = client.put("/admin/settings", json={"google_client_id": f" {CLIENT_ID} "}, headers=ADMIN)
@@ -197,7 +197,7 @@ def test_accounts_turned_off(client, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "off")
     db.reset()
     assert client.get("/health").json() == {"ok": True, "accounts": False, "database": "off", "google_client_id": None,
-                                         "version": "2026-11-04-orbitize", "stress": True, "progress": True, "pro": True}
+                                         "version": "2026-11-04-table", "stress": True, "progress": True, "pro": True}
     assert client.post("/auth/google", json={"id_token": "g1:a@example.com"}).status_code == 503
     assert client.post("/jobs", headers=ADMIN).status_code == 200  # споделеният ключ работи както преди
     assert client.get("/me", headers={"Authorization": "Bearer whatever"}).status_code == 401

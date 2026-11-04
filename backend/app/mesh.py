@@ -243,6 +243,7 @@ def clean_cloud(
     masks: list[np.ndarray],
     mask_scale: int,
     up: np.ndarray | None = None,
+    find_table: bool = True,
 ) -> Cloud:
     """Точките на предмета, изравнени по масата: всичко извън очертанието (маса, фон, носещи се точки) отпада чрез
     маските, което работи при всякакъв предмет, фон или път на камерата. up: накъде е нагоре, когато е известно
@@ -268,7 +269,8 @@ def clean_cloud(
     mid = (lo + hi) / 2
     around = ~on_object & (np.linalg.norm(pts[:, :2] - mid[:2], axis=1) < 1.5 * size)
     around &= np.abs(pts[:, 2] - lo[2]) < 0.5 * size
-    plane = find_ground(pts[around], thresh) if around.sum() >= 100 else None
+    # find_table=False: измерването е само около предмета, затова истинската маса не е сред точките.
+    plane = find_ground(pts[around], thresh) if find_table and around.sum() >= 100 else None
     if plane is not None:
         n, d = plane
         R2 = rotation_to(n)

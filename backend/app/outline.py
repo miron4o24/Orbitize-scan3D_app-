@@ -179,7 +179,7 @@ def measured(job: Path, work: Path, dense: Path, views: M.Views, masks: list, cl
             "--max-threads", P.THREADS])  # fmt: skip
         pts, nrm, col = P.load_cloud(dense / "dense.ply")
         upward = cloud.to_up[2] if solvers is not None else up  # z, както го дава масата на решаващия алгоритъм
-        cloud = M.clean_cloud(pts, nrm, col, views, masks, S.MASK_SCALE, upward)
+        cloud = M.clean_cloud(pts, nrm, col, views, masks, S.MASK_SCALE, upward, find_table=areas is None)
         if cloud.ground_z is None and solvers is not None:
             cloud = on_table(job, cloud, solvers)
         dense_cloud = True
