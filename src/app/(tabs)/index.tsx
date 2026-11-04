@@ -15,7 +15,8 @@ import { ArrowLink, IconButton, Kicker, ScrollBar, Section, useScrollY } from '@
 import { errorText, type Method } from '@/lib/api';
 import { refreshProfile } from '@/lib/auth';
 import { importVideo } from '@/lib/importVideo';
-import { aiAvailable, aiTrial, PRO_INFO, SCAN_INFO } from '@/lib/prefs';
+import { startFromPhoto } from '@/lib/importPhoto';
+import { aiAvailable, aiTrial, ONE_PHOTO_INFO, PRO_INFO, SCAN_INFO } from '@/lib/prefs';
 import { openEntry, useLibrary } from '@/lib/library';
 import { checkProgress, useProgress } from '@/lib/progress';
 import { useSession } from '@/lib/session';
@@ -114,6 +115,7 @@ export default function Home() {
                 <>
                   <ScanChoice highlight title={PRO_INFO.single.label} time={PRO_INFO.single.time} sub={aiTrial() ? 'Един безплатен опит' : 'Най-бързият начин'} icon="sparkles" onPress={filmAi} />
                   <ScanChoice title={SCAN_INFO.label} time={SCAN_INFO.time} sub="Може да е малко по-добър от AI модела" icon="videocam-outline" onPress={scan} />
+                  <ScanChoice title={ONE_PHOTO_INFO.label} time={ONE_PHOTO_INFO.time} sub="AI предполага задната страна" icon="image-outline" onPress={startFromPhoto} />
                 </>
               ) : (
                 <ScanChoice highlight title="Започни сканиране" time={SCAN_INFO.time} icon="videocam" onPress={scan} />

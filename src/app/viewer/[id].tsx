@@ -129,7 +129,7 @@ export default function Viewer() {
   const canEdit = !!user?.pro && !!user.ai?.edit && !!jobId && scan?.status === 'done';
   // Създаден от видео, чиито кадри още са на сървъра: може да се добави липсваща страна.
   const [openedAt] = useState(() => Date.now());
-  const canExtend = !!jobId && scan?.status === 'done' && !scan.report?.edit && openedAt - scan.createdAt < FRAMES_KEPT_MS;
+  const canExtend = !!jobId && scan?.status === 'done' && !scan.report?.edit && scan.photoCount !== 1 && openedAt - scan.createdAt < FRAMES_KEPT_MS;
 
   useEffect(() => {
     if (arDone) arSupport().then(setSupport);

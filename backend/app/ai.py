@@ -685,7 +685,10 @@ def by_single(job: Path, work: Path, found: list[Path], sh: Callable[[str, list]
     pick = work / "single"
     pick.mkdir(parents=True, exist_ok=True)
     for f in spread(found, SINGLE_CANDIDATES):
-        shutil.copy(f, pick / f.name)
+        with Image.open(f) as im:  # снимка от телефон: изправена според данните в нея
+            im = ImageOps.exif_transpose(im).convert("RGB")
+        im.thumbnail((P.MAX_FRAME_SIDE, P.MAX_FRAME_SIDE), Image.LANCZOS)
+        im.save(pick / f.name, "JPEG", quality=95)
     masks, out = work / "single_masks.npz", work / "single.ply"
     sh("finding the object", [sys.executable, S.__file__, pick, masks])
     sh("ai modelling", [sys.executable, single3d.__file__, pick, masks, out])
