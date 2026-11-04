@@ -2,8 +2,9 @@ import { Box3, Group, Vector3, type Object3D } from 'three';
 import { OBJExporter } from 'three/examples/jsm/exporters/OBJExporter.js';
 import { STLExporter } from 'three/examples/jsm/exporters/STLExporter.js';
 
+// Measured on a detached copy: the shown model sits under the viewer's fit, zoom and rotation groups.
 export function longestSide(model: Object3D) {
-  const size = new Box3().setFromObject(model).getSize(new Vector3());
+  const size = new Box3().setFromObject(model.clone()).getSize(new Vector3());
   return Math.max(size.x, size.y, size.z);
 }
 

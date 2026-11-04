@@ -1,12 +1,12 @@
 {
   "expo": {
-    "name": "3D Scan",
+    "name": "Scanly",
     "slug": "3D",
     "version": "1.0.0",
     "scheme": "scan3d",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
+    "icon": "./assets/app-icon.png",
+    "userInterfaceStyle": "automatic",
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.miron4o.scan3d"
@@ -14,7 +14,7 @@
     "android": {
       "package": "com.miron4o.scan3d",
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
+        "backgroundColor": "#09090b",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
@@ -30,9 +30,16 @@
       "expo-router",
       "expo-status-bar",
       [
+        "expo-navigation-bar",
+        {
+          "enforceContrast": false,
+          "style": "light"
+        }
+      ],
+      [
         "expo-camera",
         {
-          "cameraPermission": "Allow $(PRODUCT_NAME) to photograph objects for 3D scanning.",
+          "cameraPermission": "Разрешете на $(PRODUCT_NAME) да снима предмети за 3D сканиране.",
           "recordAudioAndroid": false,
           "barcodeScannerEnabled": false
         }
@@ -40,19 +47,41 @@
       [
         "expo-sensors",
         {
-          "motionPermission": "Allow $(PRODUCT_NAME) to track which angles you have photographed."
+          "motionPermission": "Разрешете на $(PRODUCT_NAME) да следи от кои ъгли сте снимали."
         }
       ],
       [
         "expo-build-properties",
         {
           "android": {
-            "usesCleartextTraffic": true
+            "usesCleartextTraffic": false,
+            "enableMinifyInReleaseBuilds": false
           }
         }
       ],
       "expo-asset",
-      "expo-sharing"
+      "expo-sharing",
+      "expo-font",
+      "expo-secure-store",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Разрешете на $(PRODUCT_NAME) да използва ваша снимка за профила.",
+          "microphonePermission": false
+        }
+      ],
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 200,
+          "resizeMode": "contain",
+          "backgroundColor": "#09090b"
+        }
+      ],
+      "expo-notifications",
+      "expo-video",
+      "expo-iap"
     ],
     "experiments": {
       "typedRoutes": true
@@ -63,6 +92,6 @@
         "projectId": "b8bd347f-4afc-4170-9622-b36147074480"
       }
     },
-    "owner": "miron4o"
+    "owner": "miron4o24011"
   }
 }

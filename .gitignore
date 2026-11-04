@@ -43,7 +43,24 @@ yarn-error.*
 # backend
 backend/.venv/
 backend/.env
+scan3d-backend.zip
 backend/samples/
 backend/e2e-out/
+# Windows server: tools from setup-windows.ps1, server logs, scan data
+backend/tools/
+backend/logs/
+backend/data/
 __pycache__/
 .pytest_cache/
+
+# local Expo state and per-machine secrets (the API token)
+.expo/
+.env*.local
+
+# Secrets for push and Play billing: never in the project's history
+*service-account*.json
+firebase-adminsdk*.json
+
+# Stray tool logs and personal notes that are not part of the project
+/*.log
+/VIDEOS/

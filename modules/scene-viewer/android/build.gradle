@@ -1,0 +1,22 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'expo.modules.sceneviewer'
+version = '1.0.0'
+
+android {
+  namespace "expo.modules.sceneviewer"
+  defaultConfig {
+    versionCode 1
+    versionName "1.0.0"
+  }
+}
+
+dependencies {
+  // AR: ARCore + Filament. 2.2.1: the last line built with Java 17 and Kotlin 1.9 (2.3 needs Java 21).
+  implementation "io.github.sceneview:arsceneview:2.2.1"
+  implementation "androidx.activity:activity-ktx:1.9.3"
+  implementation "androidx.core:core-ktx:1.13.1"
+}

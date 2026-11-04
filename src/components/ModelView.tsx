@@ -1,47 +1,221 @@
-/* eslint-disable react/no-unknown-property -- three.js JSX props (position, intensity, ...) */
-import { Canvas } from '@react-three/fiber/native';
-import { useEffect, useMemo, useState } from 'react';
+import { GLView, type ExpoWebGLRenderingContext } from 'expo-gl';
+import { useEffect, useRef, useState } from 'react';
 import { PanResponder, StyleSheet, View } from 'react-native';
-import { Box3, Mesh, Vector3, type Material, type Object3D } from 'three';
+import { useReducedMotion } from 'react-native-reanimated';
 
-type Props = { model: Object3D; wireframe: boolean };
+import { uploadPhotoTextures } from '@/lib/photoTexture';
+import {
+  AmbientLight,
+  Box3,
+  BufferGeometry,
+  DirectionalLight,
+  Group,
+  Line,
+  LineBasicMaterial,
+  Mesh,
+  MeshBasicMaterial,
+  PerspectiveCamera,
+  PlaneGeometry,
+  Raycaster,
+  Scene,
+  ShaderMaterial,
+  SphereGeometry,
+  Vector2,
+  Vector3,
+  WebGLRenderer,
+  type Material,
+  type Object3D,
+} from 'three';
+
+/** A point on the model: shares (0-1) of its bounding box along its own (glTF) x, y and z axes. The server turns it
+ * back into the model's coordinates (backend app/edit.py spot_point). */
+export type Spot = readonly [number, number, number];
+
+/** background: the radial gradient behind the model, centre → edge colour (#rrggbb). beforeDraw: runs before each
+ * drawing, and a new one draws again (the stress test recolours the model in place). onPick: a tap on the model
+ * (not a drag) picks the point under the finger, and tells the model's size in its own axes; spot: a point to mark with
+ * a dot; marks: several, joined by a line (measuring). */
+type Props = {
+  model: Object3D;
+  wireframe: boolean;
+  background: readonly [string, string];
+  beforeDraw?: () => void;
+  spot?: Spot | null;
+  marks?: readonly Spot[];
+  onPick?: (spot: Spot, size: readonly [number, number, number]) => void;
+};
+
+type Stage = {
+  gl: ExpoWebGLRenderingContext;
+  renderer: WebGLRenderer;
+  scene: Scene;
+  camera: PerspectiveCamera;
+  orbit: Group; // user rotation and zoom
+  fit: Group; // scales the model into a 2-unit cube
+  backdrop: ShaderMaterial;
+};
+
+function rgb(hex: string) {
+  const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
+  return new Vector3(r, g, b);
+}
+
+// The gradient as a screen-filling quad drawn first. Its colours go out as they are (no colour-space step in the
+// shader), so they match the app's own colours exactly.
+function backdrop() {
+  const material = new ShaderMaterial({
+    uniforms: { inner: { value: new Vector3() }, outer: { value: new Vector3() } },
+    vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
+    fragmentShader:
+      'uniform vec3 inner; uniform vec3 outer; varying vec2 vUv;' +
+      'void main() { float t = clamp(length(vUv * 2.0 - 1.0) / 1.41421356, 0.0, 1.0); gl_FragColor = vec4(mix(inner, outer, t), 1.0); }',
+    depthTest: false,
+    depthWrite: false,
+  });
+  const quad = new Mesh(new PlaneGeometry(2, 2), material);
+  quad.frustumCulled = false;
+  quad.renderOrder = -1;
+  return { quad, material };
+}
 
 const INITIAL = { rx: 0.35, ry: 0.6, zoom: 1 };
+const TAP_MOVE = 8; // a touch that moves less than this (points) and ends within TAP_MS is a tap, not a turn
+const TAP_MS = 400;
+const SPOT_COLOR = 0xff3d2e;
+const SPOT_SIZE = 0.018; // the dot's radius, as a share of the model's largest side
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
-// One finger orbits, two fingers pinch-zoom. Plain PanResponder: drei's OrbitControls is DOM-oriented.
-export function ModelView({ model, wireframe }: Props) {
-  const [view, setView] = useState(INITIAL);
+// three.js renders into a canvas; expo-gl only provides the WebGL context, so hand three a minimal stand-in.
+function createStage(gl: ExpoWebGLRenderingContext): Stage {
+  const { drawingBufferWidth: width, drawingBufferHeight: height } = gl;
+  const canvas = {
+    width,
+    height,
+    clientWidth: width,
+    clientHeight: height,
+    style: {},
+    addEventListener() {},
+    removeEventListener() {},
+    getContext: () => gl,
+  };
+  const renderer = new WebGLRenderer({ canvas: canvas as unknown as HTMLCanvasElement, antialias: true });
+  renderer.setSize(width, height, false);
+
+  const camera = new PerspectiveCamera(45, width / height, 0.1, 100);
+  camera.position.set(0, 0, 4);
+  const key = new DirectionalLight(0xffffff, 1.6);
+  key.position.set(3, 5, 4);
+  const back = new DirectionalLight(0xffffff, 0.5);
+  back.position.set(-4, -2, -3);
+  const orbit = new Group();
+  const fit = new Group();
+  orbit.add(fit);
+  const scene = new Scene();
+  const { quad, material } = backdrop();
+  scene.add(quad, new AmbientLight(0xffffff, 1.2), key, back, orbit);
+  return { gl, renderer, scene, camera, orbit, fit, backdrop: material };
+}
+
+const INTRO_TURN = 1.1; // radians the model turns into place as it appears
+const INTRO_MS = 1400;
+
+// One finger orbits, two fingers pinch-zoom. Renders only when something changes: after its short turn into place
+// as it appears, nothing animates.
+export function ModelView({ model, wireframe, background, beforeDraw, spot, marks, onPick }: Props) {
+  const reduce = useReducedMotion();
+  const [view, setView] = useState(() => (reduce ? INITIAL : { ...INITIAL, ry: INITIAL.ry - INTRO_TURN }));
+  const [stage, setStage] = useState<Stage | null>(null);
+  // touched: the turn stops for good at the first touch. The rest is what a tap needs, kept current for the handlers.
+  const live = useRef({
+    view,
+    touched: false,
+    stage: null as Stage | null,
+    model,
+    box: null as Box3 | null,
+    size: { width: 0, height: 0 },
+    onPick,
+  });
+  live.current.stage = stage;
+  live.current.model = model;
+  live.current.onPick = onPick;
   const [pan] = useState(() => {
-    let current = INITIAL;
-    let start = { ...INITIAL, dist: 0 };
+    let start = { ...INITIAL, dist: 0, at: 0 };
+    const current = () => live.current.view;
     return PanResponder.create({
-      // Capture: the Canvas below would otherwise claim the touches.
+      // Capture: the GLView below would otherwise claim the touches.
       onStartShouldSetPanResponderCapture: () => true,
       onMoveShouldSetPanResponderCapture: () => true,
       onPanResponderGrant: () => {
-        start = { ...current, dist: 0 };
+        live.current.touched = true;
+        start = { ...current(), dist: 0, at: Date.now() };
+      },
+      onPanResponderRelease: (e, g) => {
+        const tap = !start.dist && Math.abs(g.dx) < TAP_MOVE && Math.abs(g.dy) < TAP_MOVE && Date.now() - start.at < TAP_MS;
+        if (tap) pick(e.nativeEvent.locationX, e.nativeEvent.locationY);
       },
       onPanResponderMove: (e, g) => {
         const t = e.nativeEvent.touches;
         if (t.length >= 2) {
           const d = Math.hypot(t[0].pageX - t[1].pageX, t[0].pageY - t[1].pageY);
           if (!start.dist) start.dist = d;
-          current = { ...current, zoom: clamp((start.zoom * d) / start.dist, 0.3, 6) };
+          live.current.view = { ...current(), zoom: clamp((start.zoom * d) / start.dist, 0.3, 6) };
         } else if (!start.dist) {
-          current = { ...current, rx: clamp(start.rx + g.dy * 0.01, -1.5, 1.5), ry: start.ry + g.dx * 0.01 };
+          live.current.view = { ...current(), rx: clamp(start.rx + g.dy * 0.01, -1.5, 1.5), ry: start.ry + g.dx * 0.01 };
         }
-        setView(current);
+        setView(live.current.view);
       },
     });
   });
 
-  // Centre the model and fit it into a 2-unit cube once.
-  const fit = useMemo(() => {
+  // The point of the model under a tap, as a Spot.
+  function pick(x: number, y: number) {
+    const { stage: st, model: m, box, size, onPick: picked } = live.current;
+    if (!st || !box || !picked || !size.width || !size.height) return;
+    st.scene.updateMatrixWorld(true);
+    const ray = new Raycaster();
+    ray.setFromCamera(new Vector2((x / size.width) * 2 - 1, -(y / size.height) * 2 + 1), st.camera);
+    const hit = ray.intersectObject(m, true)[0];
+    if (!hit) return;
+    const local = m.worldToLocal(hit.point.clone());
+    const d = box.getSize(new Vector3());
+    const share = (v: number, lo: number, s: number) => (s > 0 ? Math.min(1, Math.max(0, (v - lo) / s)) : 0.5);
+    picked([share(local.x, box.min.x, d.x), share(local.y, box.min.y, d.y), share(local.z, box.min.z, d.z)], [d.x, d.y, d.z]);
+  }
+
+  // The turn into place, once the GL surface is there.
+  useEffect(() => {
+    if (!stage || reduce) return;
+    const from = INITIAL.ry - INTRO_TURN;
+    const begin = Date.now();
+    let frame = requestAnimationFrame(function step() {
+      if (live.current.touched) return;
+      const t = Math.min(1, (Date.now() - begin) / INTRO_MS);
+      live.current.view = { ...live.current.view, ry: from + INTRO_TURN * (1 - (1 - t) ** 3) };
+      setView(live.current.view);
+      if (t < 1) frame = requestAnimationFrame(step);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [stage, reduce]);
+
+  useEffect(() => () => stage?.renderer.dispose(), [stage]);
+
+  // Centre the model and fit it into a 2-unit cube. Measured detached, so a re-run never compounds the offset.
+  useEffect(() => {
+    if (!stage) return;
+    model.removeFromParent();
     const box = new Box3().setFromObject(model);
+    live.current.box = box; // in the model's own axes: it is measured detached
     const size = box.getSize(new Vector3());
-    return { center: box.getCenter(new Vector3()).negate(), scale: 2 / Math.max(size.x, size.y, size.z) };
-  }, [model]);
+    const centre = new Group();
+    centre.position.copy(box.getCenter(new Vector3()).negate());
+    centre.add(model);
+    stage.fit.scale.setScalar(2 / Math.max(size.x, size.y, size.z));
+    stage.fit.add(centre);
+    uploadPhotoTextures(model, stage.gl, stage.renderer);
+    return () => {
+      stage.fit.remove(centre);
+    };
+  }, [stage, model]);
 
   useEffect(() => {
     model.traverse((o) => {
@@ -49,24 +223,70 @@ export function ModelView({ model, wireframe }: Props) {
     });
   }, [model, wireframe]);
 
+  // The picked points as dots on the model (in its own axes, so they turn with it), two joined by a line that shows
+  // through the model. Not hit by taps themselves.
+  const shown = JSON.stringify(marks ?? (spot ? [spot] : []));
+  useEffect(() => {
+    const box = live.current.box;
+    const points = JSON.parse(shown) as Spot[];
+    if (!stage || !box || !points.length) return;
+    const d = box.getSize(new Vector3());
+    const at = ([x, y, z]: Spot) => new Vector3(box.min.x + x * d.x, box.min.y + y * d.y, box.min.z + z * d.z);
+    const dots = points.map((p) => {
+      const dot = new Mesh(new SphereGeometry(SPOT_SIZE * Math.max(d.x, d.y, d.z), 20, 14), new MeshBasicMaterial({ color: SPOT_COLOR }));
+      dot.position.copy(at(p));
+      dot.raycast = () => {};
+      model.add(dot);
+      return dot;
+    });
+    const line =
+      points.length === 2
+        ? new Line(new BufferGeometry().setFromPoints(points.map(at)), new LineBasicMaterial({ color: SPOT_COLOR, depthTest: false }))
+        : null;
+    if (line) {
+      line.raycast = () => {};
+      line.renderOrder = 1;
+      model.add(line);
+    }
+    return () => {
+      for (const dot of dots) {
+        model.remove(dot);
+        dot.geometry.dispose();
+        dot.material.dispose();
+      }
+      if (line) {
+        model.remove(line);
+        line.geometry.dispose();
+        line.material.dispose();
+      }
+    };
+  }, [stage, model, shown]);
+
+  const [inner, outer] = background;
+  useEffect(() => {
+    if (!stage) return;
+    stage.backdrop.uniforms.inner.value.copy(rgb(inner));
+    stage.backdrop.uniforms.outer.value.copy(rgb(outer));
+    stage.orbit.rotation.set(view.rx, view.ry, 0);
+    stage.orbit.scale.setScalar(view.zoom);
+    beforeDraw?.();
+    stage.renderer.render(stage.scene, stage.camera);
+    stage.gl.endFrameEXP();
+  }, [stage, model, view, wireframe, inner, outer, beforeDraw, shown]);
+
   return (
     <View
       style={styles.fill}
       {...pan.panHandlers}
+      onLayout={(e) => (live.current.size = e.nativeEvent.layout)}
       accessible
-      accessibilityLabel="3D model preview. Drag to rotate, pinch to zoom."
+      accessibilityLabel={
+        onPick
+          ? '3D модел. Докоснете място, за да го посочите. Плъзнете, за да го завъртите, щипнете за мащаб.'
+          : '3D модел. Плъзнете, за да го завъртите, щипнете за мащаб.'
+      }
     >
-      <Canvas camera={{ position: [0, 0, 4], fov: 45 }}>
-        <color attach="background" args={['#eef1f5']} />
-        <ambientLight intensity={1.2} />
-        <directionalLight position={[3, 5, 4]} intensity={1.6} />
-        <directionalLight position={[-4, -2, -3]} intensity={0.5} />
-        <group rotation={[view.rx, view.ry, 0]} scale={view.zoom}>
-          <group scale={fit.scale}>
-            <primitive object={model} position={fit.center} />
-          </group>
-        </group>
-      </Canvas>
+      <GLView style={styles.fill} onContextCreate={(gl) => setStage(createStage(gl))} />
     </View>
   );
 }
