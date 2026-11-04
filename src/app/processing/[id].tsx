@@ -105,6 +105,12 @@ const PLAN: [string, number][] = [
 ];
 // Същото за методите на Pro: експресното е мащабирано от стъпките за 80 кадъра до 30 по-малки кадъра, а останалото е
 // приблизително.
+// Модел от една снимка: сървърът търси предмета и AI изгражда формата.
+const ONE_PHOTO_PLAN: [string, number][] = [
+  ['finding the object', 10],
+  ['ai modelling', 60],
+  ['cleaning', 10],
+];
 const PRO_PLANS: Record<ProMethod, [string, number][]> = {
   edit: [
     ['reconstructing', 3],
@@ -216,7 +222,7 @@ export default function Processing() {
   const jobId = scan?.jobId;
   const method: Method = scan?.method ?? 'scan';
   const pro = method === 'scan' ? null : method;
-  const plan = pro ? PRO_PLANS[pro] : PLAN;
+  const plan = scan?.photoCount === 1 ? ONE_PHOTO_PLAN : pro ? PRO_PLANS[pro] : PLAN;
   const session = useSession();
   const user = session?.kind === 'account' ? session.user : null;
 

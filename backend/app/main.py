@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+from pathlib import Path
 import threading
 import time
 import zipfile
@@ -14,6 +15,7 @@ from typing import Annotated, Literal
 import trimesh
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
+from PIL import Image, ImageOps
 
 from . import accounts as A
 from . import ai as AI
@@ -143,6 +145,17 @@ def get_frames(job_id: str, p: Principal = Depends(principal)):
     )
 
 
+def as_jpeg(path: Path) -> bool:
+    """Снимка в друг формат (PNG, WebP от телефона), презаписана като JPEG; False, ако не е изображение."""
+    try:
+        with Image.open(path) as im:
+            im = ImageOps.exif_transpose(im).convert("RGB")
+        im.save(path, "JPEG", quality=95)
+        return True
+    except (OSError, ValueError):
+        return False
+
+
 @app.put("/jobs/{job_id}/photos/{name}")
 async def upload_photo(job_id: str, name: str, request: Request, p: Principal = Depends(principal)):
     if existing(job_id, p)["state"] not in ("uploading", "failed"):
@@ -166,7 +179,7 @@ async def upload_photo(job_id: str, name: str, request: Request, p: Principal = 
             f.write(chunk)
     with open(tmp, "rb") as f:
         is_jpeg = f.read(3) == b"\xff\xd8\xff"
-    if not is_jpeg:
+    if not is_jpeg and not as_jpeg(tmp):
         tmp.unlink()  # след затваряне: Windows не може да изтрие отворен файл
         raise HTTPException(400, "Файлът не е снимка (JPEG).")
     os.replace(tmp, photos / name)
