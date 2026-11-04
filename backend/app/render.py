@@ -1,6 +1,7 @@
-"""A picture of the finished model for scan lists and shared links (jobs.thumbnail), drawn on the CPU: the server has
-no GPU for OpenGL. The surface is sampled densely (texture colours where there is a photo texture, else the vertex
-colours), lit from the camera's side and splatted into a depth buffer at twice the size, then scaled down smooth."""
+"""Изображение на готовия модел за списъци със сканирания и споделени линкове (jobs.thumbnail), нарисувано на
+процесора: сървърът няма видеокарта за OpenGL. Повърхността се взема плътно на проби (цветове от текстурата, ако
+има текстура от снимки, иначе от върховете), осветява се откъм камерата и се рисува в буфер на дълбочината при
+двоен размер, а после се смалява плавно."""
 
 import io
 import subprocess
@@ -14,20 +15,20 @@ from scipy import ndimage
 from . import texture as TX
 
 SIDE = 480
-SUPER = 2  # drawn at SUPER x SIDE, scaled down: smooth edges
-POINTS_PER_PIXEL = 3  # surface samples per pixel of the drawing; the few holes left are filled
-# A pixel the near surface got no sample in shows the model's far side through it, as a speck of another colour: a
-# sample this far (of the drawing's side) behind its neighbours is treated as such a hole.
+SUPER = 2  # рисува се при SUPER x SIDE и се смалява: гладки ръбове
+POINTS_PER_PIXEL = 3  # проби от повърхността на пиксел от рисунката; малкото останали дупки се запълват
+# Пиксел, в който близката повърхност няма проба, показва далечната страна на модела през него, като петънце в друг
+# цвят: проба толкова (от страната на рисунката) зад съседите си се смята за такава дупка.
 BEHIND = 0.02
-FILL = 0.78  # share of the picture the model spans
+FILL = 0.78  # дял от изображението, зает от модела
 BG_TOP, BG_BOTTOM = np.array([246, 248, 252]), np.array([228, 234, 243])
-ELEVATION = np.radians(22)  # seen a little from above, from the side that shows the most (best_side)
-SIDES = 8  # sides tried
-SIDE_PIXELS = 160  # the small drawing each is judged on
+ELEVATION = np.radians(22)  # гледан леко отгоре, от страната, която показва най-много (best_side)
+SIDES = 8  # пробвани страни
+SIDE_PIXELS = 160  # малката рисунка, по която се оценява всяка
 
 
 def surface(job: Path, mesh: trimesh.Trimesh, count: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """count points on the model: positions, colours (0-255) and the normals of their faces."""
+    """count точки върху модела: позиции, цветове (0-255) и нормалите на стените им."""
     parts = TX.load(job)
     rng = np.random.default_rng(0)
     out_p, out_c, out_n = [], [], []
@@ -64,7 +65,7 @@ def surface(job: Path, mesh: trimesh.Trimesh, count: int) -> tuple[np.ndarray, n
 
 
 def view_turn(azimuth: float) -> np.ndarray:
-    """World -> view: x right, y away from the camera, z up."""
+    """Свят -> изглед: x надясно, y далеч от камерата, z нагоре."""
     ca, sa, ce, se = np.cos(azimuth), np.sin(azimuth), np.cos(ELEVATION), np.sin(ELEVATION)
     turn = np.array([[ca, -sa, 0], [sa, ca, 0], [0, 0, 1]])
     tilt = np.array([[1, 0, 0], [0, ce, -se], [0, se, ce]])
@@ -72,8 +73,8 @@ def view_turn(azimuth: float) -> np.ndarray:
 
 
 def best_side(pts: np.ndarray, col: np.ndarray) -> float:
-    """The azimuth from which the model shows the most: the sharpest colour changes per pixel of its drawing (a face
-    or a logo, rather than the plain back)."""
+    """Азимутът, от който моделът показва най-много: най-резките промени на цвета на пиксел от рисунката (лице или
+    лого, а не еднообразен гръб)."""
     pick = np.random.default_rng(0).choice(len(pts), min(len(pts), 400_000), replace=False)
     pts, grey = pts[pick], col[pick].mean(1)
     best, best_score = 0.0, -1.0
@@ -82,7 +83,7 @@ def best_side(pts: np.ndarray, col: np.ndarray) -> float:
         lo, hi = p.min(0), p.max(0)
         scale = (SIDE_PIXELS - 1) / max(hi[0] - lo[0], hi[2] - lo[2], 1e-9)
         pix = ((hi[2] - p[:, 2]) * scale).astype(int) * SIDE_PIXELS + ((p[:, 0] - lo[0]) * scale).astype(int)
-        order = np.lexsort((p[:, 1], pix))  # the nearest sample per pixel
+        order = np.lexsort((p[:, 1], pix))  # най-близката проба на пиксел
         at, first = np.unique(pix[order], return_index=True)
         img = np.full(SIDE_PIXELS * SIDE_PIXELS, np.nan)
         img[at] = grey[order[first]]
@@ -94,16 +95,17 @@ def best_side(pts: np.ndarray, col: np.ndarray) -> float:
     return best
 
 
-# The spinning video to share: upright for phones, one slow turn that starts on the model's best side.
+# Видеото със завъртане за споделяне: вертикално за телефони, едно бавно завъртане, започващо от най-добрата страна на
+# модела.
 SPIN_W, SPIN_H = 720, 1280
-SPIN_DRAWN = 1.5  # drawn at this many times the size, scaled down: smooth edges
+SPIN_DRAWN = 1.5  # рисува се при толкова пъти по-голям размер и се смалява: гладки ръбове
 SPIN_FPS, SPIN_SECONDS = 20, 6
 SPIN_POINTS = 3_000_000
 SPIN_BG_TOP, SPIN_BG_BOTTOM = np.array([28, 28, 36]), np.array([9, 9, 11])
 
 
 def spin_ground(w: int, h: int) -> np.ndarray:
-    """The video's background with the name at the foot of it."""
+    """Фонът на видеото с името в долната му част."""
     t = np.linspace(0, 1, h)[:, None, None]
     ground = Image.fromarray((SPIN_BG_TOP * (1 - t) + SPIN_BG_BOTTOM * t).repeat(w, 1).astype(np.uint8))
     size = round(h * 0.03)
@@ -124,7 +126,7 @@ def spin_frame(pts: np.ndarray, col: np.ndarray, nrm: np.ndarray, azimuth: float
     keep = (x >= 0) & (x < w) & (y >= 0) & (y < h)
     x, y, depth = x[keep], y[keep], p[keep, 1]
     n = nrm[keep] @ R.T
-    far_first = np.argsort(-depth)  # each pixel keeps what is drawn last: the nearest
+    far_first = np.argsort(-depth)  # всеки пиксел пази последно нарисуваното: най-близкото
     x, y, depth, n = x[far_first], y[far_first], depth[far_first], n[far_first]
     seen = n * np.where(n[:, 1:2] > 0, -1.0, 1.0)
     light = np.array([-0.45, -0.75, 0.5])
@@ -144,7 +146,7 @@ def spin_frame(pts: np.ndarray, col: np.ndarray, nrm: np.ndarray, azimuth: float
 
 
 def spin(job: Path, out: Path, ffmpeg: str, frames: int | None = None):
-    """The model turning once, as an MP4 made with `ffmpeg`. frames: fewer, to try it out."""
+    """Моделът, завъртащ се веднъж, като MP4, направен с `ffmpeg`. frames: по-малко, за проба."""
     mesh = trimesh.load(job / "model.ply", force="mesh")
     pts, col, nrm = surface(job, mesh, SPIN_POINTS)
     pts, col, nrm = pts.astype(np.float32), col.astype(np.float32), nrm.astype(np.float32)
@@ -180,7 +182,7 @@ def spin(job: Path, out: Path, ffmpeg: str, frames: int | None = None):
 
 
 def picture(job: Path) -> Image.Image:
-    mesh = trimesh.load(job / "model.ply", force="mesh")  # Z up, base on z = 0
+    mesh = trimesh.load(job / "model.ply", force="mesh")  # Z нагоре, основа върху z = 0
     size = SIDE * SUPER
     pts, col, nrm = surface(job, mesh, int(POINTS_PER_PIXEL * size * size * 0.5))
     R = view_turn(best_side(pts, col))
@@ -196,13 +198,13 @@ def picture(job: Path) -> Image.Image:
     depth = p[:, 1]
     keep = (x >= 0) & (x < size) & (y >= 0) & (y < size)
     x, y, depth, col, n = x[keep], y[keep], depth[keep], col[keep], n[keep]
-    # Nearest sample per pixel: sort by pixel, then depth; the first of each pixel wins.
+    # Най-близка проба на пиксел: сортиране по пиксел, после по дълбочина; първата за всеки пиксел печели.
     pix = y * size + x
     order = np.lexsort((depth, pix))
     pix, first = np.unique(pix[order], return_index=True)
     sel = order[first]
-    seen = n[sel] * np.where(n[sel][:, 1:2] > 0, -1.0, 1.0)  # turned to the camera (-y), whichever way a face points
-    light = np.array([-0.45, -0.75, 0.5])  # towards the light: the camera's upper left
+    seen = n[sel] * np.where(n[sel][:, 1:2] > 0, -1.0, 1.0)  # обърната към камерата (-y), накъдето и да гледа стената
+    light = np.array([-0.45, -0.75, 0.5])  # към светлината: горе вляво от камерата
     shade = 0.55 + 0.45 * np.clip(seen @ (light / np.linalg.norm(light)), 0, 1)
     rgb = np.zeros((size * size, 3))
     mask = np.zeros(size * size, bool)
@@ -212,7 +214,7 @@ def picture(job: Path) -> Image.Image:
     nearest = np.full((size, size), np.inf)
     nearest.flat[pix] = depth[sel]
     mask &= nearest <= ndimage.minimum_filter(nearest, size=5) + BEHIND * size
-    # Pin holes between samples: filled from their neighbours.
+    # Малки дупки между пробите: запълват се от съседите им.
     holes = ndimage.binary_closing(mask, iterations=2) & ~mask
     if holes.any():
         _, (iy, ix) = ndimage.distance_transform_edt(~mask, return_indices=True)
@@ -222,7 +224,7 @@ def picture(job: Path) -> Image.Image:
     t = np.linspace(0, 1, size)[:, None, None]
     bg = (BG_TOP * (1 - t) + BG_BOTTOM * t).repeat(size, 1)
     out = Image.fromarray(bg.astype(np.uint8))
-    # A soft shadow under the model.
+    # Мека сянка под модела.
     bx0, bx1 = (lo[0] - centre[0]) * scale + size / 2, (hi[0] - centre[0]) * scale + size / 2
     by = size / 2 - (lo[2] - centre[2]) * scale
     shadow = Image.new("L", (size, size), 0)
