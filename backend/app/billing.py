@@ -1,8 +1,8 @@
-"""Pro as a Google Play subscription. The phone buys; the server asks Google whether the purchase is real and until when
-it runs, and keeps that as users.pro_until. Nothing the phone says about a purchase is believed.
-
-Off until the server has a Google service account's key file: GOOGLE_PLAY_KEY_FILE in .env (never in the code or the
-app). Renewals: when pro_until has passed, the next profile read asks Google again (at most once per RECHECK_S)."""
+"""Pro като абонамент в Google Play. Телефонът купува; сървърът пита Google дали покупката е истинска и докога важи и
+го пази в users.pro_until. Нищо, казано от телефона за покупка, не се приема на доверие. Изключено, докато сървърът
+няма файл с ключ на служебен профил в Google: GOOGLE_PLAY_KEY_FILE в .env (никога в кода или приложението).
+Подновявания: когато pro_until е минало, следващото четене на профила пита Google отново (най-много веднъж на
+RECHECK_S)."""
 
 import hashlib
 import logging
@@ -24,10 +24,10 @@ log = logging.getLogger("uvicorn.error")
 router = APIRouter()
 
 PACKAGE = os.environ.get("ANDROID_PACKAGE", "com.miron4o.scan3d")
-PRODUCT = os.environ.get("PRO_PRODUCT_ID", "scanly_pro_monthly")
+PRODUCT = os.environ.get("PRO_PRODUCT_ID", "orbitize_pro_monthly")
 API = "https://androidpublisher.googleapis.com/androidpublisher/v3/applications"
 SCOPE = "https://www.googleapis.com/auth/androidpublisher"
-# CANCELED: renewal was switched off, and it still runs until its end.
+# CANCELED: подновяването е изключено, но абонаментът важи до края си.
 VALID = {"SUBSCRIPTION_STATE_ACTIVE", "SUBSCRIPTION_STATE_IN_GRACE_PERIOD", "SUBSCRIPTION_STATE_CANCELED"}
 RECHECK_S = 3600
 
@@ -54,7 +54,7 @@ def access_token() -> str:
 
 
 def expires_at(answer: dict) -> int:
-    """Until when Google says the Pro subscription in its answer runs; 0 when it does not."""
+    """Докога според Google важи абонаментът за Pro в отговора; 0, ако не важи."""
     if answer.get("subscriptionState") not in VALID:
         return 0
     best = 0
@@ -75,8 +75,8 @@ def ask_google(token: str) -> int:
 
 
 def refresh(user_id: str):
-    """A subscription that has run out may have renewed: ask Google again. Quiet on any trouble; Pro just stays off
-    until the next try."""
+    """Изтекъл абонамент може да е подновен: питаме Google отново. Без съобщение при какъвто и да е проблем; Pro
+    просто остава изключен до следващия опит."""
     if not configured():
         return
     now = time.time()
@@ -102,8 +102,8 @@ class Purchase(BaseModel):
 
 @router.post("/billing/google")
 def confirm(body: Purchase, p: Principal = Depends(signed_in)):
-    """The phone bought Pro: checked with Google, then this account is Pro until the date Google gives. One purchase
-    serves one account."""
+    """Телефонът е купил Pro: след проверка при Google този профил е с Pro до датата, дадена от Google. Една покупка
+    важи за един профил."""
     if not configured():
         raise HTTPException(503, "Плащанията още не са включени.")
     token_id = hashlib.sha256(body.purchase_token.encode()).hexdigest()

@@ -2,7 +2,7 @@ import { File, Paths } from 'expo-file-system';
 import { useSyncExternalStore } from 'react';
 import { type ImageStyle, StyleSheet, type TextStyle, type ViewStyle } from 'react-native';
 
-// Визията на Scanly, по примера на сайта: спокойна и плоска, с градиента на марката върху единственото главно
+// Визията на Orbitize, по примера на сайта: спокойна и плоска, с градиента на марката върху единственото главно
 // действие на екрана. Повърхности с линии от 1px вместо сенки, Onest за текст, JetBrains Mono за числа, размери, дати
 // и малки главни етикети (шрифтовете се зареждат в app/_layout.tsx). Тъмна по подразбиране
 // default; the choice (profile → Тема) is kept in theme.txt.

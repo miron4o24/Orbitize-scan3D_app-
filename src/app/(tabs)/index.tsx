@@ -119,7 +119,7 @@ export default function Home() {
                 <ScanChoice highlight title="Започни сканиране" time={SCAN_INFO.time} icon="videocam" onPress={scan} />
               )}
               <ArrowLink label={importing ? 'Отваряне…' : 'Качи готово видео'} onPress={upload} style={s.ctaLink} />
-              {!!user && !user.pro && <ArrowLink label="Виж Scanly Pro" onPress={() => router.push('/pro')} style={s.ctaLink} />}
+              {!!user && !user.pro && <ArrowLink label="Виж Orbitize Pro" onPress={() => router.push('/pro')} style={s.ctaLink} />}
             </Appear>
             {progress && (
               <Appear index={7}>

@@ -1,9 +1,9 @@
 {
   "expo": {
-    "name": "Scanly",
+    "name": "Orbitize",
     "slug": "3D",
     "version": "1.0.0",
-    "scheme": "scan3d",
+    "scheme": "orbitize",
     "orientation": "portrait",
     "icon": "./assets/app-icon.png",
     "userInterfaceStyle": "automatic",

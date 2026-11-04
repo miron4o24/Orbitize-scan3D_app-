@@ -1,6 +1,7 @@
-"""Telling the phone that a model is ready, through Expo's free push service. The app registers its push token when the
-user allows notifications (PUT /me/push-token); a token belongs to the account last signed in on that phone. Trouble
-here never touches the job: a model is ready whether or not the phone heard of it."""
+"""Известява телефона, че моделът е готов, чрез безплатната услуга за известия на Expo. Приложението регистрира ключа
+си за известия, когато потребителят ги разреши (PUT /me/push-token); ключът принадлежи на профила, който последно е
+влязъл на този телефон. Проблем тук никога не засяга задачата: моделът е готов, независимо дали телефонът е
+разбрал."""
 
 import logging
 import re
@@ -15,7 +16,7 @@ log = logging.getLogger("uvicorn.error")
 
 EXPO_PUSH = "https://exp.host/--/api/v2/push/send"
 TOKEN_RE = re.compile(r"^Expo(nent)?PushToken\[[^\]\s]{1,180}\]$")
-CHANNEL = "scans"  # the app's Android channel (lib/push.ts)
+CHANNEL = "scans"  # каналът за Android на приложението (lib/push.ts)
 
 
 def save(user_id: str, token: str):
@@ -45,12 +46,13 @@ def send(user_id: str, title: str, body: str, data: dict):
     answer = requests.post(EXPO_PUSH, json=messages, timeout=15)
     answer.raise_for_status()
     for token, ticket in zip(tokens, answer.json().get("data") or []):
-        if (ticket.get("details") or {}).get("error") == "DeviceNotRegistered":  # the app was removed from that phone
+        if (ticket.get("details") or {}).get("error") == "DeviceNotRegistered":  # приложението е премахнато от този телефон
             forget(token)
 
 
 def job_finished(job_id: str, status: dict):
-    """A job came to its end: done or failed. Jobs without an account (the admin's tests) tell no one."""
+    """Задача е завършила: успешно или неуспешно. Задачите без профил (тестовете на администратора) не известяват
+    никого."""
     owner = status.get("owner")
     if not owner:
         return

@@ -16,7 +16,7 @@ type Pending = { localUri: string; gl?: ExpoWebGLRenderingContext };
  */
 export function photoTexturePlugin(prefix: string) {
   return (parser: GLTFParser): GLTFLoaderPlugin => ({
-    name: 'scan3d_photo_texture',
+    name: 'orbitize_photo_texture',
     loadTexture: (textureIndex: number) => {
       const source: number | undefined = parser.json.textures?.[textureIndex]?.source;
       const image = source === undefined ? undefined : parser.json.images?.[source];
@@ -70,7 +70,7 @@ export function uploadPhotoTextures(model: Object3D, gl: ExpoWebGLRenderingConte
           '#define DECODE_VIDEO_TEXTURE\n#include <map_fragment>',
         );
       };
-      m.customProgramCacheKey = () => 'scan3d-srgb-map';
+      m.customProgramCacheKey = () => 'orbitize-srgb-map';
       m.needsUpdate = true;
     }
   });

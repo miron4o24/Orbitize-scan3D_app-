@@ -10,7 +10,7 @@ if [ ! -d "$out" ]; then
   curl -fL -o "$tmp/templeRing.zip" https://vision.middlebury.edu/mview/data/data/templeRing.zip
   unzip -q "$tmp/templeRing.zip" -d "$tmp"
   mkdir -p "$out"
-  docker run --rm -v "$tmp/templeRing:/in:ro" -v "$PWD/$out:/out" scan3d-backend python -c '
+  docker run --rm -v "$tmp/templeRing:/in:ro" -v "$PWD/$out:/out" orbitize-backend python -c '
 import pathlib
 from PIL import Image
 for i, p in enumerate(sorted(pathlib.Path("/in").glob("*.png")), 1):

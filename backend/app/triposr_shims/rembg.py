@@ -1,5 +1,5 @@
-"""Stand-in for rembg, which TripoSR's tsr/utils.py imports: app/single3d.py cuts the object out itself
-(app/segment.py's masks), so nothing here is ever called."""
+"""Заместител на rembg, който tsr/utils.py на TripoSR импортира: app/single3d.py сам изрязва предмета (маските на
+app/segment.py), затова нищо тук никога не се извиква."""
 
 
 def new_session(*args, **kwargs):

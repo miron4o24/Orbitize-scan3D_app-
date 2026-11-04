@@ -253,7 +253,7 @@ export default function Viewer() {
 
   const shareVideo = () =>
     run('spin', async () => {
-      const file = new File(Paths.cache, `scanly-${id}.mp4`);
+      const file = new File(Paths.cache, `orbitize-${id}.mp4`);
       if (file.exists) file.delete();
       await downloadSpin(jobId!, file);
       await Sharing.shareAsync(file.uri, { mimeType: 'video/mp4', dialogTitle: 'Споделяне на видео' });

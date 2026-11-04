@@ -1,28 +1,28 @@
-"""Orbit video -> the sharpest frame from each equal step of camera movement, so frames are evenly spaced around
-the object even when the user walks at an uneven pace or stands still for a moment."""
+"""Видео с обиколка -> най-рязкият кадър от всяка равна стъпка от движението на камерата, така че кадрите да са
+равномерно разпределени около предмета, дори когато потребителят върви с неравно темпо или за момент спира."""
 
 import numpy as np
 
-# Frames scored per second of video: each kept frame is the sharpest of about three around it (at 6 a second and 120
-# frames kept there were only two, and a scan kept frames at a sixth of the median sharpness).
+# Кадри, оценявани за секунда видео: всеки запазен кадър е най-рязкият от около три около него (при 6 в секунда и 120
+# запазени кадъра те бяха само два и едно сканиране запази кадри с една шеста от медианната рязкост).
 CANDIDATE_FPS = 10
-FRAMES_PER_S = 3  # frames kept per second: a 30 s circle gives 90 frames 4° apart
-# Two circles in 120 frames are 6° apart: every point of the surface is in more frames, so the fused surface averages
-# more measurements (less noise) and the texture has sharper, straighter-on views to pick from. Matching cost grows
-# with the square of this (80 frames: 4 min on the server; 120: about 9) and the per-frame steps linearly.
+FRAMES_PER_S = 3  # кадри, запазвани за секунда: кръг от 30 с дава 90 кадъра през 4°
+# Два кръга в 120 кадъра са през 6°: всяка точка от повърхността е в повече кадри, затова слятата повърхност осреднява
+# повече измервания (по-малко шум), а текстурата има по-резки и по-прави изгледи за избор. Цената на съпоставянето
+# расте с квадрата на това (80 кадъра: 4 мин на сървъра; 120: около 9), а стъпките за всеки кадър линейно.
 MIN_FRAMES, MAX_FRAMES = 20, 120
-MIN_SECONDS = 4  # shorter videos are refused: no circle around anything
-# Quick scans (the app's choice): two circles in 48 frames are ~15° apart, still enough overlap to match; matching
-# takes about a third of the time and every per-frame step about 60%.
+MIN_SECONDS = 4  # по-кратките видеа се отказват: няма кръг около нищо
+# Бързи сканирания (избор в приложението): два кръга в 48 кадъра са през около 15°, все още достатъчно припокриване за
+# съпоставяне; то отнема около една трета от времето, а всяка стъпка за кадър около 60%.
 QUICK_FRAMES = 48
-THUMB = 256  # square scoring size; squashing the aspect ratio does not change the sharpness ranking
-SMALL = 4  # motion is measured on THUMB/SMALL thumbnails, where noise and blur hardly differ
-STILL = 0.1  # standing still still counts this fraction of average movement, so time is never ignored
+THUMB = 256  # квадратен размер за оценяване; сплескването на пропорциите не променя подредбата по рязкост
+SMALL = 4  # движението се измерва върху миниатюри THUMB/SMALL, където шумът и размазването почти не се различават
+STILL = 0.1  # неподвижното стоене пак брои този дял от средното движение, така че времето никога не се пренебрегва
 BATCH = 64
 
 
 def sharpness(frames: np.ndarray) -> np.ndarray:
-    """Variance of the Laplacian per frame, (n, h, w) uint8 -> (n,). Motion blur lowers it."""
+    """Дисперсия на лапласиана за всеки кадър, (n, h, w) uint8 -> (n,). Размазването от движение я намалява."""
     f = frames.astype(np.float32)
     lap = f[:, 1:-1, :-2] + f[:, 1:-1, 2:] + f[:, :-2, 1:-1] + f[:, 2:, 1:-1] - 4 * f[:, 1:-1, 1:-1]
     return lap.reshape(len(f), -1).var(axis=1)
@@ -33,13 +33,13 @@ def _thumbs(raw: np.ndarray) -> np.ndarray:
 
 
 def score_thumbs(raw: np.ndarray) -> np.ndarray:
-    """Sharpness of each THUMB x THUMB gray frame in a raw byte buffer, in batches to bound memory."""
+    """Рязкост на всеки сив кадър THUMB x THUMB в суров буфер от байтове, на порции, за да се ограничи паметта."""
     thumbs = _thumbs(raw)
     return np.concatenate([sharpness(thumbs[i : i + BATCH]) for i in range(0, len(thumbs), BATCH)] or [np.zeros(0)])
 
 
 def motion(raw: np.ndarray) -> np.ndarray:
-    """How much the picture changed since the previous frame (mean absolute difference of small thumbnails)."""
+    """Колко се е променило изображението спрямо предишния кадър (средна абсолютна разлика на малки миниатюри)."""
     t = _thumbs(raw)
     k = THUMB // SMALL
     small = np.concatenate(
@@ -55,8 +55,8 @@ def frame_count(candidates: int, most: int = MAX_FRAMES) -> int:
 
 
 def pick(scores: np.ndarray, n: int, moved: np.ndarray | None = None) -> list[int]:
-    """Index of the sharpest candidate in each of n slices holding equal camera movement (equal time without
-    `moved`). A sudden swing can leave a slice empty; it is skipped."""
+    """Индекс на най-рязкия кандидат във всеки от n участъка с равно движение на камерата (равно време без `moved`).
+    Рязко завъртане може да остави участък празен; той се пропуска."""
     if moved is None or moved.sum() <= 0:
         edges = np.linspace(0, len(scores), n + 1).round().astype(int)
     else:

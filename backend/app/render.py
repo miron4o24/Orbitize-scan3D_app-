@@ -111,7 +111,7 @@ def spin_ground(w: int, h: int) -> np.ndarray:
         font = ImageFont.truetype("arialbd.ttf", size)
     except OSError:
         font = ImageFont.load_default(size)
-    ImageDraw.Draw(ground).text((w / 2, h * 0.93), "Scanly", font=font, fill=(150, 150, 160), anchor="mm")
+    ImageDraw.Draw(ground).text((w / 2, h * 0.93), "Orbitize", font=font, fill=(150, 150, 160), anchor="mm")
     return np.asarray(ground)
 
 

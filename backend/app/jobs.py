@@ -1,4 +1,4 @@
-"""Job storage on disk + one background worker (photogrammetry needs the whole machine)."""
+"""Съхранение на задачи на диска и една фонова работна нишка (фотограметрията иска цялата машина)."""
 
 import json
 import logging
@@ -18,7 +18,7 @@ from .mesh import MeshError
 DATA = Path(os.environ.get("DATA_DIR", "data")).resolve()
 STEP_TIMEOUT_S = int(os.environ.get("STEP_TIMEOUT_S", "7200"))
 JOB_TTL_DAYS = float(os.environ.get("JOB_TTL_DAYS", "7"))
-UPLOAD_TTL_HOURS = float(os.environ.get("UPLOAD_TTL_HOURS", "24"))  # abandoned uploads
+UPLOAD_TTL_HOURS = float(os.environ.get("UPLOAD_TTL_HOURS", "24"))  # изоставени качвания
 ACTIVE = {"queued", "reconstructing", "meshing", "cleaning"}
 WINDOWS = os.name == "nt"
 log = logging.getLogger("uvicorn.error")
@@ -33,7 +33,8 @@ def job_dir(job_id: str) -> Path:
 
 
 def _retry(fn):
-    """Windows refuses to replace a file another thread has open (and to open one mid-replace); that lasts ~ms."""
+    """Windows отказва да замени файл, отворен от друга нишка (и да отвори файл по време на замяна); това трае
+    милисекунди."""
     for attempt in range(50):
         try:
             return fn()
@@ -51,7 +52,7 @@ def read(job_id: str) -> dict | None:
 
 
 def write(job_id: str, **patch) -> dict:
-    """Atomic update. Fails if the job directory was deleted, so a cancelled job cannot reappear."""
+    """Атомарно обновяване. Проваля се, ако папката на задачата е изтрита, за да не се появи отново отказана задача."""
     status = (read(job_id) or {}) | patch
     tmp = job_dir(job_id) / "status.json.tmp"
     tmp.write_text(json.dumps(status))
@@ -60,7 +61,7 @@ def write(job_id: str, **patch) -> dict:
 
 
 def kill(proc: subprocess.Popen):
-    """Linux: kill the tool's whole process group. Windows: the tools are single processes."""
+    """Linux: спира цялата група процеси на инструмента. Windows: инструментите са единични процеси."""
     if WINDOWS:
         proc.kill()
     else:
@@ -68,7 +69,7 @@ def kill(proc: subprocess.Popen):
 
 
 def low_priority(low: bool) -> dict:
-    """Popen arguments for a tool run below normal priority (its child processes inherit it)."""
+    """Аргументи на Popen за инструмент с приоритет под нормалния (дъщерните му процеси го наследяват)."""
     if not low:
         return {}
     if WINDOWS:
@@ -77,7 +78,7 @@ def low_priority(low: bool) -> dict:
 
 
 def create(owner: str | None = None) -> str:
-    """owner: the account's user id (app/accounts.py); None for the shared API token."""
+    """owner: идентификаторът на потребителя (app/accounts.py); None за споделения API ключ."""
     job_id = uuid.uuid4().hex
     (job_dir(job_id) / "photos").mkdir(parents=True)
     write(job_id, id=job_id, state="uploading", created=time.time(), error=None, report=None, owner=owner)
@@ -93,14 +94,14 @@ _drawing = threading.Lock()
 
 
 def thumbnail(job_id: str) -> Path | None:
-    """A square picture of the object for scan lists and shared links: once the model is made, a drawing of it
-    (render.py, made again when the model is newer); before that, the middle frame cropped to its centre (the app
-    keeps the object in the circle there). Kept when the frames are cleared."""
+    """Квадратно изображение на предмета за списъци със сканирания и споделени линкове: след създаване на модела
+    негова рисунка (render.py, прави се наново при по-нов модел); дотогава средният кадър, изрязан около центъра
+    (приложението държи предмета в кръга там). Запазва се при изчистване на кадрите."""
     d = job_dir(job_id)
     model = d / "model.ply"
     if (read(job_id) or {}).get("state") == "done" and model.exists():
         out = d / PREVIEW
-        with _drawing:  # a scan list asks for many at once: one drawing at a time
+        with _drawing:  # списък със сканирания иска много наведнъж: по една рисунка
             if out.exists() and out.stat().st_mtime >= model.stat().st_mtime:
                 return out
             try:
@@ -110,7 +111,7 @@ def thumbnail(job_id: str) -> Path | None:
                 render.picture(d).save(tmp, "JPEG", quality=88)
                 os.replace(tmp, out)
                 return out
-            except Exception as e:  # the frame then
+            except Exception as e:  # кадърът тогава
                 log.warning("preview of %s: %s", job_id, e)
     out = d / THUMB
     if out.exists():
@@ -128,7 +129,7 @@ def thumbnail(job_id: str) -> Path | None:
             left, top = (im.width - side) // 2, (im.height - side) // 2
             im = im.crop((left, top, left + side, top + side)).resize((THUMB_SIDE, THUMB_SIDE), Image.LANCZOS)
             im.save(tmp, "JPEG", quality=85)
-    except OSError:  # an unreadable frame (PIL's UnidentifiedImageError is one)
+    except OSError:  # нечетим кадър (UnidentifiedImageError на PIL е такъв)
         tmp.unlink(missing_ok=True)
         return None
     os.replace(tmp, out)
@@ -151,7 +152,7 @@ def public(job_id: str) -> dict:
 
 
 def log_tail(job_id: str, lines: int) -> str:
-    """The last lines of the tools' output: what the app shows under "Details" when a scan fails."""
+    """Последните редове от изхода на инструментите: какво показва приложението при неуспешно сканиране."""
     try:
         with open(job_dir(job_id) / "log.txt", "rb") as f:
             f.seek(0, os.SEEK_END)
@@ -159,20 +160,21 @@ def log_tail(job_id: str, lines: int) -> str:
             text = f.read().decode("utf-8", "replace")
     except FileNotFoundError:
         return ""
-    # COLMAP/OpenMVS redraw progress with \r; keep only the final state of each line.
+    # COLMAP и OpenMVS презаписват напредъка с \r; пази се само крайното състояние на всеки ред.
     rows = [r.rsplit("\r", 1)[-1] for r in text.replace("\r\n", "\n").split("\n")]
     return "\n".join([r for r in rows if r.strip()][-lines:])
 
 
 def summaries() -> list[dict]:
-    """Newest first, without the photo lists: for checking on the server from outside."""
+    """Първо най-новите, без списъците със снимки: за проверка на сървъра отвън."""
     out = [s for d in DATA.iterdir() if (s := read(d.name))]
     out.sort(key=lambda s: s.get("created", 0), reverse=True)
     return [{k: s.get(k) for k in ("id", "state", "error", "step", "created", "report")} for s in out]
 
 
 def count() -> int:
-    """Jobs that count against MAX_JOBS: all but the finished scans kept in accounts (those have their own limit)."""
+    """Задачи, които се броят към MAX_JOBS: всички освен завършените сканирания в профили (те имат собствено
+    ограничение)."""
     n = 0
     for d in DATA.iterdir():
         s = read(d.name) or {}
@@ -181,8 +183,9 @@ def count() -> int:
 
 
 def cleanup():
-    """Never-started uploads go after UPLOAD_TTL_HOURS. Finished jobs after JOB_TTL_DAYS: wholly without an account;
-    in an account the model stays (it is the user's saved scan) and only the frames go, the bulk of the disk."""
+    """Нестартираните качвания изчезват след UPLOAD_TTL_HOURS. Завършените задачи след JOB_TTL_DAYS: изцяло, ако са
+    без профил; в профил моделът остава (това е запазеното сканиране на потребителя) и изчезват само кадрите, които
+    заемат повечето място."""
     now = time.time()
     for d in DATA.iterdir():
         s = read(d.name)
@@ -201,7 +204,7 @@ def cleanup():
                 (d / "photos").mkdir(exist_ok=True)
 
 
-PRO_METHODS = ("express", "edit", *ai.METHODS)  # edit: a text change of a model (app/edit.py)
+PRO_METHODS = ("express", "edit", *ai.METHODS)  # edit: текстова промяна на модел (app/edit.py)
 
 
 def is_pro(params: dict | None) -> bool:
@@ -209,20 +212,21 @@ def is_pro(params: dict | None) -> bool:
 
 
 class Worker:
-    """Two lanes, one job at a time each: free scans, and Pro's (the ~5 minute express scan, the AI models: app/ai.py).
-    Both share the machine, so the free lane's tools run at a lower priority: a Pro job beside a free scan takes the
-    processor first and stays within its few minutes, the free scan just takes a little longer."""
+    """Две ленти с по една задача наведнъж: безплатни сканирания и тези на Pro (експресното сканиране за около 5
+    минути и AI моделите: app/ai.py). Двете делят машината, затова инструментите на безплатната лента са с по-нисък
+    приоритет: задача на Pro до безплатно сканиране взема процесора първа и остава в рамките на няколкото си
+    минути, а безплатното сканиране просто отнема малко повече време."""
 
     def __init__(self):
         self.q: queue.Queue[str] = queue.Queue()
         self.ai_q: queue.Queue[str] = queue.Queue()
         self.lock = threading.Lock()
-        self.procs: dict[str, subprocess.Popen] = {}  # job id -> its tool running now
+        self.procs: dict[str, subprocess.Popen] = {}  # номер на задача -> инструментът ѝ, който работи в момента
         self.cancelled: set[str] = set()
-        self.running: dict[int, str] = {}  # lane (id of its queue) -> the job being processed there
+        self.running: dict[int, str] = {}  # лента (идентификатор на опашката ѝ) -> обработваната там задача
 
     def ahead(self, job_id: str, params: dict | None) -> int | None:
-        """How many jobs go before this waiting one in its lane, with the one being processed; None if not waiting."""
+        """Колко задачи са преди тази чакаща в лентата ѝ, включително обработваната; None, ако не чака."""
         q = self.ai_q if is_pro(params) else self.q
         with q.mutex:
             waiting = list(q.queue)
@@ -236,7 +240,7 @@ class Worker:
         cleanup()
         for d in sorted(DATA.iterdir()):
             s = read(d.name)
-            if s and s["state"] in ACTIVE:  # interrupted by a restart: run again
+            if s and s["state"] in ACTIVE:  # прекъсната от рестарт: изпълнява се отново
                 write(d.name, state="queued")
                 self._queue(d.name, s.get("params"))
         for q in (self.q, self.ai_q):
@@ -269,13 +273,13 @@ class Worker:
             self.running[id(q)] = job_id
             try:
                 self._process(job_id)
-            except Exception:  # e.g. job deleted mid-run; never let the worker thread die
+            except Exception:  # например изтрита по време на изпълнение задача; работната нишка никога не бива да умира
                 log.exception("job %s", job_id)
             finally:
                 self.running.pop(id(q), None)
 
     def _step(self, job_id: str, step: str):
-        """A step that runs no tool (app/ai.py waiting on a service): shown in the app, and where a cancel stops it."""
+        """Стъпка без инструмент (app/ai.py чака услуга): показва се в приложението и там се спира при отказ."""
         if job_id in self.cancelled:
             raise Cancelled
         write(job_id, step=step, step_started=time.time())
@@ -299,8 +303,8 @@ class Worker:
                                       quick=params.get("quality") == "quick", express=method == "express")  # fmt: skip
             write(job_id, state="done", step=None, report=report | {"seconds": round(time.time() - started)})
             try:
-                (d / THUMB).unlink(missing_ok=True)  # a re-run may have picked other frames
-                thumbnail(job_id)  # the model's picture, made now rather than when a list first asks
+                (d / THUMB).unlink(missing_ok=True)  # повторно изпълнение може да е избрало други кадри
+                thumbnail(job_id)  # изображението на модела, създадено сега, а не при първата заявка от списък
             except OSError:
                 pass
         except Cancelled:
@@ -320,7 +324,7 @@ class Worker:
                 notify.job_finished(job_id, final)
 
     def _sh(self, job_id: str, step: str, argv: list, low: bool = False):
-        """low: below normal priority (free scans, so that Pro's jobs beside them go first)."""
+        """low: приоритет под нормалния (безплатни сканирания, така че задачите на Pro до тях да минат първи)."""
         if job_id in self.cancelled:
             raise Cancelled
         write(job_id, step=step, step_started=time.time())
@@ -328,7 +332,7 @@ class Worker:
             logf.write(f"\n[{time.strftime('%H:%M:%S')}] {step}\n$ {' '.join(map(str, argv))}\n")
             logf.flush()
             with self.lock:
-                # cwd: OpenMVS writes its own .log files into the current directory.
+                # cwd: OpenMVS записва собствените си файлове .log в текущата папка.
                 proc = self.procs[job_id] = subprocess.Popen(
                     [str(a) for a in argv],
                     stdout=logf,
@@ -346,15 +350,15 @@ class Worker:
             finally:
                 with self.lock:
                     self.procs.pop(job_id, None)
-                # OpenMVS prints nothing when redirected; it writes <Tool>-<timestamp>.log next to its files instead.
+                # OpenMVS не печата нищо при пренасочване; вместо това записва <Tool>-<време>.log до файловете си.
                 for f in sorted(job_dir(job_id).rglob("*-*.log")):
                     logf.write(f.read_text(errors="replace"))
                     f.unlink(missing_ok=True)
         if job_id in self.cancelled:
             raise Cancelled
         if rc != 0:
-            # 137 = SIGKILL from outside us: almost always the out-of-memory killer. 0xC0000017 / 0xC0000409:
-            # Windows "not enough memory" and the abort a failed allocation ends in.
+            # 137 = SIGKILL отвън: почти винаги при изчерпване на паметта. 0xC0000017 / 0xC0000409: "няма достатъчно
+            # памет" на Windows и прекратяването, с което завършва неуспешно заделяне.
             oom = rc in (-9, 137) or (rc & 0xFFFFFFFF) in (0xC0000017, 0xC0000409)
             pipeline.note(job_dir(job_id), f"step {step} failed with exit code {rc}{' (out of memory)' if oom else ''}")
             hint = " Опитайте с по-кратко видео." if oom else " Опитайте отново."

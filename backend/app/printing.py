@@ -1,5 +1,5 @@
-"""The print helper: the way up that needs the least support, and a model too big for the printer cut into parts that
-fit its bed. Works on the model at the size the user set; nothing is stored."""
+"""Помощта за печат: посоката, която иска най-малко подпори, и разрязване на твърде голям за принтера модел на части,
+които се побират на плочата. Работи с модела в зададения от потребителя размер; нищо не се съхранява."""
 
 import io
 import zipfile
@@ -9,16 +9,16 @@ import trimesh
 
 from .mesh import MeshError
 
-MAX_PARTS = 48  # beyond this the size or the bed is a mistake
-OVERHANG = np.radians(45)  # steeper than this from the vertical needs support (the usual slicer default)
-EDGE_MM = 5.0  # kept free at the bed's edges: a brim, the printer's own margin
-CANDIDATES = 10  # flat sides of the model tried as its bottom
-KEEP_UP = 0.85  # another way up must need under this share of the support of the way it stands
-MIN_CONTACT = 0.02  # of the surface: less on the bed and the print comes loose
+MAX_PARTS = 48  # над това размерът или плочата са грешка
+OVERHANG = np.radians(45)  # по-стръмното от това спрямо вертикалата иска подпора (обичайната настройка на програмите за печат)
+EDGE_MM = 5.0  # оставя се свободно по ръбовете на плочата: кант, собствената граница на принтера
+CANDIDATES = 10  # плоски страни на модела, пробвани като дъно
+KEEP_UP = 0.85  # друга посока трябва да иска под този дял от подпорите на сегашната
+MIN_CONTACT = 0.02  # от повърхността: при по-малко върху плочата отпечатъкът се отлепя
 
 
 def overhang_share(mesh: trimesh.Trimesh) -> float:
-    """The share of the surface facing down steeper than OVERHANG, not counting what lies on the bed."""
+    """Делът от повърхността с посока надолу, по-стръмна от OVERHANG, без това, което лежи на плочата."""
     normals, areas = mesh.face_normals, mesh.area_faces
     low = mesh.triangles_center[:, 2] <= mesh.bounds[0, 2] + 0.2
     needs = (normals[:, 2] < -np.cos(OVERHANG)) & ~low
@@ -31,13 +31,13 @@ def contact_share(mesh: trimesh.Trimesh) -> float:
 
 
 def lying_on(normal: np.ndarray) -> np.ndarray:
-    """The turn that puts a side facing `normal` on the bed."""
+    """Завъртането, което поставя страна с посока `normal` върху плочата."""
     return trimesh.geometry.align_vectors(normal, [0.0, 0.0, -1.0])
 
 
 def best_way_up(mesh: trimesh.Trimesh) -> tuple[np.ndarray, float, float]:
-    """(the 4x4 turn, the support share as it stands, the support share after it). The way it stands is kept unless
-    another is clearly better: a scan's flat base is usually the right bottom."""
+    """(завъртането 4x4, делът на подпорите в сегашната посока, делът след завъртането). Сегашната посока се запазва,
+    освен ако друга е явно по-добра: плоската основа на сканирането обикновено е правилното дъно."""
     now = overhang_share(mesh)
     best, best_share = np.eye(4), now
     hull = mesh.convex_hull
@@ -61,7 +61,7 @@ def seated(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
 
 
 def cuts(mesh: trimesh.Trimesh, bed: tuple[float, float, float]) -> tuple[tuple[int, int, int], bool]:
-    """How many pieces along x, y, z, and whether to turn the model a quarter on the bed first, for the fewest parts."""
+    """Колко части по x, y и z и дали първо да се завърти моделът на четвърт оборот върху плочата, за най-малко части."""
     x, y, z = mesh.extents
     usable = [max(1.0, bed[0] - 2 * EDGE_MM), max(1.0, bed[1] - 2 * EDGE_MM), max(1.0, bed[2] - EDGE_MM)]
 
@@ -75,13 +75,13 @@ def cuts(mesh: trimesh.Trimesh, bed: tuple[float, float, float]) -> tuple[tuple[
 
 
 def plan(mesh: trimesh.Trimesh, longest_mm: float, bed: tuple[float, float, float]) -> dict:
-    """What the zip would hold, for the app to show first."""
+    """Какво би съдържал архивът, за да го покаже първо приложението."""
     m = mesh.copy()
     m.apply_scale(longest_mm / float(m.extents.max()))
     turn, before, after = best_way_up(m)
     m.apply_transform(turn)
     (nx, ny, nz), _ = cuts(m, bed)
-    # The grid may hold empty cells and a cell two pieces: the true count needs the cuts made.
+    # Мрежата може да има празни клетки или клетка с две части: истинският брой иска направени разрези.
     count = 1 if nx * ny * nz == 1 else len(parts(mesh, longest_mm, bed))
     return {"parts": count, "support_before": round(before, 3), "support_after": round(after, 3),
             "turned": not np.allclose(turn, np.eye(4)),
@@ -89,7 +89,8 @@ def plan(mesh: trimesh.Trimesh, longest_mm: float, bed: tuple[float, float, floa
 
 
 def parts(mesh: trimesh.Trimesh, longest_mm: float, bed: tuple[float, float, float]) -> list[trimesh.Trimesh]:
-    """The model the best way up, cut along a grid into parts that fit the bed, each standing centred on it."""
+    """Моделът в най-добрата посока, разрязан по мрежа на части, които се побират на плочата, всяка центрирана върху
+    нея."""
     m = mesh.copy()
     m.apply_scale(longest_mm / float(m.extents.max()))
     turn, _, _ = best_way_up(m)
@@ -103,7 +104,7 @@ def parts(mesh: trimesh.Trimesh, longest_mm: float, bed: tuple[float, float, flo
         return [seated(m)]
     if not m.is_volume:
         raise MeshError("Този модел не може да се реже на части: не е затворено тяло.")
-    lo, hi = m.bounds[0] - 0.5, m.bounds[1] + 0.5  # the grid a little past the model: nothing lies on its outer walls
+    lo, hi = m.bounds[0] - 0.5, m.bounds[1] + 0.5  # мрежата леко извън модела: нищо не лежи върху външните ѝ стени
     size = (hi - lo) / [nx, ny, nz]
     out = []
     for i in range(nx):
@@ -115,7 +116,7 @@ def parts(mesh: trimesh.Trimesh, longest_mm: float, bed: tuple[float, float, flo
                 if piece.is_empty or not len(piece.faces):
                     continue
                 for bit in piece.split(only_watertight=False):
-                    if abs(bit.volume) > 1.0:  # mm³: crumbs at a cut's edge
+                    if abs(bit.volume) > 1.0:  # мм³: трохи по ръба на разрез
                         out.append(seated(bit))
     if not out:
         raise MeshError("Моделът не можа да се среже. Опитайте с друг размер.")

@@ -16,7 +16,7 @@ export function Brand() {
   return (
     <View style={s.brand}>
       <Logo />
-      <Text style={s.name}>Scanly</Text>
+      <Text style={s.name}>Orbitize</Text>
     </View>
   );
 }

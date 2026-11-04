@@ -23,6 +23,6 @@ yarn-error.*
 /android
 backend/
 docs/
-scan3d-backend.zip
+orbitize-backend.zip
 __pycache__/
 .pytest_cache/

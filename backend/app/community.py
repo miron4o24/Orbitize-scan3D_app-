@@ -1,8 +1,8 @@
-"""The community: finished scans their owners post for every signed-in user to turn around, like and download.
-
-Posting sets scans.published (and the real size the author gave, scans.longest_mm); likes and reports are tables of
-their own (app/db.py). A post reported by HIDE_AFTER_REPORTS people leaves the feed, for everyone but its author,
-until the admin has looked at it (GET /admin/community/reports, then DELETE or POST .../keep)."""
+"""Общността: завършени сканирания, които собствениците им публикуват, за да може всеки влязъл потребител да ги
+разглежда, харесва и изтегля. Публикуването задава scans.published (и реалния размер от автора, scans.longest_mm);
+харесванията и сигналите са в собствени таблици (app/db.py). Публикация, за която са сигнализирали HIDE_AFTER_REPORTS
+души, напуска списъка за всички освен автора си, докато администраторът я прегледа (GET /admin/community/reports,
+после DELETE или POST .../keep)."""
 
 import io
 import os
@@ -25,7 +25,7 @@ from .accounts import Principal, admin_only, avatar_path, need_db, owned_row, si
 
 PAGE = 20
 HIDE_AFTER_REPORTS = 3
-ID_RE = re.compile(r"^[0-9a-f]{32}$")  # job and user ids
+ID_RE = re.compile(r"^[0-9a-f]{32}$")  # номера на задача и потребител
 
 router = APIRouter()
 
@@ -35,7 +35,7 @@ def counted(table: sa.Table) -> sa.Subquery:
 
 
 def posts(me: str) -> sa.Select:
-    """Every post with its author, likes and reports, and whether `me` liked it."""
+    """Всяка публикация с автора, харесванията и сигналите и дали `me` я е харесал."""
     likes, reports = counted(db.likes), counted(db.reports)
     liked = sa.exists().where(db.likes.c.job_id == db.scans.c.job_id, db.likes.c.user_id == me)
     return (
@@ -55,7 +55,7 @@ def posts(me: str) -> sa.Select:
 
 
 def entry(r: sa.Row, status: dict, me: str, points: dict[str, int]) -> dict:
-    """points: the authors' points (progress.points_of), for their level."""
+    """points: точките на авторите (progress.points_of), за нивото им."""
     report = status.get("report") or {}
     return {
         "id": r.job_id,
@@ -119,7 +119,7 @@ def post_thumb(job_id: str, p: Principal = Depends(signed_in)):
 
 @router.get("/community/{job_id}/model.glb")
 def post_model(job_id: str, p: Principal = Depends(signed_in)):
-    """With the photo texture, as the app's own models (it reads them through lib/photoTexture.ts)."""
+    """С текстура от снимки, като собствените модели на приложението (чете ги през lib/photoTexture.ts)."""
     one(job_id, p.user_id)
     job = jobs.job_dir(job_id)
     mesh = trimesh.load(job / "model.ply", force="mesh")
@@ -129,8 +129,8 @@ def post_model(job_id: str, p: Principal = Depends(signed_in)):
 
 @router.get("/community/{job_id}/stress/{case}")
 def post_stress(job_id: str, case: str, p: Principal = Depends(signed_in)):
-    """Anyone may stress-test a post (app/stress.py), as they may download it; free accounts count it among their
-    tested models (app/plans.py)."""
+    """Всеки може да направи тест за здравина на публикация (app/stress.py), както може и да я изтегли; за безплатните
+    профили тя се брои към тестваните им модели (app/plans.py)."""
     one(job_id, p.user_id)
     PL.check(p, "stress", job_id)
     out = ST.summary_response(job_id, case, p.user_id)
@@ -147,7 +147,7 @@ def post_stress_model(job_id: str, case: str, p: Principal = Depends(signed_in))
 
 @router.get("/community/authors/{user_id}/avatar.jpg")
 def author_avatar(user_id: str, p: Principal = Depends(signed_in)):
-    """Only the photos of people with something in the community: no one else's is shown there."""
+    """Само снимките на хора с нещо в общността: ничии други не се показват там."""
     with need_db().connect() as c:
         posted = c.execute(sa.select(db.scans.c.job_id)
                            .where(db.scans.c.user_id == user_id, db.scans.c.published.is_not(None))).first()  # fmt: skip
@@ -157,7 +157,7 @@ def author_avatar(user_id: str, p: Principal = Depends(signed_in)):
     return Response(path.read_bytes(), media_type="image/jpeg", headers={"Cache-Control": "private, max-age=300"})
 
 
-# --- Posting ----------------------------------------------------------------------------------------------------
+# --- Публикуване ----------------------------------------------------------------------------------------------------
 
 
 class Publish(BaseModel):
@@ -185,12 +185,12 @@ def unpublish(job_id: str, p: Principal = Depends(signed_in)):
     owned_row(job_id, p.user_id)
     with need_db().begin() as c:
         c.execute(sa.update(db.scans).where(db.scans.c.job_id == job_id).values(published=None))
-        for t in (db.likes, db.reports):  # posted again later, it starts afresh
+        for t in (db.likes, db.reports):  # при по-късно повторно публикуване започва отначало
             c.execute(sa.delete(t).where(t.c.job_id == job_id))
     return {"published": None}
 
 
-# --- Likes and reports ------------------------------------------------------------------------------------------
+# --- Харесвания и сигнали -------------------------------------------------------------------------------------------
 
 
 @router.put("/community/{job_id}/like")
@@ -201,7 +201,7 @@ def like(job_id: str, p: Principal = Depends(signed_in)):
             if not c.execute(sa.select(db.likes.c.job_id)
                              .where(db.likes.c.job_id == job_id, db.likes.c.user_id == p.user_id)).first():  # fmt: skip
                 c.execute(sa.insert(db.likes).values(job_id=job_id, user_id=p.user_id, created=int(time.time())))
-    except sa.exc.IntegrityError:  # a second tap that arrived at the same time
+    except sa.exc.IntegrityError:  # второ натискане, пристигнало по същото време
         pass
     post = one(job_id, p.user_id)
     return {"likes": post["likes"], "liked": post["liked"]}
@@ -236,9 +236,9 @@ def report(job_id: str, body: Report, p: Principal = Depends(signed_in)):
     return {"ok": True}
 
 
-# --- Photos of printed models -----------------------------------------------------------------------------------
-# One per person and model, kept with the model's job. Re-encoded on arrival: a phone's photo carries where it was
-# taken. Hidden after HIDE_AFTER_REPORTS reports; its maker and the model's author can remove it.
+# --- Снимки на отпечатани модели --- По една на човек и модел, пазят се със задачата на модела. Прекодират се при
+# пристигане: снимка от телефон носи информация къде е направена. Скриват се след HIDE_AFTER_REPORTS сигнала;
+# създателят ѝ и авторът на модела могат да я премахнат.
 
 MAX_PHOTO = 12 * 1024 * 1024
 PRINT_SIDE = 1600
@@ -277,7 +277,7 @@ def list_prints(job_id: str, p: Principal = Depends(signed_in)):
 
 @router.put("/community/{job_id}/prints")
 async def add_print(job_id: str, request: Request, p: Principal = Depends(signed_in)):
-    """The caller printed this model: their photo of it, in place of any earlier one."""
+    """Извикващият е отпечатал модела: неговата снимка на модела, на мястото на по-ранна."""
     one(job_id, p.user_id)
     body = bytearray()
     async for chunk in request.stream():
@@ -343,7 +343,7 @@ def report_print(print_id: str, p: Principal = Depends(signed_in)):
     return {"ok": True}
 
 
-# --- The admin's view of reports --------------------------------------------------------------------------------
+# --- Преглед на сигналите от администратора -------------------------------------------------------------------------
 
 
 @router.get("/admin/community/reports", dependencies=[Depends(admin_only)])
@@ -363,7 +363,7 @@ def reported():
 
 @router.post("/admin/community/{job_id}/keep", dependencies=[Depends(admin_only)])
 def keep(job_id: str):
-    """The reports were unfounded: they are cleared and the post is back in the feed."""
+    """Сигналите са неоснователни: изчистват се и публикацията се връща в списъка."""
     with need_db().begin() as c:
         c.execute(sa.delete(db.reports).where(db.reports.c.job_id == job_id))
     return {"ok": True}
@@ -371,7 +371,7 @@ def keep(job_id: str):
 
 @router.delete("/admin/community/{job_id}", dependencies=[Depends(admin_only)])
 def take_down(job_id: str):
-    """Out of the community; the scan itself stays its owner's."""
+    """Извън общността; самото сканиране остава на собственика си."""
     with need_db().begin() as c:
         c.execute(sa.update(db.scans).where(db.scans.c.job_id == job_id).values(published=None))
         for t in (db.likes, db.reports):

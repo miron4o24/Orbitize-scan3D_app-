@@ -49,7 +49,7 @@ backend/e2e-out/
 backend/tools/
 backend/logs/
 backend/data/
-scan3d-backend.zip
+orbitize-backend.zip
 __pycache__/
 .pytest_cache/
 
