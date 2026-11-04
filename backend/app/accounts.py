@@ -1,9 +1,8 @@
-"""Accounts: email and password (or Google) sign-in, profiles, scans saved per account, public share links (tables
-in app/db.py).
-
-The app signs in with an email and password (POST /auth/register, /auth/login) and gets the server's own session
-token, which it sends as "Authorization: Bearer <token>" from then on. Google sign-in (/auth/google) stays for later. The shared API_TOKEN
-still works and sees every job (the admin key; older app builds use it)."""
+"""Профили: вход с имейл и парола (или Google), профили, сканирания по профил и публични линкове за споделяне
+(таблиците са в app/db.py). Приложението влиза с имейл и парола (POST /auth/register, /auth/login) и получава
+собствен сесиен ключ от сървъра, който оттам нататък изпраща като "Authorization: Bearer <token>". Входът с Google
+(/auth/google) остава за по-късно. Споделеният API_TOKEN продължава да работи и вижда всяка задача
+(администраторският ключ)."""
 
 import hashlib
 import hmac
@@ -24,24 +23,24 @@ from . import ai as AI
 from . import db, jobs, notify
 
 API_TOKEN = os.environ.get("API_TOKEN", "")
-# The app's owner: switches Pro on and off for users, from a page in the app (until Pro is a paid plan). Signed in
-# with one of these emails (comma-separated), not with the API token.
+# Собственикът на приложението: включва и изключва Pro за потребители от страница в приложението (докато Pro не стане
+# платен план). Влиза с един от тези имейли (разделени със запетая), а не с API ключа.
 OWNER_EMAILS = os.environ.get("OWNER_EMAILS", "")
-# The Google OAuth client the app signs in with ("Web application" type: the ID token's audience). Comma-separated.
-# Also settable without touching the server: PUT /admin/settings with the API token (kept in the database).
+# Клиентът за Google OAuth, с който влиза приложението (тип "Web application": аудиторията на ID токена). Разделени
+# със запетая. Може да се зададе и без достъп до сървъра: PUT /admin/settings с API ключа (пази се в базата данни).
 GOOGLE_SETTING = "google_client_id"
 MAX_SCANS_PER_USER = int(os.environ.get("MAX_SCANS_PER_USER", "300"))
-MAX_UPLOADING_PER_USER = 3  # scans started but not yet sent to processing
+MAX_UPLOADING_PER_USER = 3  # започнати сканирания, които още не са изпратени за обработка
 MAX_AVATAR_BYTES = 2 * 1024 * 1024
 AVATARS = Path(os.environ.get("AVATAR_DIR", jobs.DATA.parent / "avatars")).resolve()
-SESSION_TOUCH_S = 3600  # last_used is written at most this often
+SESSION_TOUCH_S = 3600  # last_used се записва най-често през този интервал
 
 router = APIRouter()
 
 
 @dataclass(frozen=True)
 class Principal:
-    user_id: str | None  # None: the shared API token
+    user_id: str | None  # None: споделеният API ключ
     admin: bool = False
 
 
@@ -63,7 +62,7 @@ def principal(authorization: str = Header("")) -> Principal:
         return Principal(None, admin=True)
     if token and db.configured():
         e = db.engine()
-        if e is None:  # not "not signed in": the app would sign the user out
+        if e is None:  # не "не сте влезли": приложението би извело потребителя от профила
             raise HTTPException(503, "Профилите временно не са достъпни. Опитайте след малко.")
         now = int(time.time())
         with e.begin() as c:
@@ -101,7 +100,7 @@ def user_email_pro(user_id: str) -> tuple[str, bool]:
 
 
 def is_pro(p: Principal) -> bool:
-    """The API token (the admin) counts as Pro, the owner always is."""
+    """API ключът (администраторът) се брои за Pro, а собственикът винаги е с Pro."""
     if p.admin:
         return True
     if not p.user_id:
@@ -120,7 +119,7 @@ def can_see(p: Principal, status: dict) -> bool:
     return p.admin or (p.user_id is not None and status.get("owner") == p.user_id)
 
 
-# --- Google sign-in ---------------------------------------------------------------------------------------------
+# --- Вход с Google --------------------------------------------------------------------------------------------------
 
 
 def google_client_ids() -> list[str]:
@@ -129,7 +128,7 @@ def google_client_ids() -> list[str]:
 
 
 def verify_google(id_token: str, audiences: list[str]) -> dict:
-    """The token's claims when Google signed it for one of our clients; raises ValueError otherwise."""
+    """Данните от токена, когато Google го е подписал за някой от нашите клиенти; иначе хвърля ValueError."""
     from google.auth.transport import requests as google_requests
     from google.oauth2 import id_token as google_id_token
 
@@ -153,13 +152,13 @@ def sign_in_google(body: GoogleSignIn):
         raise HTTPException(503, "Вход с Google още не е включен.")
     try:
         claims = verify_google(body.id_token, audiences)
-    except ValueError:  # the reason (expired, wrong audience) is not the user's to fix
+    except ValueError:  # причината (изтекъл, грешна аудитория) не е нещо, което потребителят може да поправи
         raise HTTPException(401, "Входът с Google не успя. Опитайте отново.")
     now = int(time.time())
     token = secrets.token_urlsafe(32)
     with e.begin() as c:
         user = c.execute(sa.select(db.users).where(db.users.c.google_sub == claims["sub"])).first()
-        if user is None:  # an email-and-password account with this (Google-verified) address: the same person
+        if user is None:  # профил с имейл и парола с този адрес, потвърден от Google: същият човек
             user = c.execute(sa.select(db.users).where(db.users.c.google_sub == email_key(claims["email"]))).first()
         if user is None:
             user_id = secrets.token_hex(16)
@@ -175,12 +174,12 @@ def sign_in_google(body: GoogleSignIn):
     return {"token": token, "user": profile(user_id)}
 
 
-# --- Email and password -----------------------------------------------------------------------------------------
-# No email check (the user's choice): an account is an email and a password. Passwords are kept as scrypt hashes.
+# --- Имейл и парола --- Без проверка на имейла (избор на потребителя): профилът е имейл и парола. Паролите се пазят
+# като хешове със scrypt.
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 PASSWORD_MIN = 6
-MAX_FAILED = 10  # wrong passwords per email in FAILED_WINDOW_S, then a pause
+MAX_FAILED = 10  # грешни пароли за имейл в рамките на FAILED_WINDOW_S, след което има пауза
 FAILED_WINDOW_S = 15 * 60
 _failed: dict[str, list[float]] = {}
 
@@ -201,7 +200,8 @@ def password_matches(password: str, stored: str | None) -> bool:
 
 
 def email_key(email: str) -> str:
-    """The account's key in users.google_sub (unique), so emails differing only in case are one account."""
+    """Ключът на профила в users.google_sub (уникален), така че имейли, различаващи се само по регистъра на буквите,
+    са един профил."""
     return "email:" + email.strip().lower()
 
 
@@ -268,7 +268,7 @@ def sign_out(authorization: str = Header(""), p: Principal = Depends(signed_in))
     return {"ok": True}
 
 
-# --- Profile ----------------------------------------------------------------------------------------------------
+# --- Профил ---------------------------------------------------------------------------------------------------------
 
 
 def avatar_path(user_id: str) -> Path:
@@ -283,9 +283,9 @@ def owned_jobs(user_id: str) -> list[sa.Row]:
 
 
 def profile(user_id: str) -> dict:
-    from . import billing, plans  # they import this module
+    from . import billing, plans  # те импортират този модул
 
-    billing.refresh(user_id)  # a subscription that ran out may have renewed
+    billing.refresh(user_id)  # изтекъл абонамент може да е подновен
     with need_db().connect() as c:
         u = c.execute(sa.select(db.users).where(db.users.c.id == user_id)).first()
     if u is None:
@@ -303,14 +303,15 @@ def profile(user_id: str) -> dict:
         "google_picture": u.google_picture,
         "has_avatar": bool(u.avatar),
         "created": u.created,
-        # pro: may make AI models (app/ai.py), "ai" says which ones the server has keys for; owner: the Pro page.
+        # pro: може да създава AI модели (app/ai.py), "ai" казва за кои сървърът има ключове; owner: страницата за
+        # Pro.
         "pro": pro,
-        "pro_until": u.pro_until if paid else None,  # by payment: until when (it renews by itself unless cancelled)
-        "billing": billing.configured(),  # Pro can be bought in the app
+        "pro_until": u.pro_until if paid else None,  # чрез плащане: до кога (подновява се сам, ако не е отменен)
+        "billing": billing.configured(),  # Pro може да се купи в приложението
         "pro_product": billing.PRODUCT,
         "owner": owner,
         "ai": AI.available(),
-        "limits": plans.summary(user_id, pro),  # the free plan's stress tests, AR and AI trial (app/plans.py)
+        "limits": plans.summary(user_id, pro),  # тестовете за здравина, AR и пробният AI модел на безплатния план (app/plans.py)
         "stats": {
             "scans": sum(1 for s in statuses if s),
             "done": len(done),
@@ -336,7 +337,7 @@ class PushToken(BaseModel):
 
 @router.put("/me/push-token")
 def put_push_token(body: PushToken, p: Principal = Depends(signed_in)):
-    """This phone wants to hear when this account's models are ready (app/notify.py)."""
+    """Този телефон иска да знае кога са готови моделите на профила (app/notify.py)."""
     if not notify.TOKEN_RE.match(body.token):
         raise HTTPException(400, "Неправилен адрес за известия.")
     need_db()
@@ -346,7 +347,7 @@ def put_push_token(body: PushToken, p: Principal = Depends(signed_in)):
 
 @router.post("/me/push-token/forget")
 def forget_push_token(body: PushToken, p: Principal = Depends(signed_in)):
-    """Signing out on this phone: it stops hearing about this account."""
+    """Изход на този телефон: спира да получава известия за този профил."""
     need_db()
     notify.forget(body.token, p.user_id)
     return {"ok": True}
@@ -403,13 +404,14 @@ def delete_job_files(job_id: str, worker):
 
 @router.delete("/me")
 def delete_me(request: Request, p: Principal = Depends(signed_in)):
-    """Deletes the account with all its scans, for good (app stores require this to be possible in the app)."""
+    """Изтрива профила с всичките му сканирания завинаги (магазините за приложения изискват това да е възможно в
+    приложението)."""
     for r in owned_jobs(p.user_id):
         delete_job_files(r.job_id, request.app.state.worker)
     avatar_path(p.user_id).unlink(missing_ok=True)
     with need_db().begin() as c:
         mine = sa.select(db.scans.c.job_id).where(db.scans.c.user_id == p.user_id)
-        for t in (db.likes, db.reports):  # on the account's posts (databases that do not cascade)
+        for t in (db.likes, db.reports):  # върху публикациите на профила (за бази данни без каскадно изтриване)
             c.execute(sa.delete(t).where(t.c.job_id.in_(mine)))
         for t in (db.likes, db.reports, db.scans, db.sessions, db.xp_events):
             c.execute(sa.delete(t).where(t.c.user_id == p.user_id))
@@ -417,7 +419,7 @@ def delete_me(request: Request, p: Principal = Depends(signed_in)):
     return {"ok": True}
 
 
-# --- Scans of an account ----------------------------------------------------------------------------------------
+# --- Сканирания на профил -------------------------------------------------------------------------------------------
 
 
 def scan_entry(row: sa.Row, status: dict) -> dict:
@@ -437,7 +439,7 @@ def my_scans(p: Principal = Depends(signed_in)):
     out, gone = [], []
     for r in owned_jobs(p.user_id):
         s = jobs.read(r.job_id)
-        if s is None:  # its files were removed (an abandoned upload expired)
+        if s is None:  # файловете му са премахнати (изоставено качване е изтекло)
             gone.append(r.job_id)
         else:
             out.append(scan_entry(r, s))
@@ -449,7 +451,7 @@ def my_scans(p: Principal = Depends(signed_in)):
 
 
 def add_scan(job_id: str, user_id: str, title: str = ""):
-    """Called when an account creates a job; refuses past the account's limits."""
+    """Вика се, когато профил създава задача; отказва над ограниченията на профила."""
     rows = owned_jobs(user_id)
     if len(rows) >= MAX_SCANS_PER_USER:
         raise HTTPException(400, f"Профилът ви има {len(rows)} сканирания, колкото най-много побира. Изтрийте някои първо.")
@@ -493,8 +495,9 @@ class Claim(BaseModel):
 
 @router.post("/me/scans/claim")
 def claim_scans(body: Claim, p: Principal = Depends(signed_in)):
-    """Scans this phone made before signing in (with the shared token) join the account. Only jobs nobody owns yet;
-    job ids are random 128-bit values, known only to the phone that made them."""
+    """Сканиранията, направени на този телефон преди влизане (със споделения ключ), се присъединяват към профила. Само
+    задачи без собственик; номерата на задачите са случайни 128-битови стойности, известни само на телефона, който ги
+    е създал."""
     claimed = []
     for job_id in dict.fromkeys(body.job_ids):
         s = jobs.read(job_id) if len(job_id) == 32 and job_id.isalnum() else None
@@ -509,7 +512,7 @@ def claim_scans(body: Claim, p: Principal = Depends(signed_in)):
     return {"claimed": claimed}
 
 
-# --- Public links -----------------------------------------------------------------------------------------------
+# --- Публични линкове -----------------------------------------------------------------------------------------------
 
 
 @router.post("/me/scans/{job_id}/share")
@@ -519,7 +522,7 @@ def share_scan(job_id: str, p: Principal = Depends(signed_in)):
         raise HTTPException(409, "Може да се сподели само готов модел.")
     if row.share:
         return {"share": row.share}
-    slug = secrets.token_urlsafe(9)  # 72 random bits: links cannot be guessed
+    slug = secrets.token_urlsafe(9)  # 72 случайни бита: линковете не могат да се познаят
     with need_db().begin() as c:
         c.execute(sa.update(db.scans).where(db.scans.c.job_id == job_id).values(share=slug))
     return {"share": slug}
@@ -549,7 +552,7 @@ def shared(slug: str) -> sa.Row:
 SHARE_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{title} · 3D Scan</title>
+<title>{title} · Orbitize</title>
 <meta property="og:title" content="{title}">
 <meta property="og:description" content="A 3D scan by {owner}. Open it to turn it around.">
 <meta property="og:image" content="{base}/s/{slug}/thumb.jpg">
@@ -610,8 +613,8 @@ renderer.setAnimationLoop(() => {{ controls.update(); renderer.render(scene, cam
 
 
 def base_url(request: Request) -> str:
-    """The address the visitor used. Behind Tailscale Funnel the request reaches us over plain HTTP on localhost,
-    but the public address is HTTPS."""
+    """Адресът, използван от посетителя. Зад Tailscale Funnel заявката пристига по обикновен HTTP на localhost, но
+    публичният адрес е HTTPS."""
     if pub := os.environ.get("PUBLIC_URL"):
         return pub.rstrip("/")
     host = request.headers.get("host", "")
@@ -657,7 +660,8 @@ def share_thumb(slug: str):
     return Response(path.read_bytes(), media_type="image/jpeg", headers={"Cache-Control": "public, max-age=300"})
 
 
-# --- Server settings (admin) ------------------------------------------------------------------------------------
+# --- Настройки на сървъра (администратор)
+# ----------------------------------------------------------------------------
 
 
 class Settings(BaseModel):
@@ -678,12 +682,13 @@ def put_settings(body: Settings):
     return get_settings()
 
 
-# --- The owner's Pro page (the app's "Pro" screen) -----------------------------------------------------------------
+# --- Страницата на собственика за Pro (екран "Pro" в приложението)
+# ---------------------------------------------------
 
 
 @router.get("/owner/users", dependencies=[Depends(owner_only)])
 def owner_users(q: str = Query("", max_length=100), limit: int = Query(100, ge=1, le=500)):
-    """Newest accounts first; q: part of the name or email."""
+    """Първо най-новите профили; q: част от името или имейла."""
     sel = sa.select(db.users.c.id, db.users.c.email, db.users.c.name, db.users.c.created, db.users.c.pro)
     if q.strip():
         like = f"%{q.strip().lower()}%"
@@ -706,10 +711,11 @@ def owner_set_pro(user_id: str, body: ProSwitch):
     return {"id": user_id, "pro": body.pro}
 
 
-# The AI services' keys are the app's, not the users': set with the API token only (never from the app), kept in the
-# database's settings table and never sent back. ANTHROPIC_API_KEY / MESHY_API_KEY in the environment win over them.
+# Ключовете на AI услугите са на приложението, а не на потребителите: задават се само с API ключа (никога от
+# приложението), пазят се в таблицата с настройки на базата данни и никога не се връщат. ANTHROPIC_API_KEY /
+# MESHY_API_KEY от средата са с предимство пред тях.
 class AiKeys(BaseModel):
-    """A key to keep; "" removes the saved one (an unset field leaves it as it is)."""
+    """Ключ за запазване; "" премахва запазения (незададено поле го оставя както е)."""
 
     anthropic: str | None = Field(None, max_length=500)
     meshy: str | None = Field(None, max_length=500)
@@ -731,12 +737,12 @@ def admin_set_ai(body: AiKeys):
 
 
 def health_info() -> dict:
-    """The web client ID is public (it is in every app build that signs in); the app reads it from here, so creating
-    the Google client needs no new app build."""
+    """Идентификаторът на уеб клиента е публичен (има го във всяка компилация с вход); приложението го чете оттук,
+    затова създаването на клиента в Google не изисква нова компилация."""
     ok = db.engine() is not None
     ids = google_client_ids() if ok else []
-    # accounts: email and password sign-in works (needs only the database).
-    # version: which update the server runs (checked remotely after an install). stress, progress, pro: the stress test
-    # (app/stress.py), points (app/progress.py) and Pro's AI models (app/ai.py) are there, so the app shows them.
+    # accounts: входът с имейл и парола работи (нужна е само базата данни). version: коя версия работи на сървъра
+    # (проверява се отдалечено след инсталиране). stress, progress, pro: тестът за здравина (app/stress.py), точките
+    # (app/progress.py) и AI моделите на Pro (app/ai.py) са налични, затова приложението ги показва.
     return {"accounts": ok, "database": db.status(), "google_client_id": ids[0] if ids else None,
-            "version": "2026-11-04-fast", "stress": True, "progress": True, "pro": True}  # fmt: skip
+            "version": "2026-11-04-orbitize", "stress": True, "progress": True, "pro": True}  # fmt: skip

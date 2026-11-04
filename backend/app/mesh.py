@@ -869,7 +869,7 @@ def glb(mesh: trimesh.Trimesh, unlit: bool = False, extra: dict[str, np.ndarray]
     material = {"pbrMetallicRoughness": {"baseColorFactor": base, "metallicFactor": 0.0, "roughnessFactor": 0.85}}
     unlit = unlit and colored  # a grey model unlit would be a flat silhouette
     doc = {
-        "asset": {"version": "2.0", "generator": "scan3d"},
+        "asset": {"version": "2.0", "generator": "orbitize"},
         "scene": 0,
         "scenes": [{"nodes": [0]}],
         "nodes": [{"mesh": 0}],
@@ -928,7 +928,7 @@ def glb_textured(parts: list[dict], unlit: bool = False) -> bytes:
                          | ({"extensions": UNLIT} if unlit else {}))  # fmt: skip
         prims.append({"attributes": attributes, "indices": faces, "material": k, "mode": 4})
     doc = {
-        "asset": {"version": "2.0", "generator": "scan3d"},
+        "asset": {"version": "2.0", "generator": "orbitize"},
         "scene": 0,
         "scenes": [{"nodes": [0]}],
         "nodes": [{"mesh": 0}],

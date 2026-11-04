@@ -1,9 +1,8 @@
-"""A text change the fixed rules (app/edit.py parse) could not read, turned into app/edit.py's operations by a small
-language model on the CPU: Qwen2.5-1.5B-Instruct (Apache-2.0), in tools/qwen (scripts/models.ps1). Greedy decoding:
-the same request gives the same answer. Its answer is checked by app/edit.py validate before anything is done.
-
-Runs as its own process (step "understanding the request"), so its memory is freed afterwards:
-    python edit_llm.py <request.json: {prompt, sizes}> <answer.json: {ops, unsupported}>"""
+"""Текстова промяна, която фиксираните правила (app/edit.py parse) не могат да разчетат, превърната в операции на
+app/edit.py от малък езиков модел на процесора: Qwen2.5-1.5B-Instruct (Apache-2.0), в tools/qwen (scripts/models.ps1).
+Детерминирано декодиране: една и съща заявка дава един и същ отговор. Отговорът се проверява от app/edit.py validate,
+преди да се направи каквото и да е. Работи като собствен процес (стъпка "understanding the request"), затова паметта
+му се освобождава след това: python edit_llm.py <request.json: {prompt, sizes}> <answer.json: {ops, unsupported}>"""
 
 import json
 import os
@@ -56,7 +55,7 @@ def ready() -> bool:
 
 
 def first_json(text: str) -> dict:
-    """The first {...} in the answer that reads as JSON."""
+    """Първото {...} в отговора, което се чете като JSON."""
     for start in [m.start() for m in re.finditer(r"\{", text)]:
         depth = 0
         for end in range(start, len(text)):
@@ -77,7 +76,7 @@ def main(request: Path, answer: Path):
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     torch.set_num_threads(os.cpu_count() or 4)
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # the answer goes to the job's log (UTF-8)
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # отговорът отива в дневника на задачата (UTF-8)
     req = json.loads(request.read_text())
     s = req["sizes"]
     tapped = "The user tapped a spot on the model.\n" if req.get("tapped") else ""

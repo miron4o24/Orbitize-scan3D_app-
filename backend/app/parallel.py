@@ -1,13 +1,9 @@
-"""Work on many frames at once, on all of the server's threads: the same work, the same result, in less time.
-
-Threads, not processes: the arrays are shared without copying, and numpy, scipy and ONNX Runtime let go of Python's lock
-while they compute.
-
-Never matrix-multiply (`@`, np.dot, np.linalg's solvers) in code that runs here: this OpenBLAS crashes the whole
-process on Windows when two threads do it at once (see stress.py). `turned` does what `X @ R.T` does without it.
-
-The AI models run a few at a time, each with a few threads of its own: on a CPU, one frame at a time on all the cores
-spends much of them waiting for each other."""
+"""Работа върху много кадри наведнъж, на всички нишки на сървъра: същата работа, същият резултат, за по-малко време.
+Нишки, а не процеси: масивите се споделят без копиране, а numpy, scipy и ONNX Runtime освобождават заключването на
+Python, докато изчисляват. Никога не умножавайте матрици (`@`, np.dot, решаващите функции на np.linalg) в код, който
+работи тук: този OpenBLAS срива целия процес на Windows, когато две нишки го правят едновременно (вижте stress.py).
+`turned` прави същото като `X @ R.T` без него. AI моделите работят по няколко наведнъж, всеки с няколко свои нишки: на
+процесор един кадър на всички ядра губи голяма част от тях в чакане едно на друго."""
 
 import os
 import threading
@@ -17,12 +13,12 @@ from typing import Callable, Iterable
 import numpy as np
 
 CPUS = os.cpu_count() or 1
-MODELS = max(1, CPUS // 4)  # 12 threads (6 cores): 3 frames at once
-MODEL_THREADS = max(1, CPUS // 2 // MODELS)  # 2 each: one per core
+MODELS = max(1, CPUS // 4)  # 12 нишки (6 ядра): 3 кадъра наведнъж
+MODEL_THREADS = max(1, CPUS // 2 // MODELS)  # по 2 на модел: по една на ядро
 
 
 def each(work: Callable, items: Iterable, workers: int = CPUS) -> list:
-    """[work(item) for item in items], at once; in the items' order. A failure in one is raised here."""
+    """[work(item) for item in items], наведнъж; в реда на елементите. Грешка в един се хвърля тук."""
     items = list(items)
     if workers <= 1 or len(items) <= 1:
         return [work(item) for item in items]
@@ -31,8 +27,8 @@ def each(work: Callable, items: Iterable, workers: int = CPUS) -> list:
 
 
 def each_model(make: Callable, work: Callable, items: Iterable) -> list:
-    """[work(model, item) for item in items], MODELS at once, each worker with its own model from make(): concurrent
-    runs of one ONNX session share its one pool of threads."""
+    """[work(model, item) for item in items], по MODELS наведнъж, всяка работна нишка със собствен модел от make():
+    едновременните изпълнения на една ONNX сесия делят единствения ѝ набор от нишки."""
     local = threading.local()
 
     def one(item):
@@ -44,15 +40,15 @@ def each_model(make: Callable, work: Callable, items: Iterable) -> list:
 
 
 def onnx_options():
-    """ONNX Runtime's settings for a model used through each_model."""
+    """Настройките на ONNX Runtime за модел, използван чрез each_model."""
     import onnxruntime as ort
 
     options = ort.SessionOptions()
     options.intra_op_num_threads = MODEL_THREADS
-    options.add_session_config_entry("session.intra_op.allow_spinning", "0")  # waiting threads would take others' turn
+    options.add_session_config_entry("session.intra_op.allow_spinning", "0")  # чакащите нишки биха заели реда на другите
     return options
 
 
 def turned(X: np.ndarray, R: np.ndarray) -> np.ndarray:
-    """X @ R.T without OpenBLAS: points (n, 3) by a rotation (3, 3)."""
+    """X @ R.T без OpenBLAS: точки (n, 3) по завъртане (3, 3)."""
     return np.einsum("ij,kj->ik", X, R)

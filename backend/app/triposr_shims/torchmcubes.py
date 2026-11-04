@@ -1,5 +1,5 @@
-"""Stand-in for torchmcubes (needs compiling on Windows), which TripoSR's tsr/models/isosurface.py imports:
-app/single3d.py runs marching cubes itself (scikit-image), so this is never called."""
+"""Заместител на torchmcubes (изисква компилиране на Windows), който tsr/models/isosurface.py на TripoSR импортира:
+app/single3d.py сам изпълнява marching cubes (scikit-image), затова това никога не се извиква."""
 
 
 def marching_cubes(*args, **kwargs):

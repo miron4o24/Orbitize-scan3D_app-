@@ -1,11 +1,9 @@
-"""Tables for accounts (app/accounts.py): users, their sign-in sessions, which scans are theirs, the community's likes
-and reports (app/community.py), the points they earned (app/progress.py), and server settings that can be changed without touching the server (the Google
-client ID).
-
-MySQL when MYSQL_HOST (or DATABASE_URL) is set in .env; until then a SQLite file next to the jobs (accounts.db), so
-sign-in works without setting up a database server. The first start on MySQL moves that file's accounts over.
-DATABASE_URL=off turns accounts off: the shared API token only. A database that is down when the server starts is
-tried again on the next request."""
+"""Таблици за профилите (app/accounts.py): потребители, техните сесии, кои сканирания са техни, харесвания и сигнали в
+общността (app/community.py), спечелените точки (app/progress.py) и настройки на сървъра, които могат да се променят
+без достъп до него (идентификаторът на клиента за Google). MySQL, когато в .env е зададено MYSQL_HOST (или
+DATABASE_URL); дотогава файл на SQLite до задачите (accounts.db), така че входът работи и без сървър за бази данни.
+Първото стартиране с MySQL прехвърля профилите от този файл. DATABASE_URL=off изключва профилите: остава само
+споделеният API ключ. База данни, която не работи при стартиране на сървъра, се опитва отново при следващата заявка."""
 
 import logging
 import os
@@ -23,20 +21,21 @@ users = sa.Table(
     "users",
     meta,
     sa.Column("id", sa.String(32), primary_key=True),
-    sa.Column("google_sub", sa.String(64), nullable=False, unique=True),  # Google's id for the account
+    sa.Column("google_sub", sa.String(64), nullable=False, unique=True),  # идентификаторът на профила в Google
     sa.Column("email", sa.String(320), nullable=False),
     sa.Column("name", sa.String(100), nullable=False),
     sa.Column("google_picture", sa.String(1024)),
-    sa.Column("avatar", sa.Boolean, nullable=False, default=False),  # an own photo was uploaded
-    sa.Column("created", sa.BigInteger, nullable=False),  # Unix seconds, like the jobs' "created"
-    sa.Column("password_hash", sa.String(200)),  # email accounts (accounts.hash_password); google_sub "email:<email>"
-    # Pro: the AI models (app/ai.py). Switched on by the owner in the app (accounts.OWNER_EMAILS); later by paying.
+    sa.Column("avatar", sa.Boolean, nullable=False, default=False),  # качена е собствена снимка
+    sa.Column("created", sa.BigInteger, nullable=False),  # секунди по Unix, като "created" при задачите
+    sa.Column("password_hash", sa.String(200)),  # профили с имейл (accounts.hash_password); google_sub "email:<имейл>"
+    # Pro: AI моделите (app/ai.py). Включва се от собственика в приложението (accounts.OWNER_EMAILS); по-късно чрез
+    # плащане.
     sa.Column("pro", sa.Boolean, nullable=False, default=False, server_default=sa.false()),
-    sa.Column("pro_until", sa.BigInteger),  # Pro by payment: until when Google says it runs (app/billing.py)
-    sa.Column("pro_token", sa.String(512)),  # that subscription's purchase token, to ask Google again at its end
+    sa.Column("pro_until", sa.BigInteger),  # Pro чрез плащане: докога важи според Google (app/billing.py)
+    sa.Column("pro_token", sa.String(512)),  # ключът за покупка на абонамента, за да се пита Google отново в края му
 )
 
-# Columns added after the tables first went out: create_all makes missing tables only, not missing columns.
+# Колони, добавени след първото пускане на таблиците: create_all създава само липсващи таблици, а не липсващи колони.
 LATER_COLUMNS = {
     "users": {"password_hash": "VARCHAR(200)", "pro": "BOOLEAN NOT NULL DEFAULT 0", "pro_until": "BIGINT",
               "pro_token": "VARCHAR(512)"},
@@ -46,7 +45,7 @@ LATER_COLUMNS = {
 sessions = sa.Table(
     "sessions",
     meta,
-    sa.Column("token_hash", sa.String(64), primary_key=True),  # SHA-256 of the token: a leaked table signs no one in
+    sa.Column("token_hash", sa.String(64), primary_key=True),  # SHA-256 на ключа: изтекла таблица не дава достъп на никого
     sa.Column("user_id", sa.String(32), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True),
     sa.Column("created", sa.BigInteger, nullable=False),
     sa.Column("last_used", sa.BigInteger, nullable=False),
@@ -59,12 +58,12 @@ scans = sa.Table(
     sa.Column("user_id", sa.String(32), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True),
     sa.Column("title", sa.String(100), nullable=False, default=""),
     sa.Column("created", sa.BigInteger, nullable=False),
-    sa.Column("share", sa.String(32), unique=True),  # the public link's id while shared
-    sa.Column("published", sa.BigInteger),  # Unix seconds it went into the community (app/community.py); None: not in it
-    sa.Column("longest_mm", sa.Float),  # the real size its author gave when posting it
+    sa.Column("share", sa.String(32), unique=True),  # номерът на публичния линк, докато е споделено
+    sa.Column("published", sa.BigInteger),  # секунди по Unix, откакто е в общността (app/community.py); None: не е в нея
+    sa.Column("longest_mm", sa.Float),  # реалният размер, зададен от автора при публикуване
 )
 
-# The community (app/community.py): one row per person who liked a post, and per person who reported one.
+# Общността (app/community.py): по един ред за всеки човек, харесал или сигнализирал за публикация.
 likes = sa.Table(
     "likes",
     meta,
@@ -82,21 +81,21 @@ reports = sa.Table(
     sa.Column("created", sa.BigInteger, nullable=False),
 )
 
-# Points (app/progress.py): one row per thing that earned some, once per user, kind and ref.
+# Точки (app/progress.py): по един ред за всяко спечелило нещо, веднъж за потребител, вид и ref.
 xp_events = sa.Table(
     "xp_events",
     meta,
     sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),
     sa.Column("user_id", sa.String(32), sa.ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True),
     sa.Column("kind", sa.String(20), nullable=False),  # scan, publish, liked, stress, challenge
-    sa.Column("ref", sa.String(80), nullable=False),  # what earned it: a job id, job:liker, job:case, week:challenge
+    sa.Column("ref", sa.String(80), nullable=False),  # какво ги е спечелило: номер на задача, job:liker, job:case, week:challenge
     sa.Column("points", sa.Integer, nullable=False),
-    sa.Column("created", sa.BigInteger, nullable=False),  # Unix seconds it happened
+    sa.Column("created", sa.BigInteger, nullable=False),  # секунди по Unix, когато се е случило
     sa.UniqueConstraint("user_id", "kind", "ref"),
 )
 
-# The free plan's counted uses (app/plans.py): one row per account, kind ("stress", "ar") and thing (the model's job
-# id), so using the same model again counts once.
+# Броените използвания от безплатния план (app/plans.py): по един ред за профил, вид ("stress", "ar") и обект (номер
+# на задачата на модела), така че повторна употреба на същия модел се брои веднъж.
 plan_uses = sa.Table(
     "plan_uses",
     meta,
@@ -106,7 +105,7 @@ plan_uses = sa.Table(
     sa.Column("created", sa.BigInteger, nullable=False),
 )
 
-push_tokens = sa.Table(  # phones to tell when a model is ready (app/notify.py)
+push_tokens = sa.Table(  # телефони, които да се известяват, когато модел е готов (app/notify.py)
     "push_tokens",
     meta,
     sa.Column("token", sa.String(200), primary_key=True),
@@ -114,7 +113,7 @@ push_tokens = sa.Table(  # phones to tell when a model is ready (app/notify.py)
     sa.Column("created", sa.BigInteger, nullable=False),
 )
 
-purchases = sa.Table(  # which account each Google Play purchase serves (app/billing.py)
+purchases = sa.Table(  # на кой профил служи всяка покупка в Google Play (app/billing.py)
     "purchases",
     meta,
     sa.Column("token_hash", sa.String(64), primary_key=True),
@@ -122,7 +121,7 @@ purchases = sa.Table(  # which account each Google Play purchase serves (app/bil
     sa.Column("created", sa.BigInteger, nullable=False),
 )
 
-prints = sa.Table(  # photos of a community model printed by someone (app/community.py); one per person and model
+prints = sa.Table(  # снимки на модел от общността, отпечатан от някого (app/community.py); по една на човек и модел
     "prints",
     meta,
     sa.Column("id", sa.String(32), primary_key=True),
@@ -182,7 +181,7 @@ def configured() -> bool:
 
 
 def engine() -> sa.Engine | None:
-    """The connected engine with the tables made, or None (off, or down: see status())."""
+    """Свързаният механизъм със създадени таблици или None (изключен или не работи: вижте status())."""
     global _engine, _error, _tried
     if _engine is not None or not configured():
         return _engine
@@ -197,7 +196,7 @@ def engine() -> sa.Engine | None:
                     move_from_sqlite(e)
                 _engine, _error = e, None
                 log.info("database: %s connected, tables ready", e.dialect.name)
-            except Exception as ex:  # wrong password, server down, no such database...
+            except Exception as ex:  # грешна парола, сървърът не работи, няма такава база данни...
                 _error = f"{type(ex).__name__}: {ex}".splitlines()[0][:300]
                 log.error("database: %s", _error)
     return _engine
@@ -205,13 +204,13 @@ def engine() -> sa.Engine | None:
 
 def connect(u: str | sa.URL) -> sa.Engine:
     if sa.make_url(u).get_backend_name() != "sqlite":
-        # pre_ping: MySQL closes connections idle for 8 hours; recycle keeps them younger than that.
+        # pre_ping: MySQL затваря връзки, неизползвани 8 часа; recycle ги поддържа по-млади от това.
         return sa.create_engine(u, pool_pre_ping=True, pool_recycle=3600)
-    # Requests run on several threads; timeout: wait for another thread's write instead of failing at once.
+    # Заявките вървят в няколко нишки; timeout: изчаква записа на друга нишка, вместо да се провали веднага.
     e = sa.create_engine(u, connect_args={"check_same_thread": False, "timeout": 15})
 
     @sa.event.listens_for(e, "connect")
-    def _foreign_keys(conn, _record):  # SQLite ignores ON DELETE CASCADE without this
+    def _foreign_keys(conn, _record):  # SQLite пренебрегва ON DELETE CASCADE без това
         conn.execute("PRAGMA foreign_keys = ON")
 
     return e
@@ -228,7 +227,7 @@ def add_later_columns(e: sa.Engine):
 
 
 def move_from_sqlite(e: sa.Engine):
-    """Copies the SQLite file's accounts into an empty MySQL database, once (the file is renamed after)."""
+    """Копира веднъж профилите от файла на SQLite в празна база данни на MySQL (след това файлът се преименува)."""
     path = sqlite_file()
     if not path.exists():
         return
@@ -237,10 +236,10 @@ def move_from_sqlite(e: sa.Engine):
             return
     old = connect(sa.URL.create("sqlite", database=str(path)))
     try:
-        meta.create_all(old)  # a file from before a table was added: empty, so nothing to copy, but selectable
+        meta.create_all(old)  # файл отпреди добавянето на таблица: празна, така че няма какво да се копира, но може да се чете
         add_later_columns(old)
         with old.connect() as src, e.begin() as dst:
-            for table in meta.sorted_tables:  # users before the tables that point at them
+            for table in meta.sorted_tables:  # потребителите преди таблиците, които сочат към тях
                 rows = [dict(r._mapping) for r in src.execute(sa.select(table))]
                 if rows:
                     dst.execute(sa.insert(table), rows)
@@ -257,7 +256,7 @@ def status() -> str:
 
 
 def reset():
-    """Tests: forget the engine so the next call connects to the current DATABASE_URL."""
+    """Тестове: забравя механизма, за да се свърже следващото извикване с текущия DATABASE_URL."""
     global _engine, _error, _tried
     if _engine is not None:
         _engine.dispose()
@@ -273,7 +272,7 @@ def get_setting(name: str) -> str | None:
 
 
 def set_setting(name: str, value: str):
-    # Not "update, insert if 0 rows": MySQL counts an update to the same value as 0 rows changed.
+    # Не "update, insert при 0 реда": MySQL брои обновяване със същата стойност като 0 променени реда.
     with engine().begin() as c:
         if c.execute(sa.select(settings.c.name).where(settings.c.name == name)).first():
             c.execute(sa.update(settings).where(settings.c.name == name).values(value=value))

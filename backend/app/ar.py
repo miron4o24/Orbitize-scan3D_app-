@@ -1,14 +1,13 @@
-"""The model in augmented reality: a page (PAGE) the app opens in Chrome shows the model, and its button puts it on a
-floor or table the camera sees, at its real size: Chrome's own AR (WebXR) through Google's model-viewer, else Google's
-Scene Viewer. Started straight from the app, Scene Viewer showed only a blank screen on the user's phone; the page
-shows the model first either way, and says what is missing when the phone cannot do AR.
-
-Scene Viewer wants metres, at most about 100,000 triangles (30-50k ideal), textures of at most 2048 x 2048 and at
-most about 10 MB; a scan has up to 250,000 triangles and textures up to 4096 px (a drill: 189k triangles, 10 MB). The
-phone downloads the file over the Funnel, so smaller loads sooner: FACES triangles, sent gzipped (44% smaller).
-
-The browser fetches the page and file without the app's token, so the app gets a signed link that expires
-(main.ar_link); the file is made then and kept in the job (ar_<tenths of a mm>.glb, and .glb.gz)."""
+"""Моделът в добавена реалност: страница (PAGE), която приложението отваря в Chrome, показва модела, а бутонът ѝ го
+поставя върху под или маса, видими за камерата, в реалния му размер: собственият AR на Chrome (WebXR) чрез
+model-viewer на Google, иначе Scene Viewer на Google. Стартиран директно от приложението, Scene Viewer показваше само
+празен екран на телефона на потребителя; страницата така или иначе първо показва модела и казва какво липсва, когато
+телефонът не поддържа AR. Scene Viewer иска метри, най-много около 100 000 триъгълника (идеално 30-50 хил.), текстури
+до 2048 x 2048 и най-много около 10 MB; едно сканиране има до 250 000 триъгълника и текстури до 4096 px (дрелка: 189
+хил. триъгълника, 10 MB). Телефонът изтегля файла през Funnel, затова по-малкият се зарежда по-скоро: FACES
+триъгълника, изпратени с gzip (с 44% по-малки). Браузърът взема страницата и файла без ключа на приложението, затова
+приложението получава подписан линк с изтичане (main.ar_link); файлът се създава тогава и се пази в задачата
+(ar_<десети от мм>.glb и .glb.gz)."""
 
 import gzip
 import html
@@ -43,15 +42,16 @@ def small_texture(jpeg: bytes, size: tuple[int, int]) -> tuple[bytes, tuple[int,
 
 
 def textured_part(p: dict, faces: int) -> dict:
-    """One textured part (texture.load) with at most `faces` triangles and the texture where it was. The seams'
-    copies of a point are merged first, so the surface decimates as one piece, with texture coordinates per corner."""
+    """Една част с текстура (texture.load) с най-много `faces` триъгълника и текстурата на мястото ѝ. Първо се сливат
+    копията на точка по шевовете, така че повърхността да се опрости като едно цяло, с координати на текстурата за
+    всеки ъгъл."""
     jpeg, size = small_texture(p["jpeg"], p["size"])
     p = p | {"jpeg": jpeg, "size": size}
     if len(p["faces"]) <= faces:
         return p
     points, weld = np.unique(p["vertices"], axis=0, return_inverse=True)
     f = weld.reshape(-1)[p["faces"].astype(np.int64)]
-    # Through an OBJ file: a mesh handed over as arrays has no texture for its corners, and the filter refuses it.
+    # Чрез файл OBJ: мрежа, подадена като масиви, няма текстура за ъглите си и филтърът я отказва.
     ms = pymeshlab.MeshSet()
     with tempfile.TemporaryDirectory() as d:
         (Path(d) / "m.mtl").write_text("newmtl t\nmap_Kd t.jpg\n")
@@ -67,7 +67,8 @@ def textured_part(p: dict, faces: int) -> dict:
     m = ms.current_mesh()
     points, f, uv = m.vertex_matrix(), m.face_matrix(), m.wedge_tex_coord_matrix()
     normals = trimesh.Trimesh(points, f, process=False).vertex_normals
-    # Split again: one vertex per distinct (point, uv), as glTF has texture coordinates per vertex.
+    # Разделяне отново: по един връх за всяка различна двойка (точка, uv), защото glTF има координати на текстурата за
+    # всеки връх.
     corner = f.reshape(-1)
     _, first, inverse = np.unique(np.c_[corner, np.round(uv * 1e6)], axis=0, return_index=True, return_inverse=True)
     return p | {"vertices": points[corner[first]], "normals": normals[corner[first]], "uv": uv[first],
@@ -75,14 +76,14 @@ def textured_part(p: dict, faces: int) -> dict:
 
 
 def make(job: Path, longest_mm: float) -> bytes:
-    """The GLB for Scene Viewer: base on the floor at the origin, longest side longest_mm, in metres."""
+    """GLB за Scene Viewer: основата е на пода в началото на координатите, най-дълга страна longest_mm, в метри."""
     mesh = trimesh.load(job / "model.ply", force="mesh")
     textured = TX.load(job)
     if textured:
         total = sum(len(p["faces"]) for p in textured)
         try:
             textured = [textured_part(p, max(500, FACES * len(p["faces"]) // total)) for p in textured]
-        except Exception as e:  # the vertex colours then, rather than no AR
+        except Exception as e:  # цветовете на върховете тогава, вместо да няма AR
             log.warning("AR file for %s without the texture: %s", job.name, e)
             textured = None
     if not textured and len(mesh.faces) > FACES:
@@ -91,8 +92,8 @@ def make(job: Path, longest_mm: float) -> bytes:
 
 
 def cached(job: Path, tenths: int) -> Path:
-    """The kept file for this size, made again when the model is newer (a scan processed again). One at a time: a
-    double tap must not write the same file twice at once."""
+    """Запазеният файл за този размер, създаден наново, когато моделът е по-нов (повторно обработено сканиране). По
+    един наведнъж: двойно натискане не бива да записва същия файл два пъти едновременно."""
     with _making:
         return _cached(job, tenths)
 
@@ -101,12 +102,12 @@ _making = threading.Lock()
 
 
 def _cached(job: Path, tenths: int) -> Path:
-    path = job / f"ar_{FACES // 1000}k_unlit_{tenths}.glb"  # FACES and unlit in the name: a change makes the files again
+    path = job / f"ar_{FACES // 1000}k_unlit_{tenths}.glb"  # FACES и unlit са в името: при промяна файловете се създават наново
     sources = [job / "model.ply", job / TX.NPZ]
     newest = max((s.stat().st_mtime for s in sources if s.exists()), default=0)
     if path.exists() and path.stat().st_mtime >= newest and zipped(path).exists():
         return path
-    for old in job.glob("ar_*.glb*"):  # one size kept: each change of size in the app makes a new one
+    for old in job.glob("ar_*.glb*"):  # пази се един размер: всяка промяна на размера в приложението създава нов файл
         old.unlink(missing_ok=True)
     data = make(job, tenths / 10)
     for target, content in ((zipped(path), gzip.compress(data, 6)), (path, data)):

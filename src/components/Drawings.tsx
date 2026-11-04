@@ -123,7 +123,7 @@ export function ShareDrawing() {
   return (
     <View style={s.vis}>
       <View style={s.pill}>
-        <Text style={s.pillText}>scanly…/s/a8f3</Text>
+        <Text style={s.pillText}>orbitize…/s/a8f3</Text>
         <View style={s.toggle}>
           <Animated.View style={[s.toggleTrack, { backgroundColor: c.accentSoft, borderColor: c.accent }, track]} />
           <Animated.View style={[s.toggleKnob, { backgroundColor: c.accent }, knob]} />

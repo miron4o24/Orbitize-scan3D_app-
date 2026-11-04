@@ -1,20 +1,14 @@
-"""Points, levels, badges and weekly challenges: what makes scanning feel rewarding (GET /me/progress).
-
-Points are events in the xp_events table (app/db.py), each at most once per user, kind and ref, so nothing counts
-twice and nothing earned is lost when a scan is deleted:
-
-- scan:      a finished scan (ref: the job id)
-- publish:   a scan put into the community (the job id)
-- liked:     a like from someone else on one's post (job:liker); taken back, the points stay
-- stress:    a stress test of one kind on one model (job:case, app/stress.py)
-- print:     a photo of a community model one printed (the job id)
-- printed:   someone else's photo of one's post (job:printer)
-- challenge: a weekly challenge done (week:challenge)
-
-Finished scans, posts and likes are already kept in the scans and likes tables: they become events when the
-progress is read (sync), which also gives accounts from before this their history, dated when it happened. Stress
-tests leave no other trace, so they are recorded as they happen. Levels and badges follow from the events. The
-week's three challenges are the same for everyone, picked from POOL by the week."""
+"""Точки, нива, значки и седмични предизвикателства: това, което прави сканирането приятно (GET /me/progress). Точките
+са събития в таблицата xp_events (app/db.py), всяко най-много веднъж за потребител, вид и ref, така че нищо не се
+брои двойно и нищо спечелено не се губи при изтриване на сканиране: scan: завършено сканиране (ref: номер на
+задачата); publish: сканиране, поставено в общността (номер на задачата); liked: харесване от друг на публикацията
+(job:liker), при оттегляне точките остават; stress: тест за здравина от един вид върху модел (job:case,
+app/stress.py); print: снимка на отпечатан модел от общността (номер на задачата); printed: снимка от друг на
+собствена публикация (job:printer); challenge: изпълнено седмично предизвикателство (week:challenge). Завършените
+сканирания, публикациите и харесванията вече се пазят в таблиците scans и likes: стават събития при четене на
+напредъка (sync), което дава история и на профили отпреди това, с датата на случването. Тестовете за здравина не
+оставят друга следа, затова се записват при случването им. Нивата и значките следват от събитията. Трите
+предизвикателства за седмицата са еднакви за всички и се избират от POOL според седмицата."""
 
 import random
 import threading
@@ -35,7 +29,7 @@ LEVELS = [(0, "Новак"), (100, "Любител"), (300, "Откривате�
           (2500, "Виртуоз"), (4000, "Легенда")]  # fmt: skip
 LEGEND_STEP = 2000  # past the last level, one more "Легенда" level per this many points
 
-# id, title, description, what is counted, how many, icon (Ionicons)
+# идентификатор, заглавие, описание, какво се брои, колко, икона (Ionicons)
 BADGES = [
     ("first_scan", "Първа стъпка", "Завършете първото си сканиране", "scan", 1, "cube-outline"),
     ("scans_10", "Колекционер", "10 завършени сканирания", "scan", 10, "albums-outline"),
@@ -52,7 +46,7 @@ BADGES = [
     ("challenge_10", "Неудържим", "10 изпълнени предизвикателства", "challenge", 10, "trophy-outline"),
 ]
 
-# id, what is counted in the week, how many, bonus points, title, icon
+# идентификатор, какво се брои през седмицата, колко, бонус точки, заглавие, икона
 POOL = [
     ("scan2", "scan", 2, 100, "Сканирайте 2 предмета", "scan-outline"),
     ("scan3", "scan", 3, 150, "Сканирайте 3 предмета", "scan-outline"),
@@ -65,17 +59,17 @@ POOL = [
     ("liked3", "liked", 3, 80, "Получете 3 харесвания", "heart"),
 ]
 PER_WEEK = 3
-WEEK_OFFSET_S = 2 * 3600  # weeks start on Monday at midnight in Bulgaria (winter time: an hour off in summer)
+WEEK_OFFSET_S = 2 * 3600  # седмиците започват в понеделник в полунощ в България (зимно време: час разлика през лятото)
 
 LABELS = {"scan": "Завършено сканиране", "publish": "Публикуване в общността", "liked": "Харесване от друг",
           "stress": "Стрес тест", "challenge": "Седмично предизвикателство", "print": "Снимка на отпечатък",
           "printed": "Някой отпечата ваш модел"}  # fmt: skip
 
-_lock = threading.Lock()  # one server process: syncs one at a time, so an event is never added twice
+_lock = threading.Lock()  # един процес на сървъра: синхронизациите са една по една, така че събитие никога не се добавя двойно
 
 
 def level_of(points: int) -> dict:
-    """The level for `points`: number (from 1), name, and the points where it starts and the next one starts."""
+    """Нивото за `points`: номер (от 1), име и точките, от които започват то и следващото."""
     n = sum(1 for floor, _ in LEVELS if points >= floor)
     if n < len(LEVELS):
         return {"number": n, "name": LEVELS[n - 1][1], "from": LEVELS[n - 1][0], "to": LEVELS[n][0]}
@@ -85,23 +79,23 @@ def level_of(points: int) -> dict:
 
 
 def week_of(ts: float) -> tuple[str, int, int]:
-    """The week holding `ts`: its key ("2026-W44"), start and end (Unix seconds)."""
+    """Седмицата, съдържаща `ts`: ключът ѝ ("2026-W44"), начало и край (секунди по Unix)."""
     day = int((ts + WEEK_OFFSET_S) // 86400)
-    monday = day - (day + 3) % 7  # 1 January 1970 was a Thursday
+    monday = day - (day + 3) % 7  # 1 януари 1970 г. беше четвъртък
     start = monday * 86400 - WEEK_OFFSET_S
     iso = datetime.fromtimestamp(monday * 86400, timezone.utc).isocalendar()
     return f"{iso.year}-W{iso.week:02d}", start, start + 7 * 86400
 
 
 def challenges_of(week: str) -> list[tuple]:
-    """The week's challenges: PER_WEEK of POOL, each counting something different."""
-    rng = random.Random(f"scanly-{week}")
+    """Предизвикателствата за седмицата: PER_WEEK от POOL, всяко брои нещо различно."""
+    rng = random.Random(f"orbitize-{week}")
     families = sorted({c[1].split(":")[0] for c in POOL})
     rng.shuffle(families)
     return [rng.choice([c for c in POOL if c[1].split(":")[0] == f]) for f in families[:PER_WEEK]]
 
 
-# --- Events -----------------------------------------------------------------------------------------------------
+# --- Събития --------------------------------------------------------------------------------------------------------
 
 
 def _add(c, have: set, user_id: str, kind: str, ref: str, points: int, created: float):
@@ -123,8 +117,8 @@ def stress_done(user_id: str, job_id: str, case: str):
 
 
 def sync(user_id: str):
-    """Events for finished scans, posts and likes received that have none yet; then the bonus of each challenge done
-    this week or last week (the app may not have been opened since)."""
+    """Събития за завършени сканирания, публикации и получени харесвания, които още нямат такива; после бонусът за
+    всяко предизвикателство, изпълнено тази или миналата седмица (приложението може да не е отваряно оттогава)."""
     with _lock, need_db().begin() as c:
         have = _have(c, user_id)
         for r in c.execute(sa.select(db.scans).where(db.scans.c.user_id == user_id)).all():
@@ -157,7 +151,7 @@ def sync(user_id: str):
 
 
 def week_counts(c, user_id: str, start: int, end: int) -> dict:
-    """What the challenges count, between start and end."""
+    """Какво броят предизвикателствата между start и end."""
     rows = c.execute(sa.select(db.xp_events.c.kind, db.xp_events.c.ref)
                      .where(db.xp_events.c.user_id == user_id, db.xp_events.c.created >= start,
                             db.xp_events.c.created < end)).all()  # fmt: skip
@@ -174,7 +168,7 @@ def week_counts(c, user_id: str, start: int, end: int) -> dict:
     return out
 
 
-# --- The progress -----------------------------------------------------------------------------------------------
+# --- Напредъкът -----------------------------------------------------------------------------------------------------
 
 
 def badges(events: list) -> list[dict]:
@@ -183,7 +177,7 @@ def badges(events: list) -> list[dict]:
         by_kind.setdefault(e.kind, []).append(e.created)
     for times in by_kind.values():
         times.sort()
-    # Every kind of stress test on one model: when its last kind was done, for the first model to get them all.
+    # Всеки вид тест за здравина на един модел: кога е направен последният вид, за първия модел, получил всички.
     cases: dict[str, dict[str, int]] = {}
     for e in events:
         if e.kind == "stress":
@@ -226,7 +220,7 @@ def progress(user_id: str) -> dict:
 
 
 def points_of(user_ids: list[str]) -> dict[str, int]:
-    """Points per user, for showing authors' levels in the community."""
+    """Точки по потребител, за показване на нивата на авторите в общността."""
     if not user_ids:
         return {}
     with need_db().connect() as c:

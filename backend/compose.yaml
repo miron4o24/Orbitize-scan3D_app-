@@ -1,7 +1,7 @@
 services:
   backend:
     build: .
-    image: scan3d-backend
+    image: orbitize-backend
     ports:
       - "${PORT:-8000}:8000"
     environment:
@@ -9,10 +9,10 @@ services:
       MAX_IMAGE_SIZE: ${MAX_IMAGE_SIZE:-1600}
       MAX_VIDEO_MB: ${MAX_VIDEO_MB:-600}
     volumes:
-      - scan3d-data:/data
+      - orbitize-data:/data
     restart: unless-stopped
     # Keep the host alive if a big scan needs more RAM than available; the job then fails with an OOM message.
     mem_limit: ${MEM_LIMIT:-4g}
 
 volumes:
-  scan3d-data:
+  orbitize-data:

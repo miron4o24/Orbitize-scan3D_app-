@@ -1,10 +1,9 @@
-"""Free and Pro (accounts.is_pro). Free accounts test FREE_LIMITS["stress"] models for strength, see FREE_LIMITS["ar"]
-scans in AR and try FREE_LIMITS["ai"] AI model; Pro has no limits. A model used again counts once (db.plan_uses:
-account, kind, job). An AI model that failed does not count: the trial is for a model, not for an attempt.
-The API token (the admin; guests on servers without accounts) has no limits.
-
-check() turns a request away early, before any work; record() counts it once the work succeeded, and checks again
-under a lock, so two requests at once cannot both take the last free use."""
+"""Безплатен план и Pro (accounts.is_pro). Безплатните профили тестват за здравина FREE_LIMITS["stress"] модела,
+виждат в AR FREE_LIMITS["ar"] сканирания и пробват FREE_LIMITS["ai"] AI модел; Pro няма ограничения. Модел,
+използван отново, се брои веднъж (db.plan_uses: профил, вид, задача). Неуспешен AI модел не се брои: пробата е за
+модел, а не за опит. API ключът (администраторът; гостите на сървъри без профили) няма ограничения. check() отказва
+заявка рано, преди всякаква работа; record() я брои след успеха на работата и проверява отново под заключване, така
+че две едновременни заявки да не вземат последното безплатно използване."""
 
 import threading
 import time
@@ -36,7 +35,7 @@ def _limited(p: Principal) -> bool:
 
 
 def check(p: Principal, kind: str, ref: str):
-    """Raises 402 when a free account has used its limit and `ref` is not one of the uses."""
+    """Хвърля 402, когато безплатен профил е изчерпал ограничението си и `ref` не е сред използваните."""
     if not _limited(p):
         return
     with need_db().connect() as c:
@@ -46,7 +45,8 @@ def check(p: Principal, kind: str, ref: str):
 
 
 def record(p: Principal, kind: str, ref: str):
-    """Counts the use (once per ref). Pro's uses are counted too, as a record; only free accounts are held to it."""
+    """Брои използването (веднъж за ref). Използванията на Pro също се броят като запис; ограничават се само
+    безплатните профили."""
     if not p.user_id or p.admin:
         return
     limited = _limited(p)
@@ -60,8 +60,8 @@ def record(p: Principal, kind: str, ref: str):
 
 
 def summary(user_id: str, pro: bool) -> dict:
-    """For the profile: per kind, how many used and the limit (None: unlimited), and which models (free only: the app
-    shows whether a model is one of them)."""
+    """За профила: за всеки вид колко са използвани и какво е ограничението (None: без ограничение) и кои модели (само
+    при безплатен: приложението показва дали модел е сред тях)."""
     with need_db().connect() as c:
         out = {}
         for kind, limit in FREE_LIMITS.items():

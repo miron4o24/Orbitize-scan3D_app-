@@ -61,7 +61,7 @@ export default function Pro() {
 
   return (
     <Screen>
-      <Header title="Scanly Pro" />
+      <Header title="Orbitize Pro" />
       <Appear index={1}>
         <Card style={s.list}>
           {BENEFITS.map((b) => (
