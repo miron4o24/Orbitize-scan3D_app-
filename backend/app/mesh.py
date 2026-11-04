@@ -1,13 +1,9 @@
-"""Dense point cloud + object masks -> clean, watertight, print-ready mesh.
-
-Pure numpy/trimesh/pymeshlab code with no COLMAP/OpenMVS dependency, so it is unit-testable.
-Coordinates after `clean_cloud`: +Z is up, the object stands on z = ground_z (when a table was found).
-
-Two sources of shape, combined in `poisson`:
-- the dense points that fall inside the object's outline in most frames (detail, concave parts);
-- the visual hull: the volume inside the object's outline in (almost) every frame. It needs no texture, so it
-  fills in dark, plain or shiny parts where dense matching finds few points.
-"""
+"""Гъст облак от точки + маски на предмета -> чиста, затворена мрежа, готова за печат. Чист код с
+numpy/trimesh/pymeshlab без зависимост от COLMAP/OpenMVS, за да може да се тества. Координати след `clean_cloud`:
++Z е нагоре, предметът стои върху z = ground_z (при намерена маса). Два източника на форма, съчетани в `poisson`:
+гъстите точки, попадащи в очертанието на предмета в повечето кадри (детайл, вдлъбнати части); обвивката от
+очертанията: обемът в очертанието на предмета в (почти) всеки кадър. Тя не иска шарка, затова запълва тъмни,
+еднообразни или лъскави части, където гъстото съпоставяне намира малко точки."""
 
 import json
 import struct
@@ -25,13 +21,13 @@ from skimage import measure
 from . import parallel as PAR
 
 UP = np.array([0.0, 0.0, 1.0])
-OBJECT_AGREE = 0.7  # a dense point is on the object if it is inside the outline in >= 70% of the frames showing it
-HULL_AGREE = 0.75  # a voxel is inside the hull if it is inside the outline in >= 75% of them (masks are imperfect)
+OBJECT_AGREE = 0.7  # гъста точка е върху предмета, ако е в очертанието в >= 70% от кадрите, които я показват
+HULL_AGREE = 0.75  # воксел е в обвивката, ако е в очертанието в >= 75% от тях (маските не са идеални)
 MIN_VIEWS = 5
 
 
 class MeshError(Exception):
-    """User-facing reconstruction problem."""
+    """Проблем при възстановяването за потребителя."""
 
 
 @dataclass
@@ -40,13 +36,13 @@ class Cloud:
     normals: np.ndarray  # (n, 3)
     colors: np.ndarray  # (n, 4) float 0..1
     ground_z: float | None = None
-    to_up: np.ndarray | None = None  # rotation world -> these coordinates
-    weights: np.ndarray | None = None  # per point, for Poisson (default 1)
+    to_up: np.ndarray | None = None  # завъртане свят -> тези координати
+    weights: np.ndarray | None = None  # за точка, за Поасон (по подразбиране 1)
 
 
 @dataclass
 class Views:
-    """Pinhole cameras, COLMAP convention: pixel = K (R X + t), x right, y down, z forward."""
+    """Камери с точков отвор, конвенция на COLMAP: пиксел = K (R X + t), x надясно, y надолу, z напред."""
 
     R: np.ndarray  # (n, 3, 3)
     t: np.ndarray  # (n, 3)
@@ -62,20 +58,20 @@ class Views:
 
     @property
     def dirs(self) -> np.ndarray:
-        return self.R[:, 2]  # camera +Z (forward) in world
+        return self.R[:, 2]  # +Z на камерата (напред) в света
 
     @property
     def ups(self) -> np.ndarray:
-        return -self.R[:, 1]  # camera -Y (image up) in world
+        return -self.R[:, 1]  # -Y на камерата (нагоре в изображението) в света
 
 
 def silhouette_consistency(
     views: Views, masks: list[np.ndarray], scale: int, cells: int = 64, agree: float = HULL_AGREE
 ) -> np.ndarray:
-    """Per frame: overlap (IoU) of its object mask with the visual hull of all frames, projected back into it.
-
-    With correct camera poses the hull fills every mask; with wrong ones the masks' cones barely intersect and the
-    hull shrinks to a sliver (a camera solution that put 53 frames "on target" gave a wedge). NaN: no object."""
+    """За всеки кадър: припокриване (IoU) на маската на предмета с обвивката от всички кадри, проектирана обратно в
+    него. При верни положения на камерите обвивката запълва всяка маска; при грешни конусите на маските едва се
+    пресичат и обвивката се свива до тънка ивица (решение, което поставяше 53 кадъра "в целта", даде клин). NaN:
+    няма предмет."""
     iou = np.full(len(views), np.nan)
     grid = hull_grid(views, masks, scale, cells, agree)
     if grid is None:
@@ -87,8 +83,8 @@ def silhouette_consistency(
 
 
 def hull_grid(views: Views, masks: list[np.ndarray], scale: int, cells: int = 64, agree: float = HULL_AGREE):
-    """Voxel centres inside the visual hull of all frames, on a cells³ grid around where the frames' viewing rays
-    through their mask centres meet, and the voxel size. None without enough frames that show the object."""
+    """Центрове на воксели в обвивката от всички кадри, върху мрежа cells³ около мястото, където се срещат лъчите през
+    центровете на маските, и размерът на воксела. None без достатъчно кадри с предмета."""
     n = len(views)
     rays, sizes = [], []
     for i, (R, t, (fx, fy, cx, cy), m) in enumerate(zip(views.R, views.t, views.K, masks)):
@@ -98,7 +94,7 @@ def hull_grid(views: Views, masks: list[np.ndarray], scale: int, cells: int = 64
         u, v = (xs.mean() + 0.5) * scale, (ys.mean() + 0.5) * scale
         d = R.T @ [(u - cx) / fx, (v - cy) / fy, 1.0]
         rays.append((i, -R.T @ t, d / np.linalg.norm(d)))
-        sizes.append(0.5 * max(np.ptp(xs), np.ptp(ys)) * scale / fx)  # tan of the object's angular half size
+        sizes.append(0.5 * max(np.ptp(xs), np.ptp(ys)) * scale / fx)  # тангенс на ъгловия полуразмер на предмета
     if len(rays) < 3:
         return None
     c = np.array([r[1] for r in rays])
@@ -117,7 +113,8 @@ def hull_grid(views: Views, masks: list[np.ndarray], scale: int, cells: int = 64
 
 
 def outline_iou(occ: np.ndarray, step: float, R, t, K, m: np.ndarray, scale: int) -> float:
-    """Overlap (IoU) of a frame's object mask with hull voxels `occ` projected into it; NaN if it shows no object."""
+    """Припокриване (IoU) на маската на кадър с воксели от обвивката `occ`, проектирани в него; NaN, ако не показва
+    предмет."""
     fx, fy, cx, cy = K
     fg = m > 127
     if fg.sum() < 10:
@@ -130,7 +127,7 @@ def outline_iou(occ: np.ndarray, step: float, R, t, K, m: np.ndarray, scale: int
         v = np.floor((fy * Xc[:, 1] / Xc[:, 2] + cy) / scale).astype(np.int64)
         ok = (u >= 0) & (v >= 0) & (u < m.shape[1]) & (v < m.shape[0])
         hull[v[ok], u[ok]] = True
-        # Voxel centres leave gaps between them: close them by the voxels' size on screen.
+        # Центровете на вокселите оставят празнини: затварят се с размера на вокселите на екрана.
         px = step * fx / np.median(Xc[:, 2]) / scale
         if px > 1:
             hull = ndimage.binary_closing(hull, iterations=int(np.ceil(px)))
@@ -142,23 +139,23 @@ def subset(views: Views, keep: np.ndarray) -> Views:
 
 
 def consistent_frames(views: Views, masks: list[np.ndarray], scale: int, min_iou: float = 0.5) -> np.ndarray:
-    """Frames whose camera pose agrees with the others: their mask matches the hull of the remaining frames.
-
-    A few badly placed frames shrink the hull and make good frames look bad too, so the worst are dropped a quarter
-    at a time and the hull is rebuilt. Returns a mask over the views."""
+    """Кадри, чието положение на камерата е съгласувано с другите: маската им съвпада с обвивката от останалите кадри.
+    Няколко зле разположени кадъра свиват обвивката и правят и добрите да изглеждат зле, затова най-лошите отпадат с
+    по четвърт и обвивката се изгражда отново. Връща маска върху изгледите."""
     keep = np.array([(m > 127).sum() >= 10 for m in masks])
     for _ in range(8):
         idx = np.flatnonzero(keep)
         if len(idx) < 3:
             return np.zeros(len(views), bool)
         iou = silhouette_consistency(subset(views, keep), [masks[i] for i in idx], scale)
-        bad = np.flatnonzero(~(iou >= min_iou))  # NaN counts as bad
+        bad = np.flatnonzero(~(iou >= min_iou))  # NaN се брои за лошо
         if len(bad) == 0:
             return keep
         worst = bad[np.argsort(np.nan_to_num(iou[bad], nan=-1))][: max(1, len(idx) // 4)]
         keep[idx[worst]] = False
-    # Not settled: only the frames that agree with the last hull count (a wrong solution must not score by the
-    # frames left over after dropping: a model where every frame matched its outline by 1-2% once "kept" 43).
+    # Неустановено: броят се само кадрите, съгласувани с последната обвивка (грешно решение не бива да получава оценка
+    # от кадрите, останали след отпадането: модел, при който всеки кадър съвпадаше с очертанието си с 1-2%, веднъж
+    # "запази" 43).
     idx = np.flatnonzero(keep)
     iou = silhouette_consistency(subset(views, keep), [masks[i] for i in idx], scale)
     keep[idx[~(iou >= min_iou)]] = False
@@ -166,12 +163,11 @@ def consistent_frames(views: Views, masks: list[np.ndarray], scale: int, min_iou
 
 
 def silhouette_votes(X: np.ndarray, views: Views, masks: list[np.ndarray], scale: int):
-    """Per point: in how many frames it is in the picture, and in how many of those inside the object's outline.
-
-    masks[i] is views[i]'s mask (uint8, object > 127) at 1/scale of the frame size."""
+    """За всяка точка: в колко кадъра е в изображението и в колко от тях е в очертанието на предмета. masks[i] е
+    маската на views[i] (uint8, предмет > 127) при 1/scale от размера на кадъра."""
     n_in = np.zeros(len(X), np.int32)
     n_fg = np.zeros(len(X), np.int32)
-    for s in range(0, len(X), 1_000_000):  # bounded memory for big clouds and grids
+    for s in range(0, len(X), 1_000_000):  # ограничена памет за големи облаци и мрежи
         Xs = X[s : s + 1_000_000]
 
         def look(frame):
@@ -180,7 +176,7 @@ def silhouette_votes(X: np.ndarray, views: Views, masks: list[np.ndarray], scale
             z = np.where(Xc[:, 2] > 1e-9, Xc[:, 2], np.nan)
             u = np.floor((fx * Xc[:, 0] / z + cx) / scale)
             v = np.floor((fy * Xc[:, 1] / z + cy) / scale)
-            ok = (u >= 0) & (v >= 0) & (u < m.shape[1]) & (v < m.shape[0])  # NaN (behind the camera) is False
+            ok = (u >= 0) & (v >= 0) & (u < m.shape[1]) & (v < m.shape[0])  # NaN (зад камерата) е False
             return ok, m[v[ok].astype(np.int64), u[ok].astype(np.int64)] > 127
 
         for ok, inside in PAR.each(look, zip(views.R, views.t, views.K, masks)):
@@ -190,7 +186,7 @@ def silhouette_votes(X: np.ndarray, views: Views, masks: list[np.ndarray], scale
 
 
 def rotation_to(a: np.ndarray, b: np.ndarray = UP) -> np.ndarray:
-    """Rotation matrix turning unit vector a onto unit vector b (Rodrigues)."""
+    """Матрица на завъртане, обръщаща единичния вектор a към единичния вектор b (Родригес)."""
     a = a / np.linalg.norm(a)
     v, c = np.cross(a, b), float(a @ b)
     if np.linalg.norm(v) < 1e-9:
@@ -206,10 +202,8 @@ def statistical_inliers(points: np.ndarray, k: int = 16, n_std: float = 2.0) -> 
 
 
 def find_ground(points: np.ndarray, thresh: float, max_tilt_deg: float = 20, iters: int = 400, seed: int = 0):
-    """RANSAC for a near-horizontal plane n.p + d = 0 holding >= 10% of points with < 5% below it.
-
-    The "nothing below" rule keeps a flat step or platform inside the object from being taken for the table.
-    Returns (n, d) or None."""
+    """RANSAC за почти хоризонтална равнина n.p + d = 0, съдържаща >= 10% от точките, с < 5% под нея. Правилото "нищо
+    отдолу" пречи плоско стъпало или платформа в предмета да се сметне за маса. Връща (n, d) или None."""
     rng = np.random.default_rng(seed)
     best, best_count = None, int(0.1 * len(points))
     cos_tilt = np.cos(np.radians(max_tilt_deg))
@@ -233,10 +227,10 @@ def find_ground(points: np.ndarray, thresh: float, max_tilt_deg: float = 20, ite
 
 def estimate_up(cam_centers: np.ndarray, cam_dirs: np.ndarray, cam_ups: np.ndarray) -> np.ndarray:
     mean_up = cam_ups.mean(0)
-    if np.linalg.norm(mean_up) > 0.8:  # photos held upright (phone app): image "up" is gravity's opposite
+    if np.linalg.norm(mean_up) > 0.8:  # снимки с изправен телефон (приложението): "нагоре" в изображението е обратно на гравитацията
         return mean_up
-    # Rolled cameras: use the orbit instead. Cameras circle the object, so their best-fit plane is horizontal,
-    # and people photograph objects from slightly above, so the cameras look down on average.
+    # Наклонени камери: вместо това се използва обиколката. Камерите обикалят предмета, затова най-добре пасващата им
+    # равнина е хоризонтална, а хората снимат предмети леко отгоре, така че камерите средно гледат надолу.
     n = np.linalg.svd(cam_centers - cam_centers.mean(0))[2][2]
     return n if cam_dirs.mean(0) @ n <= 0 else -n
 
@@ -250,13 +244,13 @@ def clean_cloud(
     mask_scale: int,
     up: np.ndarray | None = None,
 ) -> Cloud:
-    """The object's points, levelled on the table: everything outside the object's outline (table, background,
-    floaters) is dropped by the masks, which works whatever the object, background or camera path.
-    up: which way is up, when known (the phone's gravity sensor); else it is guessed from the cameras."""
+    """Точките на предмета, изравнени по масата: всичко извън очертанието (маса, фон, носещи се точки) отпада чрез
+    маските, което работи при всякакъв предмет, фон или път на камерата. up: накъде е нагоре, когато е известно
+    (сензорът за гравитация на телефона); иначе се предполага от камерите."""
     n_in, n_fg = silhouette_votes(points, views, masks, mask_scale)
     on_object = (n_in >= min(MIN_VIEWS, len(views))) & (n_fg >= OBJECT_AGREE * n_in)
     if on_object.sum() < 300:
-        raise MeshError(  # only on_object.sum() < 300 points on the object
+        raise MeshError(  # само on_object.sum() < 300 точки върху предмета
             "Предметът не можа да се отдели от фона. Дръжте целия предмет в кръга на екрана и го сложете на подложка "
             "в различен цвят от него."
         )
@@ -267,8 +261,8 @@ def clean_cloud(
     lo, hi = np.percentile(obj, 2, axis=0), np.percentile(obj, 98, axis=0)
     size = float((hi - lo).max())
 
-    # The table: a level plane among the other points around and just below the object. Levelling on it makes the
-    # flat base truly flat.
+    # Масата: хоризонтална равнина сред другите точки около и точно под предмета. Изравняването по нея прави плоската
+    # основа наистина плоска.
     ground_z = None
     thresh = 0.015 * size
     mid = (lo + hi) / 2
@@ -279,17 +273,17 @@ def clean_cloud(
         n, d = plane
         R2 = rotation_to(n)
         R, pts, cams = R2 @ R, pts @ R2.T, cams @ R2.T
-        ground_z = -d  # n.p + d = 0  ->  z' = -d after rotating n onto +Z
+        ground_z = -d  # n.p + d = 0  ->  z' = -d след обръщане на n към +Z
 
     keep = on_object & (pts[:, 2] > ground_z + thresh if ground_z is not None else True)
     pts, colors = pts[keep], colors[keep]
     nrm = normals[keep] @ R.T if normals is not None else estimate_normals(pts)
     inl = statistical_inliers(pts)
     pts, colors, nrm = pts[inl], colors[inl], nrm[inl]
-    # Normals without a side (estimated, or from a cloud that has none) face the nearest camera. OpenMVS's already face
-    # the frame that measured them (96-99.6% their nearest camera on real scans, against half for sideless ones) and are
-    # kept: turned to the nearest camera, a mug's inner wall faced the camera behind it, outside the mug (4% of its
-    # points, 14% of a temple's, between its columns).
+    # Нормали без страна (оценени или от облак без такива) гледат към най-близката камера. Тези на OpenMVS вече гледат
+    # към кадъра, който ги е измерил (96-99,6% към най-близката камера при реални сканирания, спрямо половината при
+    # тези без страна), и се запазват: обърната към най-близката камера, вътрешната стена на чаша гледаше към камерата
+    # зад нея, извън чашата (4% от точките ѝ, 14% при храм, между колоните).
     _, idx = cKDTree(cams).query(pts)
     flip = np.einsum("ij,ij->i", nrm, cams[idx] - pts) < 0
     if normals is None or flip.mean() > 0.2:
@@ -298,8 +292,9 @@ def clean_cloud(
 
 
 def _hull_fraction(views: Views, masks, scale: int, to_up: np.ndarray, axes: list[np.ndarray]) -> np.ndarray:
-    """For each voxel centre (grid in the up frame): share of the frames showing it that have it inside the outline."""
-    grid = np.stack(np.meshgrid(*axes, indexing="ij"), -1).reshape(-1, 3) @ to_up  # back to world
+    """За всеки център на воксел (мрежа в системата с посока нагоре): дял от кадрите, които го показват, с него в
+    очертанието."""
+    grid = np.stack(np.meshgrid(*axes, indexing="ij"), -1).reshape(-1, 3) @ to_up  # обратно към света
     n_in, n_fg = silhouette_votes(grid, views, masks, scale)
     frac = np.where(n_in >= min(MIN_VIEWS, len(views)), n_fg / np.maximum(n_in, 1), 0.0)
     return frac.reshape([len(a) for a in axes])
@@ -314,30 +309,29 @@ def visual_hull(
     agree: float = HULL_AGREE,
     limit: Callable[[np.ndarray], np.ndarray] | None = None,
 ) -> trimesh.Trimesh | None:
-    """Closed mesh of the volume inside the object's outline in (almost) all frames, standing on the table.
-
-    agree: the share of frames that must have a voxel inside. Below 1 it forgives bad masks and poses, but widens
-    whatever only a few frames see narrow: an oval's short side, filmed all around, came out 17% wide at 0.75.
-    limit: for world points inside the outlines, the most their voxel's share may be, from other evidence (AI depth:
-    below `agree` where it sees nothing). Smooth, so the surface it cuts is too."""
+    """Затворена мрежа на обема в очертанието на предмета в (почти) всички кадри, стояща върху масата. agree: делът от
+    кадрите, в които вокселът трябва да е вътре. Под 1 прощава лоши маски и положения, но разширява каквото само
+    няколко кадъра виждат тясно: късата страна на овал, заснет отвсякъде, излизаше с 17% по-широка при 0,75. limit: за
+    световни точки в очертанията, най-големият дял на воксела им от друго доказателство (AI дълбочина: под `agree`,
+    където не вижда нищо). Гладко, така че и отрязаната повърхност е гладка."""
     found = hull_volume(views, masks, scale, cloud, cells, agree)
     if found is None:
         return None
     frac, axes, step = found
     if limit is not None:
         inside, points = voxels_inside(frac, axes, agree)
-        frac = limited(frac, inside, limit(points @ cloud.to_up))  # back to world
+        frac = limited(frac, inside, limit(points @ cloud.to_up))  # обратно към света
     return hull_mesh(frac, axes, step, agree)
 
 
 def hull_volume(
     views: Views, masks, scale: int, cloud: Cloud, cells: int = 160, agree: float = HULL_AGREE
 ) -> tuple[np.ndarray, list[np.ndarray], float] | None:
-    """The visual hull as a grid in the cloud's coordinates: per voxel, the share of the frames showing it that have
-    it inside the outline. Returns (shares, the grid's axes, cell size), None if no voxel reaches `agree`."""
+    """Обвивката като мрежа в координатите на облака: за воксел делът от кадрите, които го показват, с него в
+    очертанието. Връща (дялове, осите на мрежата, размер на клетка), None, ако нито един воксел не достига `agree`."""
     lo, hi = np.percentile(cloud.points, 1, axis=0), np.percentile(cloud.points, 99, axis=0)
     floor = floor_z(cloud)
-    # Coarse pass over a generous box (parts without dense points may stick out), then a fine one around the hull.
+    # Груб проход върху щедра кутия (части без гъсти точки може да стърчат), после фин около обвивката.
     pad = 0.5 * (hi - lo).max()
     lo, hi = lo - pad, hi + pad
     lo[2] = floor
@@ -348,7 +342,7 @@ def hull_volume(
         inside = np.argwhere(frac >= agree)
         if len(inside) == 0:
             return None
-        # Next pass: the occupied box plus two coarse cells; nothing below the table.
+        # Следващ проход: заетата кутия плюс две груби клетки; нищо под масата.
         lo = np.array([axes[k][inside[:, k].min()] for k in range(3)]) - 2 * step
         hi = np.array([axes[k][inside[:, k].max()] for k in range(3)]) + 2 * step
         lo[2] = max(lo[2], floor)
@@ -356,13 +350,13 @@ def hull_volume(
 
 
 def voxels_inside(frac: np.ndarray, axes: list[np.ndarray], agree: float = HULL_AGREE):
-    """(indices, centres in the grid's coordinates) of the voxels inside the hull."""
+    """(индекси, центрове в координатите на мрежата) на вокселите в обвивката."""
     inside = np.argwhere(frac >= agree)
     return inside, np.stack([axes[k][inside[:, k]] for k in range(3)], -1)
 
 
 def limited(frac: np.ndarray, inside: np.ndarray, limit: np.ndarray) -> np.ndarray:
-    """The shares, at most `limit` at the voxels `inside` (see visual_hull)."""
+    """Дяловете, най-много `limit` при вокселите `inside` (вижте visual_hull)."""
     out = frac.copy()
     i, j, k = inside.T
     out[i, j, k] = np.minimum(out[i, j, k], limit)
@@ -371,22 +365,21 @@ def limited(frac: np.ndarray, inside: np.ndarray, limit: np.ndarray) -> np.ndarr
 
 def free_space_limit(views: Views, points: np.ndarray, normals: np.ndarray, probes: np.ndarray, margin: float,
                      agree: float = HULL_AGREE, cell: int = 4) -> np.ndarray:  # fmt: skip
-    """For world points inside the hull (probes): the most their hull share may be (see visual_hull), from the
-    measured surface points (world, normals facing the side they were seen from).
-
-    A frame that measured a surface point saw through everything between it and the point: a cup's inside, seen
-    from above, and a handle's hole are empty, though no outline shows it (the hull fills them; a mug came out solid).
-    Per frame, the points facing it make a depth map (the nearest per `cell` pixels); a probe in front of that depth
-    is seen through by this frame, one at it is on the surface, and one behind it is hidden from it and gets no vote
-    (so the frames that cannot see into a cup do not keep it full). The votes are averaged, each clipped to two
-    margins, as in depth.carve_limit; probes no frame sees keep 1."""
+    """За световни точки в обвивката (проби): най-големият им дял в нея (вижте visual_hull), от измерените точки на
+    повърхността (свят, нормали към страната, от която са видени). Кадър, измерил точка от повърхността, е видял през
+    всичко между него и точката: вътрешността на чаша отгоре и отворът на дръжка са празни, макар очертание да не го
+    показва (обвивката ги запълва; чаша излизаше плътна). За всеки кадър обърнатите към него точки дават карта на
+    дълбочината (най-близката на всеки `cell` пиксела); проба пред тази дълбочина се вижда през нея от този кадър,
+    проба при нея е върху повърхността, а проба зад нея е скрита и не получава глас (така кадрите, които не виждат в
+    чаша, не я пазят пълна). Гласовете се осредняват, всеки ограничен до две граници, както в depth.carve_limit;
+    проби, невидени от никой кадър, запазват 1."""
     seen = np.zeros(len(probes), np.int32)
     total = np.zeros(len(probes))
     for R, t, (fx, fy, cx, cy) in zip(views.R, views.t, views.K):
         Xc = points @ R.T + t
         z = Xc[:, 2]
         ok = (z > 1e-9) & (np.einsum("ij,ij->i", normals, -R.T @ t - points) > 0)
-        w, h = int(2 * cx) // cell + 1, int(2 * cy) // cell + 1  # undistorted frames: principal point in the middle
+        w, h = int(2 * cx) // cell + 1, int(2 * cy) // cell + 1  # коригирани кадри: главната точка е в средата
         u = np.floor((fx * Xc[ok, 0] / z[ok] + cx) / cell).astype(np.int64)
         v = np.floor((fy * Xc[ok, 1] / z[ok] + cy) / cell).astype(np.int64)
         inb = (u >= 0) & (v >= 0) & (u < w) & (v < h)
@@ -399,7 +392,7 @@ def free_space_limit(views: Views, points: np.ndarray, normals: np.ndarray, prob
         pv = np.floor((fy * Pc[idx, 1] / pz[idx] + cy) / cell).astype(np.int64)
         inb = (pu >= 0) & (pv >= 0) & (pu < w) & (pv < h)
         idx, pu, pv = idx[inb], pu[inb], pv[inb]
-        far = depth[pv, pu] - pz[idx]  # how far beyond the probe this frame measured the surface
+        far = depth[pv, pu] - pz[idx]  # колко отвъд пробата този кадър е измерил повърхността
         vote = np.isfinite(far) & (far > -margin)
         seen[idx[vote]] += 1
         total[idx[vote]] += np.clip(far[vote], -2 * margin, 2 * margin)
@@ -409,8 +402,9 @@ def free_space_limit(views: Views, points: np.ndarray, normals: np.ndarray, prob
 
 
 def hull_mesh(frac: np.ndarray, axes: list[np.ndarray], step: float, agree: float = HULL_AGREE):
-    """The closed surface where the shares cross `agree` (largest part, normals outward), None if nothing does."""
-    # Zero border so the surface closes at the box edges; the bottom closes on the table.
+    """Затворената повърхност, където дяловете пресичат `agree` (най-голямата част, нормали навън), None, ако няма
+    такава."""
+    # Нулева граница, за да се затвори повърхността при ръбовете на кутията; дъното се затваря при масата.
     vol = np.pad(ndimage.gaussian_filter(frac, 1.0), 1)
     if vol.max() <= agree:
         return None
@@ -418,9 +412,9 @@ def hull_mesh(frac: np.ndarray, axes: list[np.ndarray], step: float, agree: floa
     origin = np.array([a[0] for a in axes]) - step
     hull = trimesh.Trimesh(origin + step * verts, faces)
     hull = max(hull.split(only_watertight=False), key=lambda p: len(p.faces))
-    trimesh.repair.fix_normals(hull)  # outward
-    # A copy: after turning the faces outward, trimesh (5.1) keeps the old, inward face normals in its cache, and
-    # hull_samples took them; Poisson then caved a box's faces in and left it a third too flat.
+    trimesh.repair.fix_normals(hull)  # навън
+    # Копие: след обръщане на стените навън trimesh (5.1) пази в кеша си старите нормали навътре и hull_samples ги
+    # взимаше; Поасон тогава хлътваше страните на кутия и я оставяше с една трета по-плоска.
     return hull.copy()
 
 
@@ -432,22 +426,21 @@ def estimate_normals(points: np.ndarray) -> np.ndarray:
 
 
 def hull_samples(hull: trimesh.Trimesh, pts: np.ndarray, nrm: np.ndarray, n: int = 60_000):
-    """Points on the hull's surface with outward normals, and two masks over them:
-    near: a seen point is close by (the hull agrees with the data there);
-    over: the hull overshoots there. It does where no frame looked along a surface: a flat top filmed only from
-    above at an angle becomes a cone (from 35° up, as high as 0.7x the top's radius). Where a seen surface facing
-    the same side lies under a hull sample, the sample is wrong."""
+    """Точки върху повърхността на обвивката с нормали навън и две маски върху тях. near: наблизо има видяна точка
+    (обвивката съвпада с данните там); over: обвивката надвишава там. Това става, където никой кадър не е гледал по
+    повърхност: плосък връх, заснет само отгоре под ъгъл, става конус (от 35° отгоре висок до 0,7 от радиуса на
+    върха). Където видяна повърхност, гледаща към същата страна, лежи под проба от обвивката, пробата е грешна."""
     samples, face = trimesh.sample.sample_surface_even(hull, n, seed=0)
     normals = hull.face_normals[face]
     size = hull.extents.max()
     tree = cKDTree(pts)
-    # Searches bounded to the distances that count: unbounded, the probes deep inside the object took 70 s on 72
-    # thousand points and minutes on a server scan's half million (twice per scan).
+    # Търсене, ограничено до значимите разстояния: без граница пробите дълбоко в предмета отнемаха 70 с за 72 хиляди
+    # точки и минути за половин милион от сканиране на сървъра (два пъти на сканиране).
     dist, _ = tree.query(samples, distance_upper_bound=0.03 * size, workers=-1)
     near = np.isfinite(dist)
     over = np.zeros(len(samples), bool)
     for below in np.linspace(0.03, 0.7, 23) * size:
-        # Probe 5% wide: points on plain surfaces are sparse.
+        # Проба с ширина 5%: точките по еднообразни повърхности са редки.
         d, idx = tree.query(samples - normals * below, distance_upper_bound=0.05 * size, workers=-1)
         hit = np.flatnonzero(~near & np.isfinite(d))
         over[hit[np.einsum("ij,ij->i", nrm[idx[hit]], normals[hit]) > 0.2]] = True
@@ -463,12 +456,12 @@ def poisson(
     smooth: int = 5,
     point_weight: float = 4.0,
 ) -> trimesh.Trimesh:
-    """Watertight surface through the object's points. Where they leave gaps (plain, dark or unseen parts) the
-    visual hull's surface fills in, with less weight, so real points win where both exist.
-
-    Poisson must enclose a volume: on the points alone, an object with gaps or an open underside turns into a blob
-    that fills the whole bounding box. Depth 8 (cells 1/256 of the size, about twice the dense points' spacing): at 9
-    the cells matched the spacing and the surface followed the points' noise (a drill: twice as bumpy)."""
+    """Затворена повърхност през точките на предмета. Където те оставят празнини (еднообразни, тъмни или невидени
+    части), ги запълва повърхността на обвивката с по-малко тегло, така че истинските точки печелят, където има и
+    двете. Поасон трябва да затвори обем: само върху точките предмет с празнини или отворена долна страна става
+    петно, запълващо цялата кутия. Дълбочина 8 (клетки 1/256 от размера, около двойно разстоянието между гъстите
+    точки): при 9 клетките съвпадаха с разстоянието и повърхността следваше шума на точките (дрелка: двойно
+    по-неравна)."""
     pts, nrm = cloud.points, cloud.normals
     conf = cloud.weights if cloud.weights is not None else np.ones(len(pts))
     if hull is not None:
@@ -483,25 +476,26 @@ def poisson(
         depth=depth, preclean=True, confidence=True, samplespernode=samples_per_node, pointweight=point_weight
     )
     if smooth:
-        ms.apply_coord_taubin_smoothing(stepsmoothnum=smooth)  # dense points on dark or plain surfaces are noisy
+        ms.apply_coord_taubin_smoothing(stepsmoothnum=smooth)  # гъстите точки по тъмни или еднообразни повърхности са шумни
     if ms.current_mesh().face_number() > target_faces:
         ms.meshing_decimation_quadric_edge_collapse(
             targetfacenum=target_faces, preservenormal=True, preservetopology=True
         )
     m = ms.current_mesh()
     verts, faces = m.vertex_matrix(), m.face_matrix()
-    # Trim surface no input point supports: across a stretch nobody filmed, Poisson runs off as a sheet to the edge
-    # of its grid. make_printable closes the hole left behind. Not near the bottom: there the closed surface Poisson
-    # invents under the unseen underside is what the floor cut turns into a flat base.
+    # Изрязва повърхност без опора от входни точки: през незаснет участък Поасон се разлива като лист до ръба на
+    # мрежата си. make_printable затваря оставената дупка. Не близо до дъното: там затворената повърхност, измислена
+    # от Поасон под невидяната долна страна, е това, което срязването при пода превръща в плоска основа.
     tree = cKDTree(pts)
     dist, _ = tree.query(verts)
     sample = pts[np.random.default_rng(0).choice(len(pts), min(len(pts), 20_000), replace=False)]
-    spacing = float(np.median(tree.query(sample, k=2)[0][:, 1]))  # typical gap between input points
-    reach = max(0.06 * float(np.ptp(pts, axis=0).max()), 4 * spacing)  # run-off sheets reach well beyond 10%
+    spacing = float(np.median(tree.query(sample, k=2)[0][:, 1]))  # типична празнина между входните точки
+    reach = max(0.06 * float(np.ptp(pts, axis=0).max()), 4 * spacing)  # разлетите листове стигат доста над 10%
     low, high = np.percentile(pts[:, 2], [2, 98])
     supported = (dist <= reach) | (verts[:, 2] < low + 0.15 * (high - low))
     faces = faces[supported[faces].all(axis=1)]
-    # Colour from the nearest object point (hull-only areas take the colour of the closest seen surface).
+    # Цвят от най-близката точка на предмета (областите само от обвивката взимат цвета на най-близката видяна
+    # повърхност).
     _, idx = cKDTree(cloud.points).query(verts)
     colors = (np.clip(cloud.colors[idx], 0, 1) * 255).astype(np.uint8)
     out = trimesh.Trimesh(verts, faces, vertex_colors=colors)
@@ -512,16 +506,15 @@ def poisson(
 def clip_to_outline(
     mesh: trimesh.Trimesh, views: Views, masks: list[np.ndarray], scale: int, cloud: Cloud, agree: float = 0.6
 ) -> trimesh.Trimesh:
-    """Removes surface outside the object's outline: Poisson can run off as sheets where no frame saw the object
-    (e.g. a stretch of the circle that was not filmed). The real surface is never outside the visual hull.
-
-    Each face is tested a little inside itself (1% of the size along its inward normal), so faces lying exactly on
-    the hull, as the sides of a cylinder do, stay. make_printable closes the holes left behind."""
+    """Премахва повърхност извън очертанието на предмета: Поасон може да се разлее като листове, където никой кадър не
+    е видял предмета (например незаснет участък от кръга). Истинската повърхност никога не е извън обвивката. Всяка
+    стена се проверява малко навътре в себе си (1% от размера по вътрешната ѝ нормала), така че стените точно върху
+    обвивката, като страните на цилиндър, остават. make_printable затваря оставените дупки."""
     if mesh.is_empty:
         return mesh
     probe = mesh.triangles_center - mesh.face_normals * 0.01 * mesh.extents.max()
     n_in, n_fg = silhouette_votes(probe @ cloud.to_up, views, masks, scale)
-    inside = (n_in < min(MIN_VIEWS, len(views))) | (n_fg >= agree * n_in)  # unseen: no evidence to cut
+    inside = (n_in < min(MIN_VIEWS, len(views))) | (n_fg >= agree * n_in)  # невидяно: няма доказателство за изрязване
     out = mesh.copy()
     out.update_faces(inside)
     out.remove_unreferenced_vertices()
@@ -529,8 +522,8 @@ def clip_to_outline(
 
 
 def _meshlab_close(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
-    """MeshLab's manifold repair and hole filler (without its self-intersection check: with it, one scan's holes ran
-    for over 10 minutes), keeping colours. Parts under 1% of the faces (slivers) are dropped."""
+    """Поправка на многообразието и запълване на дупки от MeshLab (без проверката му за самопресичане: с нея дупките
+    на едно сканиране работеха над 10 минути), със запазени цветове. Части под 1% от стените (тънки ивици) отпадат."""
     ms = pymeshlab.MeshSet()
     colors = mesh.visual.vertex_colors[:, :4] / 255.0 if mesh.visual.kind == "vertex" else None
     kw = {"v_color_matrix": colors} if colors is not None else {}
@@ -546,10 +539,11 @@ def _meshlab_close(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
 
 
 def close_holes(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
-    """Cap every remaining hole (trimmed unseen areas, cuts), keeping colours. MeshLab's filler can leave a few edges
-    shared by three or more faces where duplicate points meet (MeshLab does not see them; a speaker had 8): the faces
-    around them go and the small holes left are filled again. If the surface is still open, it is rebuilt closed from
-    itself (`reclose`, which loses fine detail; both box scans went through it before this repair)."""
+    """Затваря всяка останала дупка (изрязани невидени области, срязвания), запазвайки цветовете. Запълването на
+    MeshLab може да остави няколко ръба, общи за три или повече стени, където се срещат дублирани точки (MeshLab не
+    ги вижда; колонка имаше 8): стените около тях отпадат и малките дупки се запълват отново. Ако повърхността още
+    е отворена, се изгражда затворена от самата нея (`reclose`, което губи фин детайл; и двете сканирания на кутии
+    минаваха през него преди тази поправка)."""
     out = _meshlab_close(mesh)
     for _ in range(3):
         if out.is_watertight:
@@ -559,7 +553,7 @@ def close_holes(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
         if not len(bad):
             trimesh.repair.fill_holes(out)
             break
-        # Faces within two rings of the bad edges' points go; the holes left are plain loops.
+        # Стените в рамките на два пръстена от точките на лошите ръбове отпадат; оставените дупки са прости контури.
         ring = np.isin(out.faces, bad).any(axis=1)
         ring = np.isin(out.faces, np.unique(out.faces[ring])).any(axis=1)
         out.update_faces(~ring)
@@ -569,9 +563,10 @@ def close_holes(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
 
 
 def reclose(mesh: trimesh.Trimesh, depth: int = 9) -> trimesh.Trimesh:
-    """A closed surface through an open one: Poisson on points sampled evenly over it. Poisson always encloses a
-    volume, so this ends any hole, however tangled; detail stays within a grid cell (1/512 of the size). 400 thousand
-    samples are about 0.3 mm apart on a 10 cm box, close to that cell (200 thousand: 0.5 mm, rounding more off)."""
+    """Затворена повърхност през отворена: Поасон върху точки, взети равномерно по нея. Поасон винаги затваря обем,
+    затова това приключва всяка дупка, колкото и заплетена да е; детайлът остава в рамките на клетка от мрежата (1/512
+    от размера). 400 хиляди проби са на около 0,3 мм една от друга при кутия от 10 см, близо до тази клетка (200
+    хиляди: 0,5 мм, повече закръгляне)."""
     samples, face = trimesh.sample.sample_surface_even(mesh, 400_000, seed=0)
     normals = mesh.face_normals[face]
     ms = pymeshlab.MeshSet()
@@ -586,18 +581,17 @@ def reclose(mesh: trimesh.Trimesh, depth: int = 9) -> trimesh.Trimesh:
     return out
 
 
-PAINT_REDUCE = 2  # frames are read at half size for colours: about the spacing of a 250 thousand triangle model's points
-PAINT_CELL = 3  # (reduced) pixels: per square this wide, only the points nearest the camera are seen
+PAINT_REDUCE = 2  # кадрите се четат при половин размер за цветовете: около разстоянието между точките на модел с 250 хиляди триъгълника
+PAINT_CELL = 3  # (смалени) пиксели: за всеки квадрат с такава ширина се виждат само най-близките до камерата точки
 
 
 def paint(mesh: trimesh.Trimesh, views: Views, photos: list, to_up: np.ndarray) -> None:
-    """Vertex colours from the photos (the mesh in coordinates turned by to_up from the world's, as a Cloud's).
-
-    Each vertex blends the frames that see it, weighted towards those facing it squarely, so frame-to-frame changes of
-    exposure blend instead of leaving seams. Seen: facing the camera and among the points nearest to it where it
-    lands (within 1% of the distance), so a part hidden behind another takes nothing from that frame. Vertices no
-    frame sees (the flat base) take the colour of the nearest seen one."""
-    verts, normals = mesh.vertices @ to_up, mesh.vertex_normals @ to_up  # back to world
+    """Цветове на върховете от снимките (мрежата в координати, завъртени с to_up от световните, като на Cloud). Всеки
+    връх смесва кадрите, които го виждат, претеглени към тези, гледащи го най-пряко, така че разликите в експозицията
+    се смесват вместо да оставят шевове. Видян: обърнат към камерата и сред най-близките до нея точки там, където
+    попада (в рамките на 1% от разстоянието), така че част, скрита зад друга, не взима нищо от този кадър. Върхове,
+    невидени от никой кадър (плоската основа), взимат цвета на най-близкия видян."""
+    verts, normals = mesh.vertices @ to_up, mesh.vertex_normals @ to_up  # обратно към света
     total, weight = np.zeros((len(verts), 3)), np.zeros(len(verts))
     for R, t, (fx, fy, cx, cy), p in zip(views.R, views.t, views.K, photos):
         with Image.open(p) as im:
@@ -631,18 +625,18 @@ def paint(mesh: trimesh.Trimesh, views: Views, photos: list, to_up: np.ndarray) 
 
 
 def floor_z(cloud: Cloud) -> float:
-    """Where the object really ends at the bottom: the table, else the lowest observed point."""
+    """Къде наистина свършва предметът отдолу: масата, иначе най-ниската наблюдавана точка."""
     return cloud.ground_z if cloud.ground_z is not None else float(cloud.points[:, 2].min())
 
 
-# The phone shows and exports the model in JavaScript: a reclosed scan had 1 million triangles (a 50 MB STL), far
-# more than a print of a few centimetres can show.
+# Телефонът показва и изнася модела с JavaScript: повторно затворено сканиране имаше 1 милион триъгълника (STL от 50
+# MB), много повече, отколкото отпечатък от няколко сантиметра може да покаже.
 MAX_FACES = 250_000
 
 
 def decimate(mesh: trimesh.Trimesh, faces: int, keep_closed: bool = True) -> trimesh.Trimesh:
-    """Fewer triangles, keeping the shape and colours; the mesh unchanged if that would open it (unless keep_closed is
-    off: only for viewing)."""
+    """По-малко триъгълници при запазени форма и цветове; мрежата остава непроменена, ако това би я отворило (освен
+    при изключено keep_closed: само за преглед)."""
     ms = pymeshlab.MeshSet()
     colors = mesh.visual.vertex_colors[:, :4] / 255.0 if mesh.visual.kind == "vertex" else None
     kw = {"v_color_matrix": colors} if colors is not None else {}
@@ -659,11 +653,12 @@ def decimate(mesh: trimesh.Trimesh, faces: int, keep_closed: bool = True) -> tri
     return out
 
 
-# Feature-preserving smoothing (MeshLab's two-step: face normals averaged with neighbours bending less than
-# SMOOTH_ANGLE, then the points moved to fit them). Scans come out rippled in rows (OpenMVS's depth streaks through
-# app/fuse.py's correction) and a print shows every ripple. Tuned at 100 mm on a pumpkin, a figure and a drill: one
-# pass moves the surface ~0.07 mm and keeps a figure's eye rims; three take a pumpkin's ripples off but soften the
-# eyes. Every model gets LIGHT; the app's "smooth" print download asks for more.
+# Заглаждане със запазване на особеностите (двустъпковото на MeshLab: нормалите на стените се осредняват със съседи с
+# огъване под SMOOTH_ANGLE, после точките се местят да им пасват). Сканиранията излизат с вълни на редове (ивиците в
+# дълбочината на OpenMVS през корекцията на app/fuse.py) и отпечатъкът показва всяка вълна. Настроено при 100 мм върху
+# тиква, фигура и дрелка: един проход мести повърхността с около 0,07 мм и пази ръбовете на очите на фигура; три махат
+# вълните на тиква, но омекотяват очите. Всеки модел получава LIGHT; изтеглянето за печат "smooth" в приложението иска
+# повече.
 SMOOTH_ANGLE = 20.0
 SMOOTH_NORMALS = 5
 LIGHT = 1
@@ -671,7 +666,8 @@ MAX_SMOOTH = 3
 
 
 def smooth(mesh: trimesh.Trimesh, passes: int) -> trimesh.Trimesh:
-    """Same vertices and faces (colours kept), moved; the flat base (the lowest plane) stays where it was."""
+    """Същите върхове и стени (със запазени цветове), преместени; плоската основа (най-ниската равнина) остава на
+    мястото си."""
     if passes <= 0:
         return mesh
     ms = pymeshlab.MeshSet()
@@ -685,7 +681,7 @@ def smooth(mesh: trimesh.Trimesh, passes: int) -> trimesh.Trimesh:
     floor = mesh.bounds[0, 2]
     base = mesh.vertices[:, 2] <= floor + 1e-6 * mesh.extents.max()
     v[base] = mesh.vertices[base]
-    v[:, 2] = np.maximum(v[:, 2], floor)  # points beside the base were pulled below it (0.4 mm, strong smoothing)
+    v[:, 2] = np.maximum(v[:, 2], floor)  # точките до основата се дърпаха под нея (0,4 мм, силно заглаждане)
     out = mesh.copy()
     out.vertices = v
     return out
@@ -693,24 +689,24 @@ def smooth(mesh: trimesh.Trimesh, passes: int) -> trimesh.Trimesh:
 
 def make_printable(mesh: trimesh.Trimesh, floor: float, flat_base: bool, longest_mm: float = 100.0,
                    smoothing: int = LIGHT) -> trimesh.Trimesh:  # fmt: skip
-    """smoothing: passes of smooth(); 0 for a designed model (app/ai.py's CAD), whose faces are flat already."""
+    """smoothing: проходи на smooth(); 0 за проектиран модел (CAD от app/ai.py), чиито стени вече са плоски."""
     parts = mesh.split(only_watertight=False)
     if not len(parts):
         raise MeshError("От кадрите не се получи модел. Опитайте да заснемете отново, по-бавно и с повече светлина.")
-    mesh = max(parts, key=lambda p: len(p.faces))  # drops floating fragments
+    mesh = max(parts, key=lambda p: len(p.faces))  # маха носещите се фрагменти
 
     zmin, zmax = mesh.bounds[:, 2]
     h = zmax - zmin
-    # Poisson invents surface below the floor (unseen underside); cut it off.
+    # Поасон измисля повърхност под пода (невидяна долна страна); отрязва се.
     cut = floor + (0.02 * h if flat_base else 0.0)
-    # Where nothing was seen underneath, the surface runs into Poisson's grid and stays open at the bottom: cut just
-    # above that opening (the lowest one), the cap closes the mesh. Other openings (a trimmed stretch nobody filmed)
-    # are closed by close_holes instead of cutting the object there.
+    # Където отдолу нищо не е видяно, повърхността стига до мрежата на Поасон и остава отворена отдолу: срязва се
+    # точно над този отвор (най-ниския), а капакът затваря мрежата. Другите отвори (изрязан незаснет участък) се
+    # затварят от close_holes, вместо предметът да се среже там.
     edges, counts = np.unique(mesh.edges_sorted, axis=0, return_counts=True)
     open_edges = edges[counts == 1]
     if len(open_edges):
         loops = trimesh.graph.connected_components(open_edges, min_len=1)
-        # Only an opening that reaches the bottom: a gap in a mug's side, a quarter up, cut the mug off above it.
+        # Само отвор, стигащ до дъното: процеп отстрани на чаша на четвърт височина я отрязваше над него.
         bottom = [loop for loop in loops if mesh.vertices[loop, 2].min() < zmin + 0.05 * h]
         if bottom:
             top = float(min(mesh.vertices[loop, 2].max() for loop in bottom))
@@ -719,41 +715,42 @@ def make_printable(mesh: trimesh.Trimesh, floor: float, flat_base: bool, longest
     if cut > zmin:
         before = mesh
         mesh = mesh.slice_plane([0, 0, cut], [0, 0, 1], cap=True)
-        if before.visual.kind == "vertex":  # slice_plane drops vertex colours: the nearest old vertex's
+        if before.visual.kind == "vertex":  # slice_plane маха цветовете на върховете: на най-близкия стар връх
             _, idx = cKDTree(before.vertices).query(mesh.vertices)
             mesh.visual.vertex_colors = before.visual.vertex_colors[idx]
 
     if not mesh.is_watertight:
         mesh = close_holes(mesh)
-    # Slivers left by the cut or hole filling; real parts are far bigger than 1% of the faces.
+    # Тънки ивици, оставени от срязването или запълването; истинските части са много над 1% от стените.
     parts = mesh.split(only_watertight=False)
     mesh = trimesh.util.concatenate([p for p in parts if len(p.faces) >= 0.01 * len(mesh.faces)])
     trimesh.repair.fix_normals(mesh)
     if len(mesh.faces) > MAX_FACES:
         mesh = decimate(mesh, MAX_FACES)
-    mesh = smooth(mesh, smoothing)  # the base is the lowest plane here (cut flat, the turn below is only around z)
+    mesh = smooth(mesh, smoothing)  # тук основата е най-ниската равнина (срязана плоско, завъртането по-долу е само около z)
 
-    # Footprint along the axes (the smallest rectangle around it), so the sizes reported and the longest side the app
-    # scales by are the object's own: a box standing turned by 29° read 100 x 100 instead of 100 x 97.
+    # Стъпка по осите (най-малкият правоъгълник около нея), така че отчетените размери и най-дългата страна, по която
+    # мащабира приложението, да са на самия предмет: кутия, завъртяна на 29°, отчиташе 100 x 100 вместо 100 x 97.
     T2, _ = trimesh.bounds.oriented_bounds_2D(mesh.vertices[:, :2])
-    turn = T2[:2, :2] if np.linalg.det(T2[:2, :2]) > 0 else T2[:2, :2] @ np.diag([1.0, -1.0])  # never a mirror
+    turn = T2[:2, :2] if np.linalg.det(T2[:2, :2]) > 0 else T2[:2, :2] @ np.diag([1.0, -1.0])  # никога огледално
     T = np.eye(4)
     T[:2, :2] = turn
     mesh.apply_transform(T)
-    # Base centred on the origin at z = 0, longest side = longest_mm (STL has no units; slicers assume mm).
+    # Основата е центрирана в началото при z = 0, най-дълга страна = longest_mm (STL няма единици; програмите за печат
+    # приемат мм).
     lo, hi = mesh.bounds
     move = trimesh.transformations.translation_matrix([-(lo[0] + hi[0]) / 2, -(lo[1] + hi[1]) / 2, -lo[2]])
     mesh.apply_transform(move)
     scale = trimesh.transformations.scale_matrix(longest_mm / mesh.extents.max())
     mesh.apply_transform(scale)
-    mesh.metadata["to_print"] = scale @ move @ T  # from the input's coordinates (app/texture.py goes back with it)
+    mesh.metadata["to_print"] = scale @ move @ T  # от координатите на входа (app/texture.py се връща с него)
     return mesh
 
 
 def revolve(profile: np.ndarray, sections: int = 96) -> trimesh.Trimesh:
-    """A closed (r, z) profile turned round the Z axis; points on the axis become single vertices (no slivers)."""
+    """Затворен профил (r, z), завъртян около оста Z; точките върху оста стават единични върхове (без тънки ивици)."""
     pts = np.c_[np.maximum(profile[:, 0], 0), profile[:, 1]]
-    pts = pts[np.r_[True, np.abs(np.diff(pts, axis=0)).max(1) > 1e-6]]  # repeated points
+    pts = pts[np.r_[True, np.abs(np.diff(pts, axis=0)).max(1) > 1e-6]]  # повтарящи се точки
     if len(pts) > 1 and np.allclose(pts[0], pts[-1]):
         pts = pts[:-1]
     a = np.linspace(0, 2 * np.pi, sections, endpoint=False)
@@ -779,7 +776,7 @@ def revolve(profile: np.ndarray, sections: int = 96) -> trimesh.Trimesh:
 
 
 def solid_volume(mesh: trimesh.Trimesh) -> float:
-    """The volume inside; for a mesh with openings (where the signed volume means nothing), its filled voxels."""
+    """Вътрешният обем; за мрежа с отвори (където обемът със знак не значи нищо) запълнените ѝ воксели."""
     if mesh.is_watertight:
         return abs(float(mesh.volume))
     pitch = float(mesh.extents.max()) / 200
@@ -787,8 +784,8 @@ def solid_volume(mesh: trimesh.Trimesh) -> float:
 
 
 def geometry(mesh: trimesh.Trimesh) -> dict:
-    """What the app's print estimate (src/lib/printEstimate.ts) works from, at the mesh's size: the plastic inside and
-    the surface the walls follow."""
+    """От какво работи оценката за печат в приложението (src/lib/printEstimate.ts) при размера на мрежата: пластмасата
+    вътре и повърхността, която следват стените."""
     return {"volume_mm3": round(solid_volume(mesh), 1), "area_mm2": round(float(mesh.area), 1)}
 
 
@@ -808,13 +805,13 @@ MEDIA_TYPES = {
 }
 
 
-Y_UP = trimesh.transformations.rotation_matrix(-np.pi / 2, [1, 0, 0])  # Z-up -> glTF's Y-up
+Y_UP = trimesh.transformations.rotation_matrix(-np.pi / 2, [1, 0, 0])  # Z нагоре -> Y нагоре в glTF
 
 
 def export(mesh: trimesh.Trimesh, fmt: str, longest_mm: float | None = None, textured: list[dict] | None = None,
            unlit: bool = False) -> bytes:  # fmt: skip
-    """The model as `fmt`. textured: app/texture.load's parts, for a GLB with the photo texture (same geometry).
-    unlit: a GLB whose colours show as they are (see UNLIT), when it has colours."""
+    """Моделът като `fmt`. textured: частите от app/texture.load за GLB с текстура от снимки (същата геометрия).
+    unlit: GLB, чиито цветове се показват както са (вижте UNLIT), когато има цветове."""
     m = mesh.copy()
     factor = longest_mm / m.extents.max() if longest_mm else 1.0
     m.apply_scale(factor)
@@ -828,18 +825,18 @@ def export(mesh: trimesh.Trimesh, fmt: str, longest_mm: float | None = None, tex
     return m.export(file_type=fmt)
 
 
-# A scan's photo colours already hold the light it was filmed in. Lit again in AR (ARCore's estimate of the room's
-# light, reflections included), scans looked oiled, and went black when the estimate was dark. Unlit, the AR shows the
-# photo colours as they are, whatever the room's light; the model still casts its shadow.
+# Цветовете от снимките на сканиране вече съдържат светлината при заснемане. Осветени отново в AR (оценката на ARCore
+# за светлината в стаята, с отраженията), сканиранията изглеждаха намазани с олио и почерняваха при тъмна оценка.
+# Неосветен, AR показва цветовете от снимките както са, каквато и да е светлината в стаята; моделът пак хвърля сянка.
 UNLIT = {"KHR_materials_unlit": {}}
 
 
 def glb(mesh: trimesh.Trimesh, unlit: bool = False, extra: dict[str, np.ndarray] | None = None) -> bytes:
-    """Binary glTF for viewing: smooth normals, the vertex colours and a matte material. trimesh's own GLB had no
-    material, so viewers used glTF's default, fully metallic one, and with nothing to reflect, three.js (the phone's
-    viewer) showed the model nearly black. Its colours were the photos' sRGB values where glTF wants linear ones,
-    which shows them washed out. extra: more per-vertex numbers, as attributes named "_NAME" (glTF's custom ones;
-    three.js reads them as "_name"), e.g. the stress test's stresses (app/stress.py)."""
+    """Двоичен glTF за преглед: гладки нормали, цветовете на върховете и матов материал. Собственият GLB на trimesh
+    нямаше материал, затова програмите ползваха стандартния изцяло метален на glTF и без какво да отразява three.js
+    (прегледът на телефона) показваше модела почти черен. Цветовете бяха sRGB стойностите от снимките, докато glTF
+    иска линейни, което ги показва избелели. extra: още числа за връх като атрибути с име "_NAME" (собствените в glTF;
+    three.js ги чете като "_name"), например напреженията от теста за здравина (app/stress.py)."""
     blobs, views, accessors = [], [], []
 
     def add(data: np.ndarray, kind: str, component: int, target: int, minmax: bool = False) -> int:
@@ -867,7 +864,7 @@ def glb(mesh: trimesh.Trimesh, unlit: bool = False, extra: dict[str, np.ndarray]
     faces = add(mesh.faces.astype(np.uint32).reshape(-1, 1), "SCALAR", uint32, indices)
     base = [1.0, 1.0, 1.0, 1.0] if colored else [0.8, 0.8, 0.8, 1.0]
     material = {"pbrMetallicRoughness": {"baseColorFactor": base, "metallicFactor": 0.0, "roughnessFactor": 0.85}}
-    unlit = unlit and colored  # a grey model unlit would be a flat silhouette
+    unlit = unlit and colored  # неосветен сив модел би бил плосък силует
     doc = {
         "asset": {"version": "2.0", "generator": "orbitize"},
         "scene": 0,
@@ -890,9 +887,10 @@ def glb(mesh: trimesh.Trimesh, unlit: bool = False, extra: dict[str, np.ndarray]
 
 
 def glb_textured(parts: list[dict], unlit: bool = False) -> bytes:
-    """Binary glTF with the photo texture (app/texture.py): per texture image one primitive with positions, normals,
-    texture coordinates and a matte material whose base colour is the image (JPEG, kept as it is). Each image also
-    says its size (extras), which the phone needs to hand it to the GPU without a browser's image decoder."""
+    """Двоичен glTF с текстура от снимки (app/texture.py): за всяко изображение на текстура по един примитив с
+    позиции, нормали, координати на текстурата и матов материал, чийто основен цвят е изображението (JPEG,
+    непроменен). Всяко изображение съобщава и размера си (extras), нужен на телефона, за да го предаде на
+    видеокартата без декодер на браузър."""
     blobs, views, accessors, prims, images, textures, materials = [], [], [], [], [], [], []
 
     def view(raw: bytes, target: int | None = None) -> int:
@@ -913,7 +911,7 @@ def glb_textured(parts: list[dict], unlit: bool = False) -> bytes:
     float_, uint32, vertices, indices = 5126, 5125, 34962, 34963
     for k, p in enumerate(parts):
         uv = np.asarray(p["uv"], np.float32).copy()
-        uv[:, 1] = 1 - uv[:, 1]  # glTF's texture coordinates start at the image's top
+        uv[:, 1] = 1 - uv[:, 1]  # координатите на текстурата в glTF започват от горната страна на изображението
         attributes = {
             "POSITION": add(np.asarray(p["vertices"], np.float32), "VEC3", float_, vertices, minmax=True),
             "NORMAL": add(np.asarray(p["normals"], np.float32), "VEC3", float_, vertices),
@@ -936,7 +934,7 @@ def glb_textured(parts: list[dict], unlit: bool = False) -> bytes:
         "materials": materials,
         "textures": textures,
         "images": images,
-        "samplers": [{"magFilter": 9729, "minFilter": 9987, "wrapS": 33071, "wrapT": 33071}],  # linear, mipmapped, clamp
+        "samplers": [{"magFilter": 9729, "minFilter": 9987, "wrapS": 33071, "wrapT": 33071}],  # линеен, с мипмапи, ограничен
         "accessors": accessors,
         "bufferViews": views,
         "buffers": [{"byteLength": sum(len(b) for b in blobs)}],
