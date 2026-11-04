@@ -1,17 +1,14 @@
-"""Colour changes for Pro's text edits (app/edit.py, operation "color"): "make the hair blue", "paint the base gold",
-"make it red".
-
-Which part is meant is found by AI on pictures of the model itself: it is drawn from VIEWS around it (on the CPU, as
-app/render.py), CLIPSeg (CIDAS/clipseg-rd64-refined, Apache-2.0, as ONNX in tools/clipseg; scripts/models.ps1) marks
-the part named in each picture, and every texel of the photo texture (and every vertex) takes the marks of the
-pictures it is seen in, weighted by how straight on. CLIPSeg's marks are coarse (its picture is cut into 22 x 22
-tiles), so the edge is drawn by colour: the part's own colours against the rest's, close to where CLIPSeg put it.
-
-The new colour keeps the photo's shading and detail: in Lab, the part's lightness keeps its ups and downs around the
-new colour's lightness, and its hue takes the new colour's (the hair's strands and the light on them stay).
-
-CLIPSeg runs as its own process, so its memory is freed afterwards:
-    python recolor.py <views.npz: images (V, SIDE, SIDE, 3) uint8, prompt> <out.npz: prob (V, SIDE, SIDE)>"""
+"""Промени на цвета за текстовите промени на Pro (app/edit.py, операция "color"): "make the hair blue", "paint the
+base gold", "make it red". Коя част се има предвид намира AI върху изображения на самия модел: той се рисува от
+VIEWS около него (на процесора, като app/render.py), CLIPSeg (CIDAS/clipseg-rd64-refined, Apache-2.0, като ONNX в
+tools/clipseg; scripts/models.ps1) отбелязва назованата част във всяко изображение, а всеки тексел от текстурата (и
+всеки връх) взима отметките от изображенията, в които се вижда, претеглени по това колко пряко. Отметките на
+CLIPSeg са груби (изображението му се дели на 22 x 22 плочки), затова ръбът се определя по цвета: собствените
+цветове на частта спрямо останалите, близо до мястото, посочено от CLIPSeg. Новият цвят запазва сенките и детайла
+от снимката: в Lab яркостта на частта запазва колебанията си около яркостта на новия цвят, а оттенъкът става на
+новия цвят (кичурите и светлината по тях остават). CLIPSeg работи като собствен процес, затова паметта му се
+освобождава след това: python recolor.py <views.npz: images (V, SIDE, SIDE, 3) uint8, prompt> <out.npz: prob (V,
+SIDE, SIDE)>"""
 
 import json
 import os
@@ -24,27 +21,27 @@ import numpy as np
 from PIL import Image
 
 MODEL_DIR = Path(os.environ.get("CLIPSEG_DIR", Path(__file__).resolve().parent.parent / "tools" / "clipseg"))
-SIDE = 352  # CLIPSeg's picture size
-SUPER = 2  # pictures drawn at SUPER x SIDE, then scaled down: smooth edges
-MARGIN = 0.06  # share of each picture left free on every side of the model
+SIDE = 352  # размерът на изображението на CLIPSeg
+SUPER = 2  # изображенията се рисуват при SUPER x SIDE и се смаляват: гладки ръбове
+MARGIN = 0.06  # дял от всяко изображение, оставен свободен от всяка страна на модела
 VIEWS = [(az, 10) for az in range(0, 360, 45)] + [(az, 45) for az in range(22, 360, 90)] + [(0, 80)]
-RENDER_POINTS = 2_500_000  # surface samples the pictures are drawn from
-FOUND = 0.5  # CLIPSeg's mark (0-1) from which a point is taken as the part, before the colour check
-SURE = 0.6  # and surely is: a piece of the part must hold such points (decide)
-KEEP_PIECE = 0.05  # pieces with fewer sure points than this share of the biggest piece's are left out
-STAND_NARROW = 0.5  # (stand) the figure above a stand is this much narrower
-STAND_MAX = 0.4  # and a stand is at most this share of the model's height
-TAP_SIDE = 512  # (tapped) picture size for MobileSAM
-TAP_TILT = 35.0  # (tapped) degrees the side pictures turn away from straight on the spot
-TAP_WHOLE = 0.35  # (tapped) a mask over this share of the model's outline is (most of) the whole model, not a part
-ZOOM = 0.7  # a closer look when the part spans less than this share of the model
-DARK = 12.0  # (decide) Lab lightness below which a colour says nothing of the part (shadow), full from DARK + 25
-PLAIN = 4.0  # (decide) Lab spread over the surface below which a model is one colour
-BINS = 16  # per Lab axis, for how much of each colour CLIPSeg marked
-MIN_SHARE = 0.002  # less of the surface than this marked: the part was not found
-BG = 242.0  # the pictures' background (light grey, as a product photo)
+RENDER_POINTS = 2_500_000  # проби от повърхността, от които се рисуват изображенията
+FOUND = 0.5  # отметката на CLIPSeg (0-1), от която точка се приема за част, преди проверката на цвета
+SURE = 0.6  # и със сигурност е: парче от частта трябва да съдържа такива точки (decide)
+KEEP_PIECE = 0.05  # парчета с по-малко сигурни точки от този дял на най-голямото отпадат
+STAND_NARROW = 0.5  # (stand) фигурата над поставка е толкова по-тясна
+STAND_MAX = 0.4  # и поставката е най-много този дял от височината на модела
+TAP_SIDE = 512  # (докоснато) размер на изображението за MobileSAM
+TAP_TILT = 35.0  # (докоснато) градуси, на които страничните изображения се завъртат спрямо прякото към мястото
+TAP_WHOLE = 0.35  # (докоснато) маска над този дял от очертанието на модела е (почти) целият модел, а не част
+ZOOM = 0.7  # по-близък поглед, когато частта заема по-малко от този дял от модела
+DARK = 12.0  # (decide) яркост в Lab, под която цветът не казва нищо за частта (сянка), пълна от DARK + 25
+PLAIN = 4.0  # (decide) разпръскване в Lab по повърхността, под което моделът е едноцветен
+BINS = 16  # на ос в Lab, за това колко от всеки цвят е отбелязал CLIPSeg
+MIN_SHARE = 0.002  # отбелязано е по-малко от тази повърхност: частта не е намерена
+BG = 242.0  # фонът на изображенията (светлосив, като на продуктова снимка)
 
-# Colour names, sRGB. Hair colours too, as hair is what people recolour most.
+# Имена на цветове, sRGB. Също и цветове за коса, защото косата се прецветява най-често.
 COLOURS = {
     "red": (200, 30, 35), "dark red": (130, 15, 20), "crimson": (180, 20, 50), "maroon": (110, 20, 30),
     "burgundy": (115, 20, 40), "scarlet": (230, 35, 20), "orange": (240, 120, 20), "yellow": (245, 210, 40),
@@ -67,7 +64,7 @@ SHADES = {"light": 1.35, "pale": 1.45, "bright": 1.15, "dark": 0.55, "deep": 0.7
 
 
 def colour_rgb(name: str) -> tuple[int, int, int] | None:
-    """A colour name ("blue", "dark green", "light blonde") or #rrggbb as sRGB; None if it is not one."""
+    """Име на цвят ("blue", "dark green", "light blonde") или #rrggbb като sRGB; None, ако не е такова."""
     n = re.sub(r"\s+", " ", str(name).strip().lower().replace("colour", "").replace("color", "")).strip()
     m = re.fullmatch(r"#?([0-9a-f]{6})", n)
     if m:
@@ -107,9 +104,9 @@ def lab_to_rgb(lab: np.ndarray) -> np.ndarray:
 
 
 def recoloured(colours: np.ndarray, weight: np.ndarray, rgb: tuple[int, int, int]) -> np.ndarray:
-    """colours (N, 3) uint8 turned towards `rgb` by weight (N,) 0-1: in Lab, lightness keeps its variation around
-    the new colour's lightness (shading, strands, highlights); hue and saturation become the new colour's, with a
-    little of the old variation."""
+    """Цветове (N, 3) uint8, обърнати към `rgb` с тегло (N,) 0-1: в Lab яркостта запазва колебанията си около яркостта
+    на новия цвят (сенки, кичури, отблясъци); оттенъкът и наситеността стават на новия цвят, с малко от старите
+    колебания."""
     out = np.asarray(colours, np.uint8).copy()
     sel = weight > 0.01
     if not sel.any():
@@ -118,7 +115,7 @@ def recoloured(colours: np.ndarray, weight: np.ndarray, rgb: tuple[int, int, int
     w = weight[sel]
     mean = (lab * w[:, None]).sum(0) / w.sum()
     target = rgb_to_lab(np.array([rgb], np.float64))[0]
-    # A big change of lightness squeezes the variation a little, or a dark part made white would clip to flat white.
+    # Голяма промяна на яркостта леко свива колебанията, иначе тъмна част, направена бяла, би станала чисто бяла.
     spread = float(np.sqrt(((lab[:, 0] - mean[0]) ** 2 * w).sum() / w.sum()))
     room = min(target[0], 100 - target[0])
     k = 1.0 if spread < 1e-6 else float(np.clip(room / (2.2 * spread), 0.35, 1.0))
@@ -130,17 +127,18 @@ def recoloured(colours: np.ndarray, weight: np.ndarray, rgb: tuple[int, int, int
     return out
 
 
-# --- The surface's points: the texture's texels, or the vertices ------------------------------------------------------
+# --- Точките на повърхността: текселите на текстурата или върховете
+# --------------------------------------------------
 
 
 def texels(part: dict, atlas: np.ndarray) -> tuple[tuple[np.ndarray, np.ndarray], np.ndarray, np.ndarray]:
-    """The texels of one texture image (app/texture.py load's part) that lie on the surface: their (rows, columns),
-    3D points and normals. Faces no frame saw have a square of a few texels each (texture.paint_unseen): its texels
-    all take the face's centre."""
+    """Текселите на едно изображение на текстура (част от load в app/texture.py), които лежат върху повърхността:
+    (редове, колони), 3D точки и нормали. Стени, невидени от никой кадър, имат квадрат от няколко тексела
+    (texture.paint_unseen): всичките им тексели взимат центъра на стената."""
     from . import texture as TX
 
     V, F, N = part["vertices"], part["faces"], part["normals"]
-    uv = np.asarray(part["uv"], np.float64)[F]  # (faces, 3, 2), v up
+    uv = np.asarray(part["uv"], np.float64)[F]  # (стени, 3, 2), v нагоре
     H, W = atlas.shape[:2]
     px = np.stack([uv[..., 0] * W, (1 - uv[..., 1]) * H], -1)
     e1, e2 = px[:, 1] - px[:, 0], px[:, 2] - px[:, 0]
@@ -152,7 +150,7 @@ def texels(part: dict, atlas: np.ndarray) -> tuple[tuple[np.ndarray, np.ndarray]
     pts = np.einsum("tk,tkc->tc", b, V[F[f]].astype(np.float32))
     nrm = np.einsum("tk,tkc->tc", b, np.asarray(N, np.float32)[F[f]])
     if flat.any():
-        c = px[flat].mean(1)  # each square's centre
+        c = px[flat].mean(1)  # центърът на всеки квадрат
         steps = np.diff(np.unique(np.round(c[:, 0], 1)))
         cell = int(np.clip(np.round(steps[steps > 0.5].min()), 1, 4)) if (steps > 0.5).any() else 4
         x0 = np.round(c[:, 0] - cell / 2).astype(np.int64)
@@ -170,9 +168,9 @@ def texels(part: dict, atlas: np.ndarray) -> tuple[tuple[np.ndarray, np.ndarray]
 
 def recolour_atlas(atlas: np.ndarray, where: tuple[np.ndarray, np.ndarray], weight: np.ndarray,
                    rgb: tuple[int, int, int]) -> np.ndarray:  # fmt: skip
-    """The texture image with its texels `where` (rows, columns) recoloured by `weight`. The texels between the
-    patches (on no face) take their nearest patch texel's new colour again (as texture.level fills them): left as
-    they were, a light colour showed thin dark seams on the phone, which blends neighbouring texels."""
+    """Изображението на текстурата с тексели `where` (редове, колони), прецветени с `weight`. Текселите между частите
+    (извън стени) отново взимат новия цвят на най-близкия тексел от част (както ги запълва texture.level): оставени
+    каквито са, при светъл цвят се виждаха тънки тъмни шевове на телефона, който смесва съседни тексели."""
     from . import texture as TX
 
     out = atlas.copy()
@@ -184,14 +182,14 @@ def recolour_atlas(atlas: np.ndarray, where: tuple[np.ndarray, np.ndarray], weig
     return np.where(on_face[..., None], out, out[iy, ix])
 
 
-# --- Pictures of the model ------------------------------------------------------------------------------------------
+# --- Изображения на модела ------------------------------------------------------------------------------------------
 
 
 def view_rotation(azimuth: float, elevation: float) -> np.ndarray:
-    """World (z up) -> view: x right, y away from the camera, z up in the picture. The camera is `elevation` degrees
-    above the model's middle, looking at it."""
+    """Свят (z нагоре) -> изглед: x надясно, y далеч от камерата, z нагоре в изображението. Камерата е на `elevation`
+    градуса над средата на модела и гледа към нея."""
     a, e = np.radians(azimuth), np.radians(elevation)
-    look = -np.array([np.cos(e) * np.cos(a), np.cos(e) * np.sin(a), np.sin(e)])  # from the camera to the model
+    look = -np.array([np.cos(e) * np.cos(a), np.cos(e) * np.sin(a), np.sin(e)])  # от камерата към модела
     right = np.cross(look, [0.0, 0.0, 1.0])
     right /= np.linalg.norm(right)
     return np.stack([right, look, np.cross(right, look)])
@@ -199,9 +197,9 @@ def view_rotation(azimuth: float, elevation: float) -> np.ndarray:
 
 def draw(pts: np.ndarray, cols: np.ndarray, nrm: np.ndarray, R: np.ndarray, centre: np.ndarray,
          scale: float, side: int = SIDE) -> tuple[np.ndarray, np.ndarray]:  # fmt: skip
-    """The picture (side, side, 3) uint8 and its depth buffer (side, side; inf where empty), the nearest depth in
-    each pixel. Points splatted at SUPER x side, lit from the camera's upper left, scaled down. scale: pixels per
-    unit of the model in the picture."""
+    """Изображението (side, side, 3) uint8 и буферът му на дълбочина (side, side; inf при празно), с най-близката
+    дълбочина за пиксел. Точките се рисуват при SUPER x side, осветени горе вляво от камерата, и се смаляват. scale:
+    пиксели на единица от модела в изображението."""
     size = side * SUPER
     p = (pts - centre) @ R.T * scale * SUPER
     x = np.round(p[:, 0] + size / 2).astype(np.int64)
@@ -212,7 +210,7 @@ def draw(pts: np.ndarray, cols: np.ndarray, nrm: np.ndarray, R: np.ndarray, cent
     pix, first = np.unique(pix[order], return_index=True)
     sel = np.flatnonzero(keep)[order[first]]
     n = nrm[sel] @ R.T
-    n *= np.where(n[:, 1:2] > 0, -1.0, 1.0)  # turned to the camera, whichever way it points
+    n *= np.where(n[:, 1:2] > 0, -1.0, 1.0)  # обърната към камерата, накъдето и да гледа
     light = np.array([-0.45, -0.75, 0.5]) / np.linalg.norm([-0.45, -0.75, 0.5])
     shade = 0.6 + 0.4 * np.clip(n @ light, 0, 1)
     rgb = np.full((size * size, 3), BG)
@@ -220,7 +218,7 @@ def draw(pts: np.ndarray, cols: np.ndarray, nrm: np.ndarray, R: np.ndarray, cent
     rgb[pix] = np.clip(cols[sel] * shade[:, None], 0, 255)
     zbuf[pix] = depth[order[first]] / SUPER
     rgb, zbuf = rgb.reshape(size, size, 3), zbuf.reshape(size, size)
-    # Pin holes between samples: their neighbours' colour.
+    # Малки дупки между пробите: цветът на съседите им.
     from scipy import ndimage
 
     seen = np.isfinite(zbuf)
@@ -235,8 +233,8 @@ def draw(pts: np.ndarray, cols: np.ndarray, nrm: np.ndarray, R: np.ndarray, cent
 
 def seen_in(points: np.ndarray, R: np.ndarray, centre: np.ndarray, scale: float, near: np.ndarray,
             tolerance: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:  # fmt: skip
-    """Which points are seen in the picture (not hidden behind nearer surface: near, its depth buffer), and their
-    pixels (row, column)."""
+    """Кои точки се виждат в изображението (не са скрити зад по-близка повърхност: near, буфера му на дълбочина) и
+    пикселите им (ред, колона)."""
     side = near.shape[0]
     p = (points - centre) @ R.T * scale
     x = np.floor(p[:, 0] + side / 2).astype(np.int64)
@@ -246,20 +244,20 @@ def seen_in(points: np.ndarray, R: np.ndarray, centre: np.ndarray, scale: float,
     return inside & (p[:, 1] <= near[y, x] + tolerance), y, x
 
 
-# --- Finding the part -------------------------------------------------------------------------------------------------
+# --- Намиране на частта ---------------------------------------------------------------------------------------------
 
-Query = tuple[np.ndarray, np.ndarray, np.ndarray]  # points, colours (0-255), normals
+Query = tuple[np.ndarray, np.ndarray, np.ndarray]  # точки, цветове (0-255), нормали
 
 
 class NotFound(Exception):
-    """The part named is not on the model (CLIPSeg marked less than MIN_SHARE of it)."""
+    """Назованата част не е върху модела (CLIPSeg е отбелязал по-малко от MIN_SHARE от нея)."""
 
 
 def look(work: Path, part: str, draw_from: Query, frame: np.ndarray, margin: float, name: str,
          sh: Callable[[str, list], None]) -> list[tuple]:  # fmt: skip
-    """Pictures from VIEWS, each fitted to the points `frame` (the model, or where the part was found) with `margin`
-    (share of the picture) around, and CLIPSeg's marks of `part` in them: per picture (view rotation, depth buffer,
-    marks 0-1, pixels per unit, centre)."""
+    """Изображения от VIEWS, всяко напаснато към точките `frame` (модела или където е намерена частта) с `margin` (дял
+    от изображението) наоколо, и отметките на CLIPSeg за `part` в тях: за всяко изображение (завъртане на изгледа,
+    буфер на дълбочина, отметки 0-1, пиксели на единица, център)."""
     pts, cols, nrm = draw_from
     rotations = [view_rotation(a, e) for a, e in VIEWS]
     fits = []
@@ -277,7 +275,8 @@ def look(work: Path, part: str, draw_from: Query, frame: np.ndarray, margin: flo
     return [(R, d[1], pr, scale, centre) for R, d, pr, (scale, centre) in zip(rotations, drawn, prob, fits)]
 
 
-# Words CLIPSeg knows better for the same part ("base": 0.13 at most on a figure's round base, "pedestal": 0.7).
+# Думи, които CLIPSeg познава по-добре за същата част ("base": най-много 0,13 върху кръгла основа на фигура,
+# "pedestal": 0,7).
 SAME_PART = {"base": "pedestal", "stand": "pedestal", "plinth": "pedestal", "platform": "pedestal",
              "podium": "pedestal", "socle": "pedestal", "bottom": "pedestal"}  # fmt: skip
 
@@ -288,8 +287,8 @@ def prompt_for(part: str) -> str:
 
 
 def gather(queries: list[Query], looks: list[tuple[list, float]], unseen: bool = True) -> list[np.ndarray]:
-    """Each query point's mark: the mean over the pictures it is seen in, weighted by how straight on and by the
-    look's weight; points in no picture (crevices) take their nearest seen point's."""
+    """Отметката на всяка точка за запитване: средното от изображенията, в които се вижда, претеглено по прякостта и
+    по теглото на погледа; точки извън всички изображения (процепи) взимат тази на най-близката видяна точка."""
     from scipy.spatial import cKDTree
 
     out = []
@@ -297,7 +296,7 @@ def gather(queries: list[Query], looks: list[tuple[list, float]], unseen: bool =
         total, weight = np.zeros(len(q_pts)), np.zeros(len(q_pts))
         for pictures, k in looks:
             for R, near, pr, scale, centre in pictures:
-                vis, y, x = seen_in(q_pts, R, centre, scale, near, 2.5 / scale)  # depth: a few pixels' leeway
+                vis, y, x = seen_in(q_pts, R, centre, scale, near, 2.5 / scale)  # дълбочина: резерв от няколко пиксела
                 w = k * vis * np.clip(np.abs(q_nrm @ R[1]), 0.15, 1.0)
                 total += w * pr[y, x]
                 weight += w
@@ -313,8 +312,9 @@ def gather(queries: list[Query], looks: list[tuple[list, float]], unseen: bool =
 
 def find(work: Path, part: str, draw_from: Query, queries: list[Query], sh: Callable[[str, list], None],
          note: Callable[[str], None]) -> list[np.ndarray]:  # fmt: skip
-    """The weight (0-1) of the colour change at each query point for `part`. draw_from: the surface samples the
-    pictures are drawn from; queries: per set (points, colours, normals). Raises NotFound if it is not there."""
+    """Теглото (0-1) на промяната на цвета за всяка точка за запитване за `part`. draw_from: пробите от повърхността,
+    от които се рисуват изображенията; queries: за всеки набор (точки, цветове, нормали). Хвърля NotFound, ако я
+    няма."""
     pts = draw_from[0]
     size = float(np.linalg.norm(pts.max(0) - pts.min(0)))
     if set(part.lower().split()) & set(SAME_PART):
@@ -326,7 +326,8 @@ def find(work: Path, part: str, draw_from: Query, queries: list[Query], sh: Call
     work.mkdir(parents=True, exist_ok=True)
     looks = [(look(work, part, draw_from, pts, MARGIN, "views", sh), 1.0)]
     prob = gather(queries, looks)
-    # A second, closer look at where it was found: CLIPSeg marks in tiles of 1/22 of its picture, so closer is finer.
+    # Втори, по-близък поглед там, където е намерена: CLIPSeg отбелязва на плочки от 1/22 от изображението си, затова
+    # по-близо значи по-фино.
     allp, allq = np.concatenate(prob), np.concatenate([q[0] for q in queries])
     there = allq[allp >= FOUND]
     zoomed = False
@@ -344,10 +345,10 @@ def find(work: Path, part: str, draw_from: Query, queries: list[Query], sh: Call
 
 
 def looking(direction: np.ndarray) -> np.ndarray:
-    """A view rotation (as view_rotation) for a camera looking along -direction (the camera on that side)."""
+    """Завъртане на изгледа (като view_rotation) за камера, гледаща по -direction (камерата е от тази страна)."""
     look = -np.asarray(direction, np.float64) / np.linalg.norm(direction)
     right = np.cross(look, [0.0, 0.0, 1.0])
-    if np.linalg.norm(right) < 1e-3:  # straight down or up: the picture's up is the model's y
+    if np.linalg.norm(right) < 1e-3:  # право надолу или нагоре: посоката нагоре на изображението е y на модела
         right = np.cross(look, [0.0, 1.0, 0.0])
     right /= np.linalg.norm(right)
     return np.stack([right, look, np.cross(right, look)])
@@ -355,11 +356,11 @@ def looking(direction: np.ndarray) -> np.ndarray:
 
 def tapped(work: Path, draw_from: Query, queries: list[Query], spot: np.ndarray, normal: np.ndarray,
            sh: Callable[[str, list], None], note: Callable[[str], None]) -> list[np.ndarray]:  # fmt: skip
-    """The part of the model under the spot the user tapped ("make this red"): MobileSAM (app/refine.py's model),
-    told the tapped point, cuts out what is there in pictures from around the spot (straight on, and TAP_TILT to
-    four sides); each point takes the share of the pictures it is seen in that cut it out, and only the piece that
-    holds the spot stays. A colour rule could not do it: a dark red vest and the dark brown hair above it differ by
-    less than the shading within each. Returns each point's weight 0-1."""
+    """Частта от модела под докоснатото от потребителя място ("make this red"): MobileSAM (моделът от app/refine.py),
+    на който е посочена докоснатата точка, изрязва това, което е там, в изображения около мястото (пряко и с
+    TAP_TILT към четири страни); всяка точка взима дела от изображенията, в които се вижда и е изрязана, а остава
+    само парчето с мястото. Правило по цвят не би се справило: тъмночервена жилетка и тъмнокафявата коса над нея се
+    различават по-малко от сенките във всяка. Връща теглото на всяка точка 0-1."""
     from scipy import ndimage
 
     pts, cols, nrm = draw_from
@@ -390,8 +391,8 @@ def tapped(work: Path, draw_from: Query, queries: list[Query], spot: np.ndarray,
     used = [(R, near, m, scale, centre) for (R, near, centre, scale), m, p in zip(pictures, masks, points) if p[2] > 0]
     if not used:
         raise NotFound("the tapped spot")
-    prob = gather(queries, [(used, 1.0)], unseen=False)  # what no picture sees is not guessed: tap there again
-    # The piece that holds the spot, on a voxel grid of the surface.
+    prob = gather(queries, [(used, 1.0)], unseen=False)  # това, което никое изображение не вижда, не се предполага: докоснете там отново
+    # Парчето, съдържащо мястото, върху мрежа от воксели на повърхността.
     P = np.concatenate(prob)
     X = np.concatenate([q[0] for q in queries]).astype(np.float64)
     size = float(np.linalg.norm(X.max(0) - X.min(0)))
@@ -420,9 +421,9 @@ def tapped(work: Path, draw_from: Query, queries: list[Query], spot: np.ndarray,
 
 
 def stand(queries: list[Query]) -> list[np.ndarray] | None:
-    """The stand a figure is on, by its shape: from the bottom up to where the model's cross-section narrows to under
-    STAND_NARROW of the stand's (a figure's feet on a round base). CLIPSeg marks such a stand only in patches.
-    None when the model has no such step in its lower STAND_MAX (a mug, a vase)."""
+    """Поставката, върху която стои фигура, по формата ѝ: отдолу нагоре, докато напречното сечение на модела се стесни
+    под STAND_NARROW от това на поставката (краката на фигура върху кръгла основа). CLIPSeg отбелязва такава поставка
+    само на петна. None, когато моделът няма такова стъпало в долната си част STAND_MAX (чаша, ваза)."""
     from scipy.spatial import ConvexHull, QhullError
 
     X = np.concatenate([q[0] for q in queries])
@@ -440,11 +441,11 @@ def stand(queries: list[Query]) -> list[np.ndarray] | None:
             continue
         xy = X[rng.choice(sel, min(len(sel), 4000), replace=False), :2]
         try:
-            areas.append(float(ConvexHull(xy).volume))  # in 2D: the area
+            areas.append(float(ConvexHull(xy).volume))  # в 2D: площта
         except QhullError:
             areas.append(0.0)
     areas = np.array(areas)
-    ref = float(np.median(areas[1:4]))  # the stand's own (not its very bottom face)
+    ref = float(np.median(areas[1:4]))  # собствената на поставката (без самото ѝ дъно)
     if ref <= 0:
         return None
     narrow = np.flatnonzero((areas < STAND_NARROW * ref) & (np.arange(len(areas)) >= 2))
@@ -455,14 +456,13 @@ def stand(queries: list[Query]) -> list[np.ndarray] | None:
 
 
 def decide(prob: list[np.ndarray], queries: list[Query], size: float) -> list[np.ndarray]:
-    """CLIPSeg's coarse marks made exact by colour and by being one piece:
-    - colour: of each colour (Lab bins over the whole surface), the share CLIPSeg marked as the part. A forehead
-      next to the hair is half marked by CLIPSeg, and ears inside the hair even more, but skin colour is rarely
-      marked over the whole figure, so they keep it. Shadowed colours say little: the hair's last strands at the
-      neck are as dark as the cloak below (Lab within 3), and there CLIPSeg's marks alone decide (0.65 against 0.03);
-    - pieces: only the pieces (touching in 3D) that hold surely marked points stay: eyes as dark as the hair, but
-      apart from it, keep their colour.
-    Returns each point's weight 0-1 for the colour change: soft over about a voxel (1/256 of the model)."""
+    """Грубите отметки на CLIPSeg, уточнени по цвят и по това дали са едно цяло. Цвят: от всеки цвят (кошове в Lab по
+    цялата повърхност) делът, отбелязан от CLIPSeg като частта. Чело до косата е наполовина отбелязано, а ушите в
+    косата още повече, но цветът на кожата рядко е отбелязан по цялата фигура, затова го запазват. Цветовете в сянка
+    казват малко: последните кичури при врата са тъмни колкото наметалото отдолу (в рамките на 3 в Lab) и там решават
+    само отметките на CLIPSeg (0,65 спрямо 0,03). Парчета: остават само парчетата (допиращи се в 3D) със сигурно
+    отбелязани точки: очи, тъмни колкото косата, но отделно от нея, запазват цвета си. Връща теглото 0-1 на всяка
+    точка за промяната на цвета: меко на около воксел (1/256 от модела)."""
     from scipy import ndimage
 
     P = np.clip(np.concatenate(prob), 0.001, 0.999)
@@ -477,11 +477,11 @@ def decide(prob: list[np.ndarray], queries: list[Query], size: float) -> list[np
                                     mode="nearest")  # fmt: skip
     count = ndimage.uniform_filter(np.bincount(idx, None, nb**3).astype(float).reshape(nb, nb, nb), 3, mode="nearest")
     by_colour = np.clip(((marked + 0.5) / (count + 1.0)).reshape(-1)[idx], 0.01, 0.99)
-    says = np.clip((L[:, 0] - DARK) / 25.0, 0, 1)  # shadows' colours say nothing; lit ones all they can
-    if float(L.std(0).mean()) < PLAIN:  # one colour all over (a grey model): colour says nothing anywhere
+    says = np.clip((L[:, 0] - DARK) / 25.0, 0, 1)  # цветовете в сянка не казват нищо; осветените всичко, което могат
+    if float(L.std(0).mean()) < PLAIN:  # един цвят навсякъде (сив модел): цветът не казва нищо никъде
         says[:] = 0
     final = 1 / (1 + np.exp(-(np.log(P / (1 - P)) + says * np.log(by_colour / (1 - by_colour)))))
-    # Pieces, on a voxel grid of the surface.
+    # Парчета върху мрежа от воксели на повърхността.
     voxel = size / 256
     keys = np.floor((X - X.min(0)) / voxel).astype(np.int64)
     at_voxel = tuple(keys.T)
@@ -493,7 +493,8 @@ def decide(prob: list[np.ndarray], queries: list[Query], size: float) -> list[np
     sure[0] = 0
     keep = sure >= max(1, KEEP_PIECE * sure.max())
     kept = keep[labels] & occ
-    # In or out per point, then softened over a voxel or so: no speckles in shadows where the marks hover near half.
+    # Вътре или вън за всяка точка, после омекотено на около воксел: без петънца в сенки, където отметките са около
+    # половината.
     flat = np.ravel_multi_index(at_voxel, occ.shape)
     hit = (inside & kept[at_voxel]).astype(float)
     total = ndimage.uniform_filter(np.bincount(flat, hit, occ.size).reshape(occ.shape), 3, mode="constant")
@@ -506,7 +507,7 @@ def decide(prob: list[np.ndarray], queries: list[Query], size: float) -> list[np
     return out
 
 
-# --- CLIPSeg (own process) ------------------------------------------------------------------------------------------
+# --- CLIPSeg (собствен процес) --------------------------------------------------------------------------------------
 
 
 def ready() -> bool:
@@ -523,7 +524,7 @@ def main(pictures: Path, out: Path):
     ids = tok.encode(prompt).ids[:77]
     opts = ort.SessionOptions()
     opts.intra_op_num_threads = os.cpu_count() or 4
-    opts.log_severity_level = 3  # the model's output shape note on every run
+    opts.log_severity_level = 3  # бележката за формата на изхода на модела при всяко изпълнение
     session = ort.InferenceSession(str(MODEL_DIR / "model.onnx"), opts, providers=["CPUExecutionProvider"])
     mean, std = np.array([0.485, 0.456, 0.406]), np.array([0.229, 0.224, 0.225])
     prob = []
@@ -539,8 +540,8 @@ def main(pictures: Path, out: Path):
 
 
 def tap_main(request: Path, out: Path):
-    """MobileSAM on the pictures around a tapped spot: per picture, of its masks for the tapped point, the one it
-    rates best that holds the point and is not the whole model (over TAP_WHOLE of its outline)."""
+    """MobileSAM върху изображенията около докоснатото място: за всяко изображение, от маските му за докоснатата
+    точка, най-високо оценената, която съдържа точката и не е целият модел (над TAP_WHOLE от очертанието му)."""
     import onnxruntime as ort
 
     sam = Path(os.environ.get("SAM_MODEL_DIR", Path(__file__).resolve().parent.parent / "tools" / "sam"))
@@ -560,7 +561,7 @@ def tap_main(request: Path, out: Path):
         feed = {
             "image_embeddings": emb,
             "point_coords": (np.array([[x + 0.5, y + 0.5], [0.0, 0.0]], np.float32) * s)[None],
-            "point_labels": np.array([[1, -1]], np.float32),  # -1: the padding point when no box is given
+            "point_labels": np.array([[1, -1]], np.float32),  # -1: допълващата точка, когато не е дадена кутия
             "mask_input": np.zeros((1, 1, 256, 256), np.float32),
             "has_mask_input": np.zeros(1, np.float32),
             "orig_im_size": np.array([H, W], np.float32),

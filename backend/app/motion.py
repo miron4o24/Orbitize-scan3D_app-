@@ -1,29 +1,24 @@
-"""Camera poses from the phone's motion sensors: the route for objects photogrammetry cannot place.
-
-Feature matching needs texture. On a plain cloth, frames that look down at the object see little else, and the
-camera solver leaves them out or puts them in the wrong place (a speaker on red velvet: the high circle came out as
-separate pieces, and the model was a plank). The phone knows how it is turned, though: the app records its
-orientation while filming. The object stays in the middle of the picture as the user walks around it, so each frame's
-camera sits on the ray through the object's centre in its mask, at a distance inversely proportional to how big the
-object looks. An orientation error then only moves the viewpoint around the object a little, instead of shifting it
-sideways. The outlines (AI masks) from all those viewpoints carve out the shape: plain, shiny or dark objects work as
-well as textured ones. What the sensors do not say is fitted to the outlines: the delay between asking the camera to
-record and its first frame, and per frame the exact distance, centre and compass heading. The focal length comes from
-the camera solver when it placed some frames, else a typical phone value.
-
-The frames are upright in the phone's portrait orientation (picture up = the phone's +y): the app is locked to
-portrait and the camera tags its videos by the screen's orientation, not by how the phone is held. (Which way the
-picture is turned cannot be told from the outlines: on a round object all four turns agreed within 4%.)
-
-motion.json (uploaded by the app): {"samples": [[t, alpha, beta, gamma], ...]}, t in seconds since the recording was
-requested, angles in radians, W3C DeviceOrientation: R = Rz(alpha) Rx(beta) Ry(gamma) turns the phone's axes (x
-right, y up, z out of the screen) into the world's (x east, y north, z up).
-
-Runs as its own process (pipeline step "shape from motion sensors"), so it can be cancelled like the other tools:
-    python motion.py <job dir> <photo masks.npz> <focal px, 0 if unknown> <out.ply> <flat base 0/1>
-It writes <out>.json {"score", "frames", "delay"} and, when the outlines agree (score >= USABLE), the printable mesh
-as <out>.
-"""
+"""Положения на камерата от сензорите за движение на телефона: пътят за предмети, които фотограметрията не може да
+разположи. Съпоставянето на особености изисква шарка. Върху еднообразен плат кадрите, гледащи надолу към предмета,
+виждат малко друго и решаващият алгоритъм ги пропуска или слага на грешно място (колонка върху червено кадифе:
+високият кръг излезе на отделни части, а моделът беше дъска). Телефонът обаче знае как е завъртян: приложението
+записва положението му по време на заснемане. Предметът остава в средата на изображението, докато потребителят го
+обикаля, така че камерата на всеки кадър е на лъча през центъра на предмета в маската му, на разстояние, обратно
+пропорционално на видимия му размер. Така грешка в положението само леко премества гледната точка около предмета,
+вместо да я измества настрани. Очертанията (AI маски) от всички тези гледни точки издълбават формата: едноцветни,
+лъскави или тъмни предмети работят толкова добре, колкото и шарените. Това, което сензорите не казват, се напасва към
+очертанията: закъснението между заявката за запис и първия кадър, а за всеки кадър точното разстояние, център и посока
+на компаса. Фокусното разстояние идва от решаващия алгоритъм, когато е разположил някои кадри, иначе е типична за
+телефон стойност. Кадрите са изправени във вертикалната ориентация на телефона (изображението нагоре = +y на
+телефона): приложението е заключено вертикално, а камерата отбелязва видеата по ориентацията на екрана, а не по това
+как се държи телефонът. (Посоката на завъртане на изображението не може да се определи от очертанията: при кръгъл
+предмет и четирите завъртания съвпадаха в рамките на 4%.) motion.json (качен от приложението): {"samples": [[t, alpha,
+beta, gamma], ...]}, t в секунди от заявката за запис, ъгли в радиани, DeviceOrientation по W3C: R = Rz(alpha)
+Rx(beta) Ry(gamma) завърта осите на телефона (x надясно, y нагоре, z извън екрана) към тези на света (x на изток, y на
+север, z нагоре). Работи като собствен процес (стъпка "shape from motion sensors"), за да може да се отказва като
+другите инструменти: python motion.py <папка на задачата> <маски на снимките.npz> <фокусно разстояние в px, 0 ако е
+неизвестно> <out.ply> <плоска основа 0/1>. Записва <out>.json {"score", "frames", "delay"} и, когато очертанията са
+съгласувани (score >= USABLE), мрежата за печат като <out>."""
 
 import json
 import sys
@@ -40,40 +35,40 @@ if __package__:
     from . import depth as D
     from . import mesh as M
     from . import segment as S
-else:  # run as a script: import the package by its path
+else:  # изпълнение като скрипт: импортира пакета по пътя му
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from app import depth as D
     from app import mesh as M
     from app import segment as S
 
-MOTION = "motion.json"  # in the job directory
-FRAME_TIMES = "frames.json"  # in the job directory: seconds into the video of each picked frame
-SHIFTS = np.arange(-0.5, 2.01, 0.25)  # first video frame this long after the recording was requested, s
+MOTION = "motion.json"  # в папката на задачата
+FRAME_TIMES = "frames.json"  # в папката на задачата: секунди от началото на видеото за всеки избран кадър
+SHIFTS = np.arange(-0.5, 2.01, 0.25)  # първият видео кадър е толкова след заявката за запис, в секунди
 MIN_FRAMES = 12
-# The frames must look at the object from at least this far around (degrees). With less, the outlines agree whatever
-# the poses (filmed from one side, or the sensor stuck) and the shape is a guess.
+# Кадрите трябва да гледат предмета поне от толкова градуса наоколо. При по-малко очертанията са съгласувани при
+# всякакви положения (заснето от една страна или заседнал сензор) и формата е предположение.
 MIN_AROUND = 200
-YAW_STEP = np.radians(3)  # heading correction tried per frame and round
-# Focal length / long image side when the camera solver did not estimate it (main phone cameras filming 16:9: ~0.75;
-# COLMAP found 0.77 for one). Not fitted to the outlines: they agree better the longer it is (more distant, flatter
-# views), whatever the truth.
+YAW_STEP = np.radians(3)  # корекция на посоката, пробвана за всеки кадър и кръг
+# Фокусно разстояние / дълга страна на изображението, когато решаващият алгоритъм не го е оценил (основни камери на
+# телефони при 16:9: около 0,75; COLMAP намери 0,77 за една). Не се напасва към очертанията: те са по-съгласувани при
+# по-дълго разстояние (по-далечни и плоски изгледи), независимо от истината.
 FOCAL = 0.77
-GOOD = 0.75  # median outline overlap from which the sensor poses are trusted
-USABLE = 0.5  # ...and below which they are not used at all
-CAM_FROM_DEVICE = np.diag([1.0, -1.0, -1.0])  # camera: x right, y down, z forward out of the back of the phone
-# Share of the frames that must see a voxel inside the outline (mesh.visual_hull). The camera solver's route forgives
-# more (0.75), which widened an oval filmed all around by 17%; at 0.9 by 3%.
+GOOD = 0.75  # медианното припокриване на очертанията, от което на положенията от сензорите се вярва
+USABLE = 0.5  # ...и под което изобщо не се използват
+CAM_FROM_DEVICE = np.diag([1.0, -1.0, -1.0])  # камера: x надясно, y надолу, z напред, навън от гърба на телефона
+# Дял от кадрите, които трябва да виждат воксел в очертанието (mesh.visual_hull). Пътят с решаващия алгоритъм прощава
+# повече (0,75), което разширяваше овал, заснет отвсякъде, със 17%; при 0,9 с 3%.
 AGREE = 0.9
-DEFAULT_DELAY = 0.3  # s, when the outlines agree as well with any delay (round objects, steady walking)
+DEFAULT_DELAY = 0.3  # секунди, когато очертанията са еднакво съгласувани при всякакво закъснение (кръгли предмети, равномерно ходене)
 
 
 def device_matrices(alpha, beta, gamma) -> np.ndarray:
-    """(n, 3, 3) phone-to-world rotations from W3C angles (arrays)."""
-    return Rotation.from_euler("ZXY", np.stack([alpha, beta, gamma], -1)).as_matrix()  # intrinsic Z, X', Y''
+    """(n, 3, 3) завъртания от телефона към света от ъгли по W3C (масиви)."""
+    return Rotation.from_euler("ZXY", np.stack([alpha, beta, gamma], -1)).as_matrix()  # вътрешни Z, X', Y''
 
 
 def device_rotations(samples: np.ndarray, times: np.ndarray) -> np.ndarray:
-    """Phone orientation at each time (s since the recording was requested), interpolated between samples."""
+    """Положението на телефона за всяко време (секунди от заявката за запис), интерполирано между пробите."""
     order = np.argsort(samples[:, 0], kind="stable")
     s = samples[order]
     s = s[np.r_[True, np.diff(s[:, 0]) > 0]]
@@ -83,12 +78,12 @@ def device_rotations(samples: np.ndarray, times: np.ndarray) -> np.ndarray:
 
 @dataclass
 class Frames:
-    """The frames that show the object, with where (px) and how big (px, square root of the area) it is."""
+    """Кадрите, показващи предмета, с местоположението (px) и размера му (px, корен квадратен от площта)."""
 
     names: list[str]
     times: np.ndarray
     masks: list[np.ndarray]
-    anchors: np.ndarray  # (n, 2) mask centre in image pixels
+    anchors: np.ndarray  # (n, 2) център на маската в пиксели на изображението
     sizes: np.ndarray  # (n,)
     width: int
     height: int
@@ -109,56 +104,57 @@ def frames(names: list[str], times: dict, masks: dict, scale: int, size: tuple[i
 
 
 def headings(dev: np.ndarray) -> np.ndarray:
-    """Which way each frame looks, radians around the vertical, counted on across full turns (filming order)."""
+    """Накъде гледа всеки кадър, в радиани около вертикалата, с продължаване през пълните обиколки (ред на заснемане)."""
     fwd = (dev @ CAM_FROM_DEVICE)[:, :, 2]
     return np.unwrap(np.arctan2(fwd[:, 1], fwd[:, 0]))
 
 
 def steadied(fr: Frames, dev: np.ndarray) -> Frames:
-    """The frames with the object's size as it would look without its shape: the mean (log) size over the frames
-    filmed from within 90° around. Taken frame by frame, an oval's wide side looks closer than its narrow side, and
-    the hull came out rounder than the object (1.5:1 as 1.2:1). What is left, people walking closer or farther, is
-    fitted per frame (`refine`)."""
+    """Кадрите с размера на предмета, какъвто би изглеждал без формата си: средният (логаритмичен) размер за кадрите,
+    заснети в рамките на 90° наоколо. Кадър по кадър широката страна на овал изглежда по-близо от тясната и обвивката
+    излизаше по-кръгла от предмета (1,5:1 като 1,2:1). Останалото, хора, вървящи по-близо или по-далеч, се напасва за
+    всеки кадър (`refine`)."""
     around = headings(dev)
     near = np.abs(around[:, None] - around[None, :]) <= np.pi / 2
     return replace(fr, sizes=np.exp(near @ np.log(fr.sizes) / near.sum(1)))
 
 
 def heading(yaw: np.ndarray) -> np.ndarray:
-    """(n, 3, 3) turns about the vertical axis."""
+    """(n, 3, 3) завъртания около вертикалната ос."""
     c, s = np.cos(yaw), np.sin(yaw)
     z, o = np.zeros_like(yaw), np.ones_like(yaw)
     return np.stack([np.stack([c, -s, z], -1), np.stack([s, c, z], -1), np.stack([z, z, o], -1)], -2)
 
 
 def views(dev: np.ndarray, fr: Frames, focal: float, dist=None, offset=None, yaw=None) -> M.Views:
-    """Cameras looking at the object's centre (the world origin) from its outline's centre in each frame.
-    dist: per-frame factor on the distance; offset: per-frame shift of that centre, in object sizes; yaw: per-frame
-    correction of the compass heading, radians."""
+    """Камери, гледащи центъра на предмета (началото на световните координати), от центъра на очертанието му във всеки
+    кадър. dist: множител на разстоянието за кадър; offset: изместване на този център за кадър, в размери на предмета;
+    yaw: корекция на посоката на компаса за кадър, в радиани."""
     n = len(fr.names)
     cx, cy = fr.width / 2, fr.height / 2
     if yaw is not None:
         dev = heading(yaw) @ dev
-    C = dev @ CAM_FROM_DEVICE  # camera -> world
+    C = dev @ CAM_FROM_DEVICE  # камера -> свят
     a = fr.anchors + (offset if offset is not None else 0) * fr.sizes[:, None]
     ray = np.stack([(a[:, 0] - cx) / focal, (a[:, 1] - cy) / focal, np.ones(n)], -1)
     ray /= np.linalg.norm(ray, axis=1, keepdims=True)
-    d = (dist if dist is not None else 1.0) * focal / fr.sizes  # the object is 1 unit "big"
+    d = (dist if dist is not None else 1.0) * focal / fr.sizes  # предметът е "голям" 1 единица
     centers = -d[:, None] * np.einsum("nij,nj->ni", C, ray)
     R = C.transpose(0, 2, 1)
     return M.Views(R, -np.einsum("nij,nj->ni", R, centers), np.tile([focal, focal, cx, cy], (n, 1)), list(fr.names))
 
 
 def score(v: M.Views, masks: list, scale: int, cells: int = 40) -> float:
-    """How well all outlines agree: median overlap of each mask with the hull of all frames."""
+    """Колко са съгласувани всички очертания: медианно припокриване на всяка маска с обвивката от всички кадри."""
     iou = M.silhouette_consistency(v, masks, scale, cells, AGREE)
     return float(np.median(np.nan_to_num(iou))) if len(iou) else 0.0
 
 
 def fit(fr: Frames, samples: np.ndarray, scale: int, focal: float):
-    """The delay of the video after the recording was requested, by how well the outlines then agree. Walking at a
-    steady pace, a wrong delay turns every viewpoint by the same angle around the object, which changes nothing; only
-    changes of pace show it (and make it matter). Returns (phone rotations per frame, score, delay)."""
+    """Закъснението на видеото след заявката за запис, по това колко се съгласуват очертанията при него. При
+    равномерно ходене грешното закъснение завърта всяка гледна точка на един и същ ъгъл около предмета, което не
+    променя нищо; показват го (и го правят важно) само промените в темпото. Връща (завъртанията на телефона за
+    кадър, оценка, закъснение)."""
 
     def at(s: float) -> float:
         dev = device_rotations(samples, fr.times + s)
@@ -169,15 +165,15 @@ def fit(fr: Frames, samples: np.ndarray, scale: int, focal: float):
     for s in shift + np.arange(-0.2, 0.201, 0.05):
         if (sc := at(s)) > best:
             best, shift = sc, float(s)
-    if best < default + 0.002:  # no clear sign
+    if best < default + 0.002:  # няма ясен знак
         best, shift = default, DEFAULT_DELAY
     return device_rotations(samples, fr.times + shift), best, shift
 
 
 def refine(fr: Frames, dev: np.ndarray, focal: float, scale: int, rounds: int = 2):
-    """Per frame, the distance, outline centre and heading that best match the hull of all frames (people do not walk
-    at a constant distance, a mask's centre is not exactly the object's, and the compass wobbles near metal).
-    Returns the views."""
+    """За всеки кадър разстоянието, центърът на очертанието и посоката, които най-добре пасват на обвивката от всички
+    кадри (хората не вървят на постоянно разстояние, центърът на маска не е точно този на предмета, а компасът се
+    колебае близо до метал). Връща изгледите."""
     n = len(fr.names)
     dist, offset, yaw = np.ones(n), np.zeros((n, 2)), np.zeros(n)
     steps = [(f, 0, 0, 0) for f in (0.9, 0.95, 1.05, 1.1)]
@@ -208,16 +204,16 @@ def _one(fr: Frames, i: int) -> Frames:
 
 
 def floor_height(v: M.Views, masks: list, scale: int, occ: np.ndarray, step: float) -> float | None:
-    """The table's height: where the ray through the bottom of each outline first enters the hull. That point is on
-    the object's lowest edge facing the camera, which rests on the table. (The hull itself reaches below the table
-    as a wedge, as no frame sees under the object.)"""
+    """Височината на масата: където лъчът през дъното на всяко очертание за пръв път влиза в обвивката. Тази точка е
+    върху най-ниския ръб на предмета към камерата, който стои върху масата. (Самата обвивка стига под масата като
+    клин, защото никой кадър не вижда под предмета.)"""
     tree = cKDTree(occ)
     zs = []
     for R, t, (fx, fy, cx, cy), m in zip(v.R, v.t, v.K, masks):
         ys, xs = np.nonzero(m > 127)
         if len(ys) < 50:
             continue
-        row = ys.max() - 1  # just inside the outline's bottom
+        row = ys.max() - 1  # малко навътре от дъното на очертанието
         cols = xs[ys == row]
         if not len(cols):
             continue
@@ -234,9 +230,9 @@ def floor_height(v: M.Views, masks: list, scale: int, occ: np.ndarray, step: flo
 
 
 def depth_carver(v: M.Views, masks: list, photos: list[Path], hull: trimesh.Trimesh):
-    """What AI depth says is empty inside the outlines' hull (app/depth.py), as a limit(points) for M.visual_hull;
-    None without the model or enough frames it fits. The depth is scaled to the hull's walls, which the outlines get
-    right (the hull errs on tops and hollows)."""
+    """Какво според AI дълбочината е празно в обвивката от очертанията (app/depth.py), като limit(points) за
+    M.visual_hull; None без модела или без достатъчно напаснати кадри. Дълбочината се мащабира към стените на
+    обвивката, които очертанията дават вярно (обвивката греши при върхове и вдлъбнатини)."""
     if not D.MODEL.exists():
         return None
     samples, face = trimesh.sample.sample_surface_even(hull, 30_000, seed=0)
@@ -249,8 +245,8 @@ def depth_carver(v: M.Views, masks: list, photos: list[Path], hull: trimesh.Trim
 
 
 def model(fr: Frames, v: M.Views, scale: int, photos: list[Path] | None, flat_base: bool) -> trimesh.Trimesh:
-    """The printable mesh: the hull of all outlines, standing on the table, carved by AI depth, coloured from the
-    frames."""
+    """Мрежата за печат: обвивката от всички очертания, стояща върху масата, издълбана с AI дълбочина и оцветена от
+    кадрите."""
     grid = M.hull_grid(v, fr.masks, scale, 96, AGREE)
     if grid is None:
         raise M.MeshError("The object's outline could not be followed around. Keep it inside the circle on screen.")
@@ -258,7 +254,7 @@ def model(fr: Frames, v: M.Views, scale: int, photos: list[Path] | None, flat_ba
     floor = floor_height(v, fr.masks, scale, occ, step)
     if floor is None:
         floor = float(occ[:, 2].min())
-    cloud = M.Cloud(occ, np.zeros_like(occ), np.ones((len(occ), 4)), floor, np.eye(3))  # world z is up already
+    cloud = M.Cloud(occ, np.zeros_like(occ), np.ones((len(occ), 4)), floor, np.eye(3))  # световното z вече е нагоре
     hull = M.visual_hull(v, fr.masks, scale, cloud, cells=200, agree=AGREE)
     if hull is None:
         raise M.MeshError("The object's outlines did not agree on a shape. Film again more slowly.")
@@ -277,7 +273,7 @@ def model(fr: Frames, v: M.Views, scale: int, photos: list[Path] | None, flat_ba
 
 
 def load(job: Path) -> tuple[np.ndarray, dict] | None:
-    """The phone's orientation samples and the frames' times, if the app sent them (videos only)."""
+    """Пробите за положението на телефона и времената на кадрите, ако приложението ги е изпратило (само за видеа)."""
     try:
         samples = np.array(json.loads((job / MOTION).read_text())["samples"], float)
         times = json.loads((job / FRAME_TIMES).read_text())
@@ -289,10 +285,11 @@ def load(job: Path) -> tuple[np.ndarray, dict] | None:
 
 
 def gravity_up(job: Path, v: M.Views) -> tuple[np.ndarray, float] | None:
-    """Which way is up in the camera solver's coordinates, from the phone's orientation log: each frame's own sense of
-    gravity, turned by its solved rotation. (The camera solver does not know up; image up averages to it only over an
-    even, full circle, and a box on a cushion, with no table found to level on, came out tilted 45°.) Returns (up,
-    median angle between the frames' ups in degrees), or None without a log for these frames."""
+    """Накъде е нагоре в координатите на решаващия алгоритъм, от дневника на положението на телефона: собственото
+    усещане за гравитация на всеки кадър, завъртяно с решеното му завъртане. (Алгоритъмът не знае къде е нагоре;
+    посоката нагоре на изображението се осреднява до него само при равномерен пълен кръг, а кутия върху възглавница
+    без намерена маса за изравняване излизаше наклонена на 45°.) Връща (нагоре, медианен ъгъл между посоките на
+    кадрите в градуси) или None без дневник за тези кадри."""
     data = load(job)
     if data is None:
         return None
@@ -301,8 +298,8 @@ def gravity_up(job: Path, v: M.Views) -> tuple[np.ndarray, float] | None:
     if len(known) < MIN_FRAMES:
         return None
     dev = device_rotations(samples, np.array([times[v.names[i]] for i in known]) + DEFAULT_DELAY)
-    up_cam = (dev @ CAM_FROM_DEVICE)[:, 2, :]  # world +z in camera coordinates
-    ups = np.einsum("nji,nj->ni", v.R[known], up_cam)  # ...in the solver's coordinates
+    up_cam = (dev @ CAM_FROM_DEVICE)[:, 2, :]  # световното +z в координатите на камерата
+    ups = np.einsum("nji,nj->ni", v.R[known], up_cam)  # ...в координатите на решаващия алгоритъм
     up = ups.sum(0)
     up /= np.linalg.norm(up)
     return up, float(np.degrees(np.median(np.arccos(np.clip(ups @ up, -1, 1)))))
@@ -318,7 +315,7 @@ def main(job: Path, masks_path: Path, focal: float, out: Path, flat_base: bool) 
         names = sorted(masks)
         with Image.open(job / "photos" / names[0]) as im:
             size = im.size
-        if not 0.5 <= focal / max(size) <= 1.3:  # unknown, or from a wrong camera solution
+        if not 0.5 <= focal / max(size) <= 1.3:  # неизвестно или от грешно решение за камерите
             focal = FOCAL * max(size)
         fr = frames(names, times, masks, S.MASK_SCALE, size)
         info["frames"] = len(fr.names)
