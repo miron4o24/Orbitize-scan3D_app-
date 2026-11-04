@@ -107,9 +107,9 @@ const PLAN: [string, number][] = [
 // приблизително.
 // Модел от една снимка: сървърът търси предмета и AI изгражда формата.
 const ONE_PHOTO_PLAN: [string, number][] = [
-  ['finding the object', 10],
-  ['ai modelling', 60],
-  ['cleaning', 10],
+  ['finding the object', 5],
+  ['ai modelling', 47],
+  ['cleaning', 2],
 ];
 const PRO_PLANS: Record<ProMethod, [string, number][]> = {
   edit: [

@@ -9,7 +9,7 @@ export type Quality = 'quick' | 'detailed';
 
 export const SCAN_INFO = { label: 'Стандартно', time: '~35 мин', minutes: 35 };
 
-export const ONE_PHOTO_INFO = { label: 'От една снимка', time: '~2 мин', minutes: 2 };
+export const ONE_PHOTO_INFO = { label: 'От една снимка', time: '~1 мин', minutes: 1 };
 
 // Pro (сървър app/ai.py, app/pipeline.py EXPRESS_*). Сега може да се стартира само "single"; останалите са тук за
 // вече направени с тях сканирания и за текстови промени ("edit").
