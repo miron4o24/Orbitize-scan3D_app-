@@ -133,3 +133,24 @@ def test_rim_does_not_eat_the_range_of_the_buttons():
     assert abs(rel[100, 45]) < 0.2  # равното между копчетата и ръба остава равно
     assert abs(rel[30, 30]) < 0.6  # ъгълът не изскача над копчетата
     assert abs(rel[100, 26]) < 0.3  # и край очертанието няма улей, който го няма на предмета
+
+
+def test_tilted_back_frame_is_straightened_to_lie_like_the_photo():
+    from PIL import Image
+
+    from app import photo3d as P3
+
+    def bar(tilt):
+        a = Image.new("L", (400, 400))
+        a.paste(255, (170, 60, 230, 340))
+        return np.asarray(a.rotate(tilt, Image.BICUBIC)) > 127
+
+    front = bar(0)
+    photo = Image.new("RGB", (400, 400))
+    _, inside, box = P3.turned_like(photo, bar(12), P3.lengthwise(front))
+    crop = inside[box[1] : box[3], box[0] : box[2]]
+    assert abs(abs(P3.lengthwise(crop)) - abs(P3.lengthwise(front))) < 1.5
+    assert crop.shape[1] < 80  # лежи изправен, а не по диагонал в кутията си
+    # Кръгъл предмет няма посока на дължината и не се върти.
+    yy, xx = np.mgrid[:200, :200]
+    assert P3.lengthwise(np.hypot(yy - 100, xx - 100) < 60) is None
