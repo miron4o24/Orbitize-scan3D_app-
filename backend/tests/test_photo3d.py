@@ -94,3 +94,24 @@ def test_doubling_keeps_the_values_and_fills_between_them():
     assert b.shape == (5, 5, 5)
     assert np.array_equal(b[::2, ::2, ::2], a)
     assert b[1, 0, 0] == 0.5 * (a[0, 0, 0] + a[1, 0, 0])
+
+
+def test_white_balance_reads_only_the_background(tmp_path):
+    from PIL import Image
+
+    from app import texture as TX
+
+    # Топла светлина върху сив фон, с червен предмет в средата.
+    a = np.full((120, 160, 3), [190, 150, 110], np.uint8)
+    a[30:90, 50:110] = [200, 30, 30]
+    Image.fromarray(a).save(tmp_path / "warm.png")
+    half = np.zeros((30, 40), np.uint8)
+    half[7:23, 12:28] = 255
+    gain = TX.white_gain(tmp_path, ["warm.png"], {"warm.png": half})
+    assert gain[0] < 1 < gain[2]
+    # Предмет, запълнил кадъра: светлината не може да се отдели от цвета му.
+    full = np.full((30, 40), 255, np.uint8)
+    assert np.array_equal(TX.white_gain(tmp_path, ["warm.png"], {"warm.png": full}), np.ones(3))
+    # Сиво си остава сиво, а алфата не се променя.
+    grey = np.array([[[128, 128, 128, 200]]], np.uint8)
+    assert np.array_equal(TX.balanced(grey, np.ones(3)), grey)
