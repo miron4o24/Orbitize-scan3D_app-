@@ -70,3 +70,27 @@ def test_relief_marks_a_raised_button_and_leaves_the_flat_part():
     rel = R.unit_relief(d, inside, 200.0)
     assert rel[68, 68] > 0.5  # средата на копче е високо, а не само ръбът му
     assert abs(rel[15, 15]) < 0.2  # равното далеч от копчетата остава равно
+
+
+def test_masked_blur_at_low_resolution_matches_the_full_one():
+    from app import relief as R
+
+    yy, xx = np.mgrid[:240, :300].astype(np.float32)
+    a = 0.02 * xx + 0.01 * yy
+    inside = np.zeros(a.shape, bool)
+    inside[20:220, 30:270] = True
+    w = inside.astype(np.float32)
+    full = ndimage.gaussian_filter(np.where(inside, a, 0).astype(np.float32), 24, truncate=3.0) / np.maximum(ndimage.gaussian_filter(w, 24, truncate=3.0), 1e-3)
+    fast = R.masked_blur(a, inside, 24)
+    assert fast.shape == a.shape
+    assert np.abs(fast - full)[inside].max() < 0.15
+
+
+def test_doubling_keeps_the_values_and_fills_between_them():
+    from app import fuse as F
+
+    a = np.arange(27, dtype=np.float32).reshape(3, 3, 3)
+    b = F.doubled(a)
+    assert b.shape == (5, 5, 5)
+    assert np.array_equal(b[::2, ::2, ::2], a)
+    assert b[1, 0, 0] == 0.5 * (a[0, 0, 0] + a[1, 0, 0])

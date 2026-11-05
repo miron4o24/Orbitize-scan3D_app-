@@ -248,6 +248,10 @@ class Tune(BaseModel):
     relief_views: int | None = Field(None, ge=2, le=24)  # от колко кадъра
     solve: Literal["room", "object"] | None = None  # по какво да се разположат кадрите, вместо да се реши от видеото
     one_frame: bool = False  # направо моделът от един кадър (app/photo3d.py)
+    rounds: int | None = Field(None, ge=1, le=3)  # проходите на MobileSAM
+    iters: int | None = Field(None, ge=1, le=6)  # итерациите на гъстото съпоставяне
+    relief_faces: int | None = Field(None, ge=100_000, le=600_000)  # стените след детайла
+    full: bool = False  # без ограничението за време: за сравнение с пълното качество
 
 
 # Старото сканиране за около 35 минути е спряно за всички потребители; кодът му остава (app/pipeline.py run, Git етикет

@@ -643,13 +643,14 @@ def camera_stayed_still(job: Path, photos: Path, masks: dict[str, np.ndarray]) -
     names = sorted(masks)
     picked = names[:: max(1, len(names) // V.STILL_FRAMES)][: V.STILL_FRAMES]
     grey, cover = [], []
+    size = None
     for name in picked:
         with Image.open(photos / name) as im:
             small = im.convert("L")
             small.thumbnail((V.STILL_SIDE, V.STILL_SIDE))
-            grey.append(np.asarray(small, np.float32))
-        on = Image.fromarray(masks[name]).resize(small.size, Image.BILINEAR)
-        cover.append(np.asarray(on) > 40)
+            size = size or small.size  # кадрите на добавена страна са от друго видео и може да са с друг размер
+            grey.append(np.asarray(small.resize(size), np.float32))
+        cover.append(np.asarray(Image.fromarray(masks[name]).resize(size, Image.BILINEAR)) > 40)
     score = V.background_stays(grey, cover)
     still = score >= V.STILL_SCORE
     note(job, f"camera: the background stays the same by {score:.2f} through the video: "

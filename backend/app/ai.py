@@ -566,7 +566,20 @@ def from_video(job: Path, work: Path, photos: Path, n_photos: int, flat_base: bo
 
 
 ROUNDS = 2  # проходи на MobileSAM, всеки с подсказки от формата на очертанията от предишния
-LATE_S = 240  # толкова секунди след началото обработката е закъсняла за 5 минути: детайлът идва от по-малко кадри
+# Обещаното време. Когато не стига, отпада това, което се усеща най-малко: вторият проход на MobileSAM, проверяващият
+# проход на гъстото съпоставяне и част от кадрите на детайла. Времената са от дрелка с 47 кадъра на сървъра.
+TARGET_S = 285
+DENSE_S = 3.0  # секунди гъсто съпоставяне на кадър
+AFTER_DENSE_S = 150  # от края на гъстото съпоставяне до края на задачата
+SECOND_ROUND_S = 15
+DETAIL_S = 60  # детайлът от всички кадри и текстурата след него
+
+
+def seconds_left(tune: dict) -> float:
+    """Колко остава до обещаното време; безкрайно за тестова задача, която сравнява пълното качество (tune "full")."""
+    if tune.get("full") or "started" not in tune:
+        return float("inf")
+    return TARGET_S - (time.time() - tune["started"])
 
 
 def model_from_solved(job: Path, work: Path, photos: Path, flat_base: bool, set_state: Callable[[str], None],
@@ -585,8 +598,9 @@ def model_from_solved(job: Path, work: Path, photos: Path, flat_base: bool, set_
                "making it from one frame")  # fmt: skip
         return None
     tune = {k: v for k, v in (tune or {}).items() if v}  # Tune от app/main.py: настройките на тестова задача
-    if tune:
-        P.note(job, f"AI model: test settings {tune}")
+    shown = {k: v for k, v in tune.items() if k != "started"}
+    if shown:
+        P.note(job, f"AI model: test settings {shown}")
     # Същите 14 минути, по-остър печат: при дрелка логото и етикетът излязоха по-ясни, с по-малко невидени стени (11%
     # -> 7%).
     if not tune.get("no_refine"):
@@ -624,7 +638,9 @@ def model_from_solved(job: Path, work: Path, photos: Path, flat_base: bool, set_
             raise P.Failed("the frames' outlines give no shape")
         P.note(job, f"AI model: {len(views)} frames placed, {placed} agreeing, few points on the object")
 
-    masks, keep, sharpened = outlines_from_3d(job, work, dense, views, masks, agreed, cloud, pts, sh)
+    rest = DENSE_S * len(views) + AFTER_DENSE_S
+    rounds = tune.get("rounds") or (ROUNDS if seconds_left(tune) >= rest + SECOND_ROUND_S else 1)
+    masks, keep, sharpened = outlines_from_3d(job, work, dense, views, masks, agreed, cloud, pts, sh, rounds)
     if keep.sum() < MIN_PLACED:
         P.note(job, f"AI model: only {keep.sum()} frames agree on the object's outline; making it from one frame")
         return None
@@ -636,11 +652,14 @@ def model_from_solved(job: Path, work: Path, photos: Path, flat_base: bool, set_
         views, masks = M.subset(views, keep), [m for m, k in zip(masks, keep) if k]
     images = [dense / "images" / n for n in views.names]
     agree = tune.get("agree") or (OL.AGREE_SHARP if sharpened else M.HULL_AGREE)
+    geometric = not tune.get("no_geo") and seconds_left(tune) >= rest
+    P.note(job, f"AI model: {seconds_left(tune):.0f} s left of the promised time, {rounds} rounds of outlines, "
+           f"second pass of dense matching: {geometric}")  # fmt: skip
 
     surface, cloud = OL.measured(job, work, dense, views, masks, cloud, up, agree, set_state, sh, side=side,
                                  voxel=tune.get("voxel", OL.VOXEL), fixed="agree" in tune,
                                  table=not in_hand and not tune.get("no_table"), flap=tune.get("flap"), wide=tune.get("wide_dense", False),
-                                 geometric=not tune.get("no_geo"), passes=tune.get("passes"))  # fmt: skip
+                                 geometric=geometric, passes=tune.get("passes"), iters=tune.get("iters"))  # fmt: skip
     set_state("cleaning")
     M.paint(surface, views, images, cloud.to_up)
     out = M.make_printable(surface, M.floor_z(cloud), flat_base and not in_hand)
@@ -659,7 +678,6 @@ def with_detail(job: Path, work: Path, images: Path, views: M.Views, masks: list
     """Моделът за печат с фините детайли от AI дълбочината (app/relief.py); какъвто е, ако това се провали."""
     if tune.get("no_relief"):
         return out
-    late = time.time() - tune.get("started", time.time()) > LATE_S
     to_world = np.eye(4)
     to_world[:3, :3] = cloud.to_up.T
     to_world = to_world @ np.linalg.inv(out.metadata["to_print"])
@@ -667,7 +685,8 @@ def with_detail(job: Path, work: Path, images: Path, views: M.Views, masks: list
     colors = out.visual.vertex_colors if out.visual.kind == "vertex" else np.full((len(out.vertices), 4), 160, np.uint8)
     np.savez(inputs, names=np.array(views.names), R=views.R, t=views.t, K=views.K, mask_scale=S.MASK_SCALE,
              vertices=out.vertices, faces=out.faces, colors=colors, to_world=to_world, strength=tune.get("relief") or 1.0,
-             views=tune.get("relief_views") or (RL.FEWER_VIEWS if late else RL.VIEWS),
+             views=tune.get("relief_views") or (RL.VIEWS if seconds_left(tune) >= DETAIL_S else RL.FEWER_VIEWS),
+             faces_out=tune.get("relief_faces") or RL.FACES,
              **{f"masks_{i}": m for i, m in enumerate(masks)})  # fmt: skip
     try:
         sh("adding detail", [sys.executable, RL.__file__, images, inputs, result])
@@ -694,14 +713,14 @@ def fewer_frames(work: Path, photos: Path, count: int) -> Path:
 
 
 def outlines_from_3d(job: Path, work: Path, dense: Path, views: M.Views, masks: list[np.ndarray], agreed: np.ndarray,
-                     cloud: M.Cloud, pts: np.ndarray, sh) -> tuple[list[np.ndarray], np.ndarray, bool]:  # fmt: skip
+                     cloud: M.Cloud, pts: np.ndarray, sh, rounds: int = ROUNDS) -> tuple[list[np.ndarray], np.ndarray, bool]:  # fmt: skip
     """Очертанията на предмета във всеки разположен кадър (коригирани `views`, `masks` на търсача): формата от кадрите
     със съгласувани очертания (първоначално `agreed`) дава подсказки на MobileSAM за всички
     (pipeline.sharpened_masks); кадрите с нови очертания, съгласувани с другите (mesh.consistent_frames), дават
     формата за следващия кръг. Връща (маските, кои кадри са съгласувани, дали се използват тези на MobileSAM);
     собствените на търсача, когато MobileSAM не може да се използва."""
     current, trusted, sharpened = list(masks), agreed.copy(), False
-    for round_ in range(ROUNDS):
+    for round_ in range(rounds):
         idx = np.flatnonzero(trusted)
         found = M.hull_volume(M.subset(views, trusted), [current[i] for i in idx], S.MASK_SCALE, cloud)
         if found is None:
