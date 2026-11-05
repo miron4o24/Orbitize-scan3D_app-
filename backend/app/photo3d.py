@@ -343,7 +343,9 @@ def build(frame: Path, m: np.ndarray, place: tuple[int, int, int], vol: np.ndarr
         back_chart = np.asarray(Image.fromarray(part_ai).resize((w0, h0), Image.BICUBIC))
     back_big = np.stack([to_square(back_chart[..., c], n) for c in range(3)], -1)  # само за цвят на върховете
     rows = used // n, used % n
-    colors = np.vstack([rgb[rows], back_big[rows]]).astype(np.uint8)
+    gain = TX.white_gain(frame.parent, [frame.name], {frame.name: m})
+    print(f"white balance: red, green, blue x {gain.round(2).tolist()}", flush=True)
+    colors = TX.balanced(np.vstack([rgb[rows], back_big[rows]]).astype(np.uint8), gain)
     mesh = trimesh.Trimesh(vertices, faces, vertex_colors=np.c_[colors, np.full(len(colors), 255, np.uint8)], process=False)
     if mesh.volume < 0:
         mesh.invert()
@@ -362,7 +364,7 @@ def build(frame: Path, m: np.ndarray, place: tuple[int, int, int], vol: np.ndarr
     atlas = Image.new("RGB", (2 * cw, ch) if sideways else (cw, 2 * ch))
     atlas.paste(Image.fromarray(flat).resize((cw, ch), Image.LANCZOS), (0, 0))
     atlas.paste(Image.fromarray(back_chart).resize((cw, ch), Image.LANCZOS), (cw, 0) if sideways else (0, ch))
-    atlas.save(work / ATLAS, quality=93)
+    Image.fromarray(TX.balanced(np.asarray(atlas), gain)).save(work / ATLAS, quality=93)
     pick = np.linspace(0, n - 1, min(n, 512)).astype(int)
     np.savez_compressed(work / LAYERS, front=front_t[np.ix_(pick, pick)].astype(np.float32), back=back_t[np.ix_(pick, pick)].astype(np.float32))
     info = {"frame": frame.name, "opposite": opposite, "faces": int(len(mesh.faces)), "azimuth": azimuth, "distance": distance,

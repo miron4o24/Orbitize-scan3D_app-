@@ -592,14 +592,19 @@ def run(
 def photo_texture(job: Path, work: Path, photos: Path, best: Path, out: trimesh.Trimesh, cloud: M.Cloud, sh,
                   all_masks: dict[str, np.ndarray]):  # fmt: skip
     """Текстурата от снимки на модела за печат (app/texture.py); при неуспех той запазва цветовете на върховете си."""
+    names = read_views(best).names
+    gain = TX.white_gain(photos, names, all_masks)
+    note(job, f"white balance: red, green, blue x {gain.round(2).tolist()}")
     try:
         info = TX.texture_model(job, work, photos, best, out, out.metadata["to_print"], cloud.to_up, sh, COLMAP,
-                                THREADS, read_views(best).names, all_masks)  # fmt: skip
+                                THREADS, names, all_masks, gain)  # fmt: skip
         note(job, f"photo texture: from the sharpest {info['frames']} frames, {info['textures']} pixels, "
              f"{info['unseen']:.1%} of the faces seen by no frame (painted); seams levelled: {info['levelled']}")  # fmt: skip
     except (Failed, OSError, ValueError, KeyError) as e:
         TX.clear(job)
         note(job, f"photo texture: failed ({e}); the model keeps its vertex colours")
+    if out.visual.kind == "vertex":
+        out.visual.vertex_colors = TX.balanced(np.asarray(out.visual.vertex_colors), gain)
 
 
 def drop_stray(work: Path, best: Path, stray: list[str], sh, name: str = "clean") -> Path:

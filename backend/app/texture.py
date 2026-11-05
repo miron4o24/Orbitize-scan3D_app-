@@ -39,6 +39,16 @@ RASTER_BATCH = 2_000_000  # кандидати за тексели на стъп
 TEXTURE_SHARP = 0.5
 TEXTURE_DROP = 0.3
 SHARPNESS_SIDE = 1280  # кадрите се измерват при този размер
+# Лека корекция на бялото: топла лампа оцветява всичко в оранжево. Цветът на светлината се оценява само от фона на кадрите
+# (метод "нюанси на сивото", степен 6, в линейна светлина), а цвят на самия предмет не бива да се "поправя". Прилага се
+# наполовина и в тесни граници: при дистанционно в стая с топла лампа червеното пада със 17%, а синьото расте с 25%; при
+# дрелка и фигура на дневна светлина почти нищо не се променя.
+WHITE_FRAMES = 8
+WHITE_SIDE = 256
+WHITE_POWER = 6.0
+WHITE_STRENGTH = 0.5
+WHITE_LIMITS = (0.8, 1.25)
+WHITE_MIN_BACKGROUND = 0.3  # дял от кадъра: при по-малко фон светлината не може да се отдели от цвета на предмета
 
 
 def texture_files(job: Path) -> list[Path]:
@@ -242,9 +252,41 @@ def blurry_frames(photos: Path, names: list[str], masks: dict[str, np.ndarray]) 
     return [names[i] for i in np.argsort(s)[:limit] if s[i] < TEXTURE_SHARP * median]
 
 
+def white_gain(photos: Path, names: list[str], masks: dict[str, np.ndarray]) -> np.ndarray:
+    """Умножителите за червено, зелено и синьо (в линейна светлина) от фона на кадрите; единици, когато фонът не стига."""
+    found = []
+    for name in list(names)[:: max(1, len(names) // WHITE_FRAMES)][:WHITE_FRAMES]:
+        if name not in masks:
+            continue
+        with Image.open(photos / name) as im:
+            small = im.convert("RGB")
+            small.thumbnail((WHITE_SIDE, WHITE_SIDE))
+        back = np.asarray(Image.fromarray(masks[name]).resize(small.size, Image.BILINEAR)) < 64
+        if back.mean() < WHITE_MIN_BACKGROUND:
+            continue
+        linear = (np.asarray(small, np.float32)[back] / 255) ** 2.2
+        light = np.mean(linear**WHITE_POWER, axis=0) ** (1 / WHITE_POWER)
+        if light.min() > 1e-3:
+            found.append(light / light.mean())
+    if not found:
+        return np.ones(3)
+    return np.clip(np.median(found, axis=0) ** -WHITE_STRENGTH, *WHITE_LIMITS)
+
+
+def balanced(a: np.ndarray, gain: np.ndarray) -> np.ndarray:
+    """Изображение или цветове (uint8, RGB, евентуално с алфа) с умножителите на white_gain."""
+    levels = (np.arange(256, dtype=np.float32) / 255) ** 2.2
+    out = a.copy()
+    for c in range(3):
+        table = np.clip(np.round(np.clip(levels * gain[c], 0, 1) ** (1 / 2.2) * 255), 0, 255).astype(np.uint8)
+        out[..., c] = table[a[..., c]]
+    return out
+
+
 def texture_model(job: Path, work: Path, photos: Path, best: Path, model: trimesh.Trimesh, to_print: np.ndarray,
                   to_up: np.ndarray, sh: Callable[[str, list], None], colmap: str, threads: str,
-                  names: list[str] = (), masks: dict[str, np.ndarray] | None = None) -> dict:  # fmt: skip
+                  names: list[str] = (), masks: dict[str, np.ndarray] | None = None,
+                  gain: np.ndarray | None = None) -> dict:  # fmt: skip
     """Текстурира `model` (координати за печат; to_print: 4x4 от координатите на облака към тях; to_up: завъртане свят
     -> облак) от кадрите в `photos`, разположени от модела `best` на COLMAP (кадрите му: `names`; masks: предметът
     във всеки, за измерване на рязкостта). Записва textured.npz и изображенията на текстурата в задачата; връща
@@ -313,7 +355,8 @@ def texture_model(job: Path, work: Path, photos: Path, best: Path, model: trimes
             f"uv_{k}": uv[first].astype(np.float32),
             f"faces_{k}": inverse.reshape(-1, 3).astype(np.uint32),
         }
-        img.convert("RGB").save(job / f"texture_{k}.jpg", quality=92)
+        rgb = np.asarray(img.convert("RGB"))
+        Image.fromarray(rgb if gain is None else balanced(rgb, gain)).save(job / f"texture_{k}.jpg", quality=92)
         sizes.append(img.size)
     np.savez_compressed(job / NPZ, count=len(meshes), **arrays)
     faces = sum(len(m.faces) for m in meshes)
