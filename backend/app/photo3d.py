@@ -11,6 +11,7 @@ import json
 import os
 import sys
 import time
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -69,6 +70,27 @@ PICTURE_SIDE = 32
 # Предмет в ръка се върти около дългата си ос: обръщане отгоре надолу се приема само ако пасва ясно по-добре, защото
 # симетрично очертание (дистанционно) пасва и на двете, а гърбът тогава излиза с главата надолу.
 UPSIDE_DOWN = 0.08
+# Другата страна: истинският гръб е със същата дължина и пропорции в кадъра. Краят на бялото дистанционно, гледан по оста, пасваше
+# с очертанието си (0,82, защото се мащабира до квадрат) и гърбът на модела получи картината на края с лампичката.
+SAME_LENGTH = (0.7, 1.43)  # дължината на предмета в кадъра спрямо избрания (краят по оста: 0,33)
+SAME_ASPECT = (0.75, 1.33)  # ширина / дължина спрямо избрания (кадър отстрани: 0,5)
+PICTURE_WEIGHT = 0.5  # от двата кадъра с добро очертание по-различната фина картина (без светлината) е по-вероятно другата страна
+# Пръсти върху лицето само в избрания кадър (бялото дистанционно: пръст върху +10 и 60 и издатина отстрани): другите изгледи от
+# същата страна дават медианата.
+COVERED = 25.0  # разлика в цвета (0-255) от медианата, без сянката на кадъра, над която мястото е закрито в този кадър
+SHADE_WINDOW = 0.25  # от размера на лицето: сянката (бавната разлика между кадрите) е медианата в толкова голям прозорец
+SHADE_POINTS = 160  # сянката се смята при толкова точки по дългата страна
+# Друг кадър отпред, ако в избрания лицето е закрито (бялото дистанционно: пръст върху +10 в най-резкия кадър, а два други кадъра са
+# чисти). Замяната от другите изгледи е само за остатъка: тя оставя двоен образ там, където налагането не е съвсем точно.
+SWITCH_OUTSIDE = 0.005  # от лицето: очертанието на избрания кадър стърчи толкова извън другите (ръка през ръба) и се търси друг
+SWITCH_RATIO = 0.5  # чието стърчи поне толкова пъти по-малко
+FINGER_REACH = 6  # пиксела: закрито място, толкова близо до стърчащото, е пръстът, влязъл отстрани
+SHARP_ENOUGH = 0.5  # и поне толкова рязък
+SIZE_ENOUGH = 0.8  # и поне толкова голям в кадъра
+SHARED_PART = 0.8  # от лицето: толкова трябва да покрива друг изглед, наложен върху него
+KEEP_OUTLINE = 0.9  # медианното очертание замества това на кадъра само ако пази поне толкова от него
+DOMED = 0.05  # от ширината: лице, издуто поне толкова по посоките на повърхността (MoGe-2), е заоблено (бялото дистанционно: гръб 0,2, лице 0,01)
+THINNEST_END = 0.004  # от дължината: най-тънкото място на тялото (край, скосяване)
 ROUND = 0.15  # под тази издълженост (0: кръг, 1: линия) предметът няма посока на дължината
 MIN_TURN = 1.0  # градуса: по-малък наклон не се поправя, за да не се размазва кадърът излишно
 STRAIGHT_TOL = 0.006  # от дължината на предмета: толкова отклонение още се смята за права
@@ -389,21 +411,12 @@ def same_side_relief(rel: np.ndarray, crop: Image.Image, part: np.ndarray, views
     на един изглед; views: (изрязан предмет, очертанието му)."""
     from skimage.transform import ProjectiveTransform, warp
 
-    own = features(crop, part)
-    found = []
-    for view, inside in views:
-        count, model = matched_features(own, features(view, inside))
-        if count >= SAME_VIEW_FEATURES and model is not None:
-            found.append((count, id(view), view, inside, model))
-    found.sort(key=lambda x: x[:2], reverse=True)
     maps = [rel]
-    for count, _, view, inside, model in found[:SAME_VIEWS]:
+    for count, view, inside, to_view in aligned_views(crop, part, views)[:SAME_VIEWS]:
         other = relief_of(view, inside)
         if other is None:
             continue
-        here, there = FEATURE_SIDE / max(crop.size), FEATURE_SIDE / max(view.size)
         # warp иска картата от изхода към входа: тук от пикселите на crop към тези на view.
-        to_view = np.diag([1 / there, 1 / there, 1.0]) @ model @ np.diag([here, here, 1.0])
         moved = warp(other.astype(np.float64), ProjectiveTransform(to_view), output_shape=rel.shape, order=1, cval=np.nan, preserve_range=True)
         maps.append(moved.astype(np.float32))
         print(f"detail compared with another view: {count} features in common", flush=True)
@@ -602,33 +615,260 @@ def flat_layers(on: np.ndarray, thin: float, depth: float, focal: float) -> tupl
     return np.full(on.shape, depth - half, np.float32), np.full(on.shape, depth + half, np.float32)
 
 
+def length_and_width(inside: np.ndarray) -> tuple[float, float]:
+    """Дължината и ширината на очертанието по собствените му оси, в пиксели."""
+    ys, xs = np.nonzero(inside)
+    x, y = xs - xs.mean(), ys - ys.mean()
+    a = 0.5 * np.arctan2(2 * float((x * y).mean()), float((x * x).mean() - (y * y).mean()))
+    return float(np.ptp(x * np.cos(a) + y * np.sin(a))) + 1, float(np.ptp(y * np.cos(a) - x * np.sin(a))) + 1
+
+
+def fine_picture(grey: np.ndarray) -> np.ndarray:
+    """Грубата картина без светлината: остава напечатаното и изпъкналото. Бял гръб и бяло лице иначе си приличаха (0,80)."""
+    return grey - ndimage.gaussian_filter(grey, PICTURE_SIDE / 8)
+
+
 def opposite_frame(frame: Path, others: list[tuple[Path, np.ndarray]], m: np.ndarray):
-    """Кадър, показващ другата страна: очертанието му, обърнато огледално, съвпада с това на избрания кадър, а картината
-    вътре не прилича на снимката нито обърната, нито както е (иначе е същата страна). Връща (кадър, маска, "lr" или "ud")
-    или None."""
+    """Кадър, показващ другата страна: предметът е със същата дължина и пропорции, очертанието му, обърнато огледално, съвпада с
+    това на избрания кадър, а общи особености няма (иначе е същата страна). Когато лицето има особености (други кадри от същата
+    страна ги споделят), това стига; без тях картината вътре не бива да прилича на снимката. От подходящите печели този с
+    най-добро очертание и най-различна фина картина. Връща (кадър, маска, "lr" или "ud") или None."""
     photo, inside, box = object_picture(frame, m)
     shape = shape_of(inside[box[1] : box[3], box[0] : box[2]])
     grey = coarse_picture(photo, box)
+    fine = fine_picture(grey)
     angle = lengthwise(inside)
     own = features(photo.crop(box), inside[box[1] : box[3], box[0] : box[2]])
-    best, best_fit = None, MIRROR_IOU
+    length, width = length_and_width(inside)
+    textured, fitting = False, []
     for f, mask in others:
         if f == frame or (mask > 127).sum() < 50:
             continue
         p, ins, b = turned_like(*object_picture(f, mask)[:2], angle)
-        s2 = shape_of(ins[b[1] : b[3], b[0] : b[2]])
-        g2 = coarse_picture(p, b)
         same = shared_features(own, features(p.crop(b), ins[b[1] : b[3], b[0] : b[2]]))
         print(f"{f.name}: {same} features in common", flush=True)
         if same >= SAME_FEATURES:
+            textured = True
             continue
+        l2, w2 = length_and_width(ins)
+        size, proportions = l2 / length, (w2 / l2) / (width / length)
+        if not (SAME_LENGTH[0] <= size <= SAME_LENGTH[1] and SAME_ASPECT[0] <= proportions <= SAME_ASPECT[1]):
+            print(f"{f.name}: another view, length {size:.2f} and proportions {proportions:.2f} of this one", flush=True)
+            continue
+        s2 = shape_of(ins[b[1] : b[3], b[0] : b[2]])
+        g2 = coarse_picture(p, b)
         for flip, op, handicap in (("lr", np.fliplr, 0.0), ("ud", np.flipud, UPSIDE_DOWN)):
             fit = float((shape & op(s2)).sum() / max(1, (shape | op(s2)).sum())) - handicap
             like = max(correlation(grey, g2), correlation(grey, op(g2)))  # и обърната, и както е
-            print(f"{f.name} {flip}: outline {fit:.2f}, picture {like:.2f}", flush=True)
-            if fit >= best_fit and like <= OTHER_PICTURE:
-                best, best_fit = (f, mask, flip), fit
-    return best
+            alike = max(correlation(fine, fine_picture(g2)), correlation(fine, fine_picture(op(g2))))
+            print(f"{f.name} {flip}: outline {fit:.2f}, picture {like:.2f}, fine picture {alike:.2f}", flush=True)
+            if fit >= MIRROR_IOU:
+                fitting.append((fit - PICTURE_WEIGHT * max(alike, 0.0), like, f.name, f, mask, flip))
+    allowed = [x for x in fitting if textured or x[1] <= OTHER_PICTURE]
+    if not allowed:
+        return None
+    best = max(allowed, key=lambda x: (x[0], x[2]))
+    return best[3], best[4], best[5]
+
+
+def face_normals(sess, crop: Image.Image, inside: np.ndarray) -> np.ndarray | None:
+    """Посоките на повърхността на изрязан предмет от MoGe-2 (две изпълнения, изместени с половин стъпка), ако мрежата ги дава."""
+    return RL.object_normals(sess, crop, inside, (0, RL.PATCH // 2)) if RL.gives_normals(sess) else None
+
+
+def across_profile(normals: np.ndarray | None, inside: np.ndarray) -> np.ndarray | None:
+    """Височината на лицето през ширината му (sideview.SECTION_POINTS места, в дялове от ширината) от посоките на повърхността в
+    средната половина от дължината, без наклона на целия предмет и огледално осреднена. Предметът е изправен (дължината отвесно)."""
+    if normals is None:
+        return None
+    h = inside.shape[0]
+    rows = slice(int(0.25 * h), int(0.75 * h))
+    slope = -normals[rows, :, 0] / np.maximum(np.abs(normals[rows, :, 2]), 0.2)
+    ok = inside[rows]
+    count = ok.sum(0)
+    cols = np.flatnonzero(count >= max(5, 0.3 * count.max()))
+    if len(cols) < 10:
+        return None
+    height = np.cumsum([np.median(slope[ok[:, c], c]) for c in cols]) / len(cols)
+    u = (cols - cols[0] + 0.5) / (cols[-1] - cols[0] + 1)
+    out = np.interp(np.linspace(SV.SECTION_EDGE, 1 - SV.SECTION_EDGE, SV.SECTION_POINTS), u, height)
+    out = out - np.linspace(out[0], out[-1], len(out))
+    return 0.5 * (out + out[::-1])
+
+
+def outline_aspect(on: np.ndarray) -> float:
+    """Ширината на изправен предмет (медиана през средата на дължината) спрямо дължината му."""
+    rows = np.flatnonzero(on.any(1))
+    if len(rows) < 4:
+        return 1.0
+    widths = on[rows].sum(1)
+    middle = widths[len(widths) // 5 : len(widths) - len(widths) // 5]
+    return float(np.median(middle if len(middle) else widths)) / len(rows)
+
+
+def body_section(measured: dict, on: np.ndarray, thin: float, front: np.ndarray | None,
+                 back: np.ndarray | None) -> tuple[tuple[np.ndarray, np.ndarray, float] | None, bool, str]:  # fmt: skip
+    """Напречното сечение на плосък предмет: (по-плоският контур, заобленият, дебелината; всичко в дялове от ширината) или None, дали
+    заобленото лице е отпред и откъде е сечението. Измереното от кадрите по оста (app/sideview.py) е за предпочитане; без него
+    заобленото лице дава своята форма от посоките на повърхността. Кое лице е заобленото, казва MoGe-2 (front, back: across_profile)."""
+    dome_f = float(front[len(front) // 2]) if front is not None else 0.0
+    dome_b = float(back[len(back) // 2]) if back is not None else None
+    if "section_flat" in measured:
+        flat_d, dome_d = measured["section_flat"].astype(np.float64), measured["section_dome"].astype(np.float64)
+        deep = float(dome_d[[0, -1]].mean() - dome_d.min())
+        front_round = dome_f > dome_b if dome_b is not None else dome_f > 0.5 * deep
+        return (flat_d, dome_d, float(measured["section_thick"])), front_round, f"{int(measured['section_frames'])} frames along the axis"
+    thick = thin / max(outline_aspect(on), 1e-6)
+    for profile, dome, front_round in ((front, dome_f, True), (back, dome_b, False)):
+        other = dome_b if front_round else dome_f
+        if profile is not None and dome is not None and dome >= DOMED and (other is None or dome > other):
+            depth = np.clip(profile.max() - profile, 0.0, 0.85 * thick)
+            return (np.zeros_like(depth), depth, thick), front_round, "the surface directions of the rounded side"
+    return None, False, "none, a flat slab"
+
+
+def section_body(on: np.ndarray, section: tuple[np.ndarray, np.ndarray, float] | None, along: np.ndarray | None,
+                 thin: float, front_round: bool) -> tuple[np.ndarray, np.ndarray]:  # fmt: skip
+    """Колко зад най-предната равнина са лицето и гърбът (в дялове от дължината) във всяка точка на решетката `on` (изправен
+    предмет): сечението през собствената ширина на всеки ред, а заобленото му лице е ограничено от дебелината по дължината `along`
+    (sideview.side_thickness, горе първо). Без сечение: правоъгълник с дебелината thin."""
+    n = on.shape[0]
+    seen = on.any(1)
+    left = np.where(seen, on.argmax(1), 0)
+    right = np.where(seen, n - 1 - on[:, ::-1].argmax(1), 0)
+    u = np.clip((np.arange(n)[None, :] - left[:, None] + 0.5) / np.maximum(right - left + 1, 1)[:, None], 0.0, 1.0)
+    if section is None:
+        flat = np.zeros((n, n))
+        dome = np.full((n, n), thin)
+    else:
+        flat_d, dome_d, thick = section
+        places = np.linspace(SV.SECTION_EDGE, 1 - SV.SECTION_EDGE, len(flat_d))
+        flat = np.interp(u, *to_the_rim(places, flat_d, thick)) / thick * thin
+        dome = (1 - np.interp(u, *to_the_rim(places, dome_d, thick)) / thick) * thin
+    if along is not None and seen.any():
+        rows = np.flatnonzero(seen)
+        v = np.clip((np.arange(n) - rows[0] + 0.5) / (rows[-1] - rows[0] + 1), 0.0, 1.0)
+        dome = np.minimum(dome, thin * np.interp(v, (np.arange(len(along)) + 0.5) / len(along), along)[:, None])
+    dome = np.maximum(dome, flat + THINNEST_END)
+    if front_round:
+        return (thin - dome).astype(np.float32), (thin - flat).astype(np.float32)
+    return flat.astype(np.float32), dome.astype(np.float32)
+
+
+def to_the_rim(places: np.ndarray, depth: np.ndarray, thick: float) -> tuple[np.ndarray, np.ndarray]:
+    """Контурът на сечението (места през ширината, колко навътре е) продължен до самия ръб (0 и 1) по наклона на крайните места."""
+    step = max(1, len(places) // 16)
+    first = depth[0] + (depth[0] - depth[step]) * places[0] / (places[step] - places[0])
+    last = depth[-1] + (depth[-1] - depth[-1 - step]) * (1 - places[-1]) / (places[-1] - places[-1 - step])
+    return np.r_[0.0, places, 1.0], np.clip(np.r_[first, depth, last], 0.0, thick)
+
+
+def length_scale(on: np.ndarray, depth: float, focal: float) -> float:
+    """Колко е дължината на предмета (решетката `on`) в единиците на сцената на разстояние depth. focal: в дялове от квадрата."""
+    ys, xs = np.nonzero(on)
+    x, y = xs - xs.mean(), ys - ys.mean()
+    angle = 0.5 * np.arctan2(2 * float((x * y).mean()), float((x * x).mean() - (y * y).mean()))
+    cells = float(np.ptp(x * np.cos(angle) + y * np.sin(angle)))
+    return cells * depth / (focal * (on.shape[0] - 1))
+
+
+def aligned_views(crop: Image.Image, part: np.ndarray, views: list[tuple[Image.Image, np.ndarray]]) -> list[tuple[int, Image.Image, np.ndarray, np.ndarray]]:
+    """Другите изгледи от същата страна, които се налагат върху този по общите си особености: (брой общи, изглед, очертание, 3 x 3 от
+    пикселите на crop към тези на изгледа), най-сигурните първо."""
+    own = features(crop, part)
+    found = []
+    for view, inside in views:
+        count, model = matched_features(own, features(view, inside))
+        if count >= SAME_VIEW_FEATURES and model is not None:
+            here, there = FEATURE_SIDE / max(crop.size), FEATURE_SIDE / max(view.size)
+            to_view = np.diag([1 / there, 1 / there, 1.0]) @ model @ np.diag([here, here, 1.0])
+            found.append((count, id(view), view, inside, to_view))
+    found.sort(key=lambda x: x[:2], reverse=True)
+    return [(c, v, i, m) for c, _, v, i, m in found]
+
+
+def crop_sharpness(picture: Image.Image) -> float:
+    """Рязкостта на изрязан предмет при еднакъв размер (дълга страна 640)."""
+    k = 640 / max(picture.size)
+    grey = np.asarray(picture.convert("L").resize((max(8, round(picture.width * k)), max(8, round(picture.height * k)))), np.float32)
+    return float(ndimage.laplace(grey).var())
+
+
+def covered_part(diff: np.ndarray, known: np.ndarray) -> np.ndarray:
+    """Къде един изглед е закрит (пръст, отблясък): разликата му от медианата на изгледите, без сянката си, е голяма. Сянката (светлината
+    пада другояче) е бавната част от разликата, медиана в широк прозорец, която пръст не променя: без нея пръст върху бяла пластмаса
+    на топла светлина се различава по-малко от сянката, а замененото излиза на петна. Връща (закритото, сянката)."""
+    step = max(1, int(max(known.shape) / SHADE_POINTS))
+    small = diff[::step, ::step]
+    size = max(3, int(SHADE_WINDOW * max(known.shape) / step))
+    shade_small = np.stack([ndimage.median_filter(small[..., c], size=size, mode="nearest") for c in range(3)], -1)
+    shade = np.stack([np.asarray(Image.fromarray(shade_small[..., c].astype(np.float32)).resize((known.shape[1], known.shape[0]), Image.BILINEAR))
+                      for c in range(3)], -1)  # fmt: skip
+    covered = known & (np.abs(diff - shade).max(-1) > COVERED)
+    return ndimage.binary_dilation(ndimage.binary_opening(covered, iterations=2), iterations=3) & known, shade
+
+
+def without_fingers(photo: Image.Image, inside: np.ndarray, box: tuple[int, int, int, int],
+                    views: list[tuple[Image.Image, np.ndarray]]) -> tuple[Image.Image, np.ndarray, tuple[int, int, int, int], int | None, set[int]]:  # fmt: skip
+    """Пръсти само в избрания кадър: другите изгледи на същата страна, наложени по общите особености и със светлината на този кадър.
+    Ръка, която държи предмета, минава през ръба му, затова очертанието на кадъра стърчи там, където другите не стърчат (бялото
+    дистанционно: 1,0% от лицето в кадъра с пръст, 0,1% в чист). Замества се само цвят, който е различен от медианата на другите и е
+    свързан с такова място: различната светлина в отделните кадри не е пръст. Връща (снимката с поправените цветове, очертанието без
+    стърчащото, кутията, кой от views е по-добрият кадър отпред или None, кои от views са с ръка); при по-малко от два такива изгледа
+    всичко остава. По-добър е изглед, чието очертание стърчи много по-малко, достатъчно рязък и голям."""
+    from skimage.transform import ProjectiveTransform, warp
+
+    x0, y0, x1, y1 = box
+    crop, part = photo.crop(box), inside[y0:y1, x0:x1]
+    rgb = np.asarray(crop, np.float32)
+    colours, outlines, which = [rgb], [part], [-1]
+    index = {id(v): k for k, (v, _) in enumerate(views)}
+    for _, view, ins, to_view in aligned_views(crop, part, views)[:SAME_VIEWS]:
+        move = ProjectiveTransform(to_view)
+        there = warp(np.asarray(view, np.float64), move, output_shape=part.shape, order=1, cval=np.nan, preserve_range=True)
+        on = warp(ins.astype(np.float64), move, output_shape=part.shape, order=1, cval=0.0, preserve_range=True) > 0.5
+        both = part & on & np.isfinite(there[..., 0])
+        if both.sum() < SHARED_PART * part.sum():
+            continue
+        there = there * (np.median(rgb[both], 0) / np.maximum(np.median(there[both], 0), 1.0))  # светлината на този кадър
+        colours.append(there.astype(np.float32))
+        outlines.append(on)
+        which.append(index[id(view)])
+    if len(colours) < 3:
+        return photo, inside, box, None, set()
+    shapes = np.stack(outlines).astype(np.float32)
+    # Всеки изглед се сравнява с другите: с два закрити от четири (пръст тук, ръка в друг) общата медиана се цапа.
+    outside = [outlines[j] & (np.delete(shapes, j, 0).mean(0) < 0.5) for j in range(len(outlines))]
+    sticking = [float(o.sum()) / max(1.0, float(part.sum())) for o in outside]
+    held = {k for s, k in zip(sticking[1:], which[1:]) if s > SWITCH_OUTSIDE}
+    better = None
+    if sticking[0] > SWITCH_OUTSIDE:
+        sharp, size = crop_sharpness(crop), max(crop.size)
+        found = [(s, k) for s, k in zip(sticking[1:], which[1:])
+                 if s < SWITCH_RATIO * sticking[0] and crop_sharpness(views[k][0]) >= SHARP_ENOUGH * sharp and max(views[k][0].size) >= SIZE_ENOUGH * size]  # fmt: skip
+        better = min(found)[1] if found else None
+    with warnings.catch_warnings():  # места, които никой друг изглед не вижда
+        warnings.simplefilter("ignore", RuntimeWarning)
+        middle = np.nanmedian(np.stack(colours[1:]), 0)
+    known = np.isfinite(middle[..., 0]) & part
+    covered, shade = covered_part(np.where(known[..., None], rgb - np.nan_to_num(middle), 0.0), known)
+    labels, count = ndimage.label(covered)
+    near_edge = ndimage.binary_dilation(outside[0], iterations=FINGER_REACH)
+    touching = np.unique(labels[near_edge & covered])
+    covered = np.isin(labels, touching[touching > 0]) & (sticking[0] > SWITCH_OUTSIDE)  # без ръка през ръба няма какво да се заменя
+    clean = photo.copy()
+    clean.paste(Image.fromarray(np.clip(np.where(covered[..., None], np.nan_to_num(middle) + shade, rgb), 0, 255).astype(np.uint8)), (x0, y0))
+    agreed = part & ~outside[0]  # издатина на очертанието само в този кадър (пръст отстрани) отпада
+    kept = float(agreed.sum()) / max(1.0, float(part.sum()))
+    print(f"same side in {len(colours) - 1} more frames: outline sticks out by {sticking[0]:.2%} of the face here "
+          f"(others {', '.join(f'{s:.2%}' for s in sticking[1:])}), {covered.sum() / max(1, part.sum()):.1%} of the face covered", flush=True)  # fmt: skip
+    if kept < KEEP_OUTLINE:
+        return clean, inside, box, better, held
+    new = inside.copy()
+    new[y0:y1, x0:x1] = agreed
+    new = straightened(RL.one_piece(new))
+    ys, xs = np.nonzero(new)
+    return clean, new, (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1), better, held
 
 
 def flipped(a: np.ndarray, how: str) -> np.ndarray:
@@ -637,10 +877,12 @@ def flipped(a: np.ndarray, how: str) -> np.ndarray:
 
 def build(frame: Path, m: np.ndarray, place: tuple[int, int, int], vol: np.ndarray, radius: float, level: float,
           distance: float, fov: float, colour_at: Callable[[np.ndarray], np.ndarray], work: Path, out: Path,
-          others: list[tuple[Path, np.ndarray]] = (), strength: float = 1.0, thin: float | None = None) -> dict | None:  # fmt: skip
+          others: list[tuple[Path, np.ndarray]] = (), strength: float = 1.0, thin: float | None = None,
+          switched: bool = False) -> dict | None:  # fmt: skip
     """Записва модела в `out` и картите в `work`; връща описанието му или None, ако формата на TripoSR не пасва на
     снимката. place: (left, top, side), квадратът от кадъра, показан на TripoSR. colour_at: цветовете на TripoSR (0-1)
-    за точки."""
+    за точки. switched: кадърът вече е сменен веднъж заради пръсти (плоският предмет взима от TripoSR само дълбочината и гърба,
+    така че друг кадър отпред не пречи)."""
     if __package__:
         from . import mesh as M
     else:
@@ -651,6 +893,24 @@ def build(frame: Path, m: np.ndarray, place: tuple[int, int, int], vol: np.ndarr
     if flat:
         photo, inside, box = upright(photo, inside)
         place = centred_place(box)
+    # Другите кадри, изправени като този: за същата страна (детайл, пръсти) и за другата.
+    views, view_frames = [], []
+    colour_photo = photo
+    if flat and others:
+        angle = lengthwise(inside[box[1] : box[3], box[0] : box[2]])
+        for f, mask in others:
+            if f != frame and (mask > 127).sum() >= 50:
+                p, ins, b = turned_like(*object_picture(f, mask)[:2], angle)
+                views.append((p.crop(b), ins[b[1] : b[3], b[0] : b[2]]))
+                view_frames.append((f, mask))
+        colour_photo, inside, box, better, held = without_fingers(photo, inside, box, views)
+        if better is not None and not switched:
+            f2, m2 = view_frames[better]
+            print(f"front frame: {f2.name} instead of {frame.name}, where the face is covered", flush=True)
+            rest = [(frame, m)] + [(f, mask) for f, mask in others if f != f2]
+            return build(f2, m2, place, vol, radius, level, distance, fov, colour_at, work, out, rest, strength, thin, switched=True)
+        place = centred_place(box)
+        views = [v for k, v in enumerate(views) if k not in held]  # ръка в изгледа би влязла и в детайла
     x0, y0, x1, y1 = box
     left, top, side = place
     w0, h0 = x1 - x0, y1 - y0
@@ -688,30 +948,52 @@ def build(frame: Path, m: np.ndarray, place: tuple[int, int, int], vol: np.ndarr
 
     sess = RL.session(threads=max(2, (os.cpu_count() or 4) // 2))
     crop, part = photo.crop(box), inside[y0:y1, x0:x1]
-    rel = RL.image_relief(sess, crop, part, max(w0, h0), alone=True)
+    normals = face_normals(sess, crop, part) if flat else None
+    rel = RL.relief_from_normals(normals, part, max(w0, h0)) if normals is not None else RL.image_relief(sess, crop, part, max(w0, h0), alone=True)
     print(f"AI detail, {time.time() - started:.0f} s", flush=True)
-    if rel is not None and flat and others:
-        views = []
-        for f, mask in others:
-            if f != frame and (mask > 127).sum() >= 50:
-                p, ins, b = turned_like(*object_picture(f, mask)[:2], lengthwise(part))
-                views.append((p.crop(b), ins[b[1] : b[3], b[0] : b[2]]))
+    if rel is not None and flat and views:
         rel = same_side_relief(rel, crop, part, views, lambda v, i: RL.image_relief(sess, v, i, max(v.size)))
         print(f"AI detail from the same side, {time.time() - started:.0f} s", flush=True)
     amount = RL.STRENGTH * strength * longest
-    side_file, heights = work / SV.FILE, None
-    if flat and rel is not None and side_file.exists():
+    side_file, heights, measured = work / SV.FILE, None, {}
+    if flat and side_file.exists():
         with np.load(side_file) as z:
-            busy, quiet = z["busy"], z["quiet"]
+            measured = {k: z[k] for k in z.files}
+    if flat and rel is not None and "busy" in measured:
+        busy, quiet = measured["busy"], measured["quiet"]
         fit, upside, shift, scale = fit_side(row_heights(flat_relief(rel, part, max(w0, h0)), part), busy)
         print(f"side view against the detail: fit {fit:.2f}, turned {upside}, moved {shift:+.3f}, stretched {scale:.3f}", flush=True)
         if fit >= SIDE_FIT:
             put = lambda p: SV.placed(p[::-1] if upside else p, shift, scale)  # noqa: E731
             heights = put(busy), put(quiet)
+
+    # Другата страна, ако кадрите я показват: преди тялото, защото заобленото лице се познава по посоките на повърхността му.
+    back_side = None
+    found = opposite_frame(frame, list(others), m) if others else None
+    if found is not None:
+        f2, m2, how = found
+        p2, ins2, b2 = turned_like(*object_picture(f2, m2)[:2], lengthwise(part))
+        crop2, part2 = p2.crop(b2), ins2[b2[1] : b2[3], b2[0] : b2[2]]
+        normals2 = face_normals(sess, crop2, part2) if flat else None
+        rel2 = (RL.relief_from_normals(normals2, part2, max(crop2.size)) if normals2 is not None
+                else RL.image_relief(sess, crop2, part2, max(crop2.size), alone=True))  # fmt: skip
+        back_side = (f2, how, p2, ins2, crop2, part2, rel2, normals2)
+
+    shaped = False
     if flat:
         middle = np.nanmedian(resized((near + far) / 2, n)[on])
-        front_body, back_body = flat_layers(on, thin, float(middle if np.isfinite(middle) else distance), cam.focal)
-        print(f"flat body, measured thickness {thin:.3f} of the length", flush=True)
+        depth = float(middle if np.isfinite(middle) else distance)
+        scale = length_scale(on, depth, cam.focal)
+        front_dome = across_profile(normals, part)
+        back_dome = across_profile(back_side[7], back_side[5]) if back_side is not None else None
+        section, front_round, made = body_section(measured, on, thin, front_dome, back_dome)
+        along = measured.get("side_thickness")
+        z_front, z_back = section_body(on, section, along, thin, front_round)
+        front_body, back_body = depth + (z_front - 0.5 * thin) * scale, depth + (z_back - 0.5 * thin) * scale
+        shaped = section is not None
+        print(f"flat body, measured thickness {thin:.3f} of the length; cross-section: {made}"
+              + (f", rounded side {'front' if front_round else 'back'}" if shaped else "")
+              + ("" if along is None else f", thickness at the ends {float(along[:8].mean()):.2f} and {float(along[-8:].mean()):.2f}"), flush=True)  # fmt: skip
     else:
         front_body, back_body = RL.masked_blur(resized(near, n), on, SHAPE_BLUR * width), RL.masked_blur(resized(far, n), on, BACK_BLUR * width)
     front_t = front_body
@@ -726,14 +1008,9 @@ def build(frame: Path, m: np.ndarray, place: tuple[int, int, int], vol: np.ndarr
         front_t = front_t - to_square(rel, n) * amount
     back_t = back_body
 
-    # Другата страна, ако кадрите я показват.
     back_chart, opposite = None, None
-    found = opposite_frame(frame, list(others), m) if others else None
-    if found is not None:
-        f2, m2, how = found
-        p2, ins2, b2 = turned_like(*object_picture(f2, m2)[:2], lengthwise(part))
-        crop2, part2 = p2.crop(b2), ins2[b2[1] : b2[3], b2[0] : b2[2]]
-        rel2 = RL.image_relief(sess, crop2, part2, max(crop2.size), alone=True)
+    if back_side is not None:
+        f2, how, p2, ins2, crop2, part2, rel2, _ = back_side
         if rel2 is not None and flat:
             rel2 = flat_relief(rel2, part2, max(crop2.size))
             quiet = FLAT_BACK_QUIET / RL.STRENGTH
@@ -745,8 +1022,6 @@ def build(frame: Path, m: np.ndarray, place: tuple[int, int, int], vol: np.ndarr
         if rel2 is not None:
             lay = np.asarray(Image.fromarray(flipped(rel2, how)).resize((w0, h0), Image.BILINEAR))
             back_t = back_t + to_square(lay, n) * amount
-        flat2 = filled_colours(np.asarray(crop2), part2)
-        back_chart = np.asarray(Image.fromarray(flipped(flat2, how)).resize((w0, h0), Image.LANCZOS))
         opposite = f2.name
         print(f"the other side from {f2.name} ({how}), {time.time() - started:.0f} s", flush=True)
     back_t = np.maximum(back_t, front_t + MIN_THICK * longest)
@@ -760,20 +1035,32 @@ def build(frame: Path, m: np.ndarray, place: tuple[int, int, int], vol: np.ndarr
     exact = None
     if flat:
         s, t, exact = rim_on_lines(s, t, on, q, 2 * FLAT_EDGE * width / 0.85)
-    front_t, back_t = rounded_edges(front_t, back_t, on, longest / width, (FLAT_EDGE if flat else ROUND_EDGE) * longest, wall=flat, exact=exact)
+    if not shaped:  # измереното сечение вече има истинските си заоблени ръбове
+        front_t, back_t = rounded_edges(front_t, back_t, on, longest / width, (FLAT_EDGE if flat else ROUND_EDGE) * longest, wall=flat, exact=exact)
     rays = cam.rays(s, t)
     front = cam.center + rays * front_t[..., None]
     back = cam.center + rays * back_t[..., None]
     vertices, faces, used = closed_mesh(q, front, back)
 
-    # Цветовете: отпред снимката, отзад другият кадър или цветовете на TripoSR, приближени до снимката.
-    rgb = np.asarray(photo.crop((left, top, left + side, top + side)).resize((n, n), Image.BILINEAR), np.float32)
-    flat = filled_colours(np.asarray(crop), part)
+    # Цветовете: отпред снимката (без пръстите), отзад другият кадър или цветовете на TripoSR, приближени до снимката; всички с
+    # поправената светлина (texture.light_fix).
+    neutral = TX.neutral_object([(frame, m)] + [(f, mk) for f, mk in others if (mk > 127).sum() >= 50])
+    gain = TX.white_gain(frame.parent, [frame.name], {frame.name: m})
+    fix = TX.light_fix(np.asarray(colour_photo), inside, neutral, None if neutral else gain)
+    print("light: " + ("white, grey or black object, the colour of the light removed" if neutral
+                       else f"white balance: red, green, blue x {gain.round(2).tolist()}"), flush=True)  # fmt: skip
+    square_rgb = lambda k: fix(np.asarray(colour_photo.crop((left, top, left + side, top + side)).resize((k, k), Image.BILINEAR)))  # noqa: E731
+    rgb = square_rgb(n).astype(np.float32)
+    face = filled_colours(fix(np.asarray(colour_photo.crop(box))), part)
+    if back_side is not None:
+        _, how, p2, ins2, crop2, part2, _, _ = back_side
+        fix2 = TX.light_fix(np.asarray(p2), ins2, neutral, None if neutral else gain)
+        back_chart = np.asarray(Image.fromarray(flipped(filled_colours(fix2(np.asarray(crop2)), part2), how)).resize((w0, h0), Image.LANCZOS))
     if back_chart is None:
         back_points = cam.center + cam.rays(*grid(RAYS)) * resized(back_t, RAYS)[..., None]
         ai = (np.clip(colour_at(back_points.reshape(-1, 3).astype(np.float32)), 0, 1) * 255).reshape(RAYS, RAYS, 3).astype(np.float32)
         small_on = small_mask(RAYS)
-        real = np.asarray(photo.crop((left, top, left + side, top + side)).resize((RAYS, RAYS), Image.BILINEAR), np.float32)
+        real = square_rgb(RAYS).astype(np.float32)
         if small_on.sum() > 50:
             ai = np.clip(ai + 0.7 * (np.median(real[small_on], 0) - np.median(ai[small_on], 0)), 0, 255)
         k = (RAYS - 1) / side
@@ -783,9 +1070,7 @@ def build(frame: Path, m: np.ndarray, place: tuple[int, int, int], vol: np.ndarr
         back_chart = np.asarray(Image.fromarray(part_ai).resize((w0, h0), Image.BICUBIC))
     back_big = np.stack([to_square(back_chart[..., c], n) for c in range(3)], -1)  # само за цвят на върховете
     rows = used // n, used % n
-    gain = TX.white_gain(frame.parent, [frame.name], {frame.name: m})
-    print(f"white balance: red, green, blue x {gain.round(2).tolist()}", flush=True)
-    colors = TX.balanced(np.vstack([rgb[rows], back_big[rows]]).astype(np.uint8), gain)
+    colors = np.vstack([rgb[rows], back_big[rows]]).astype(np.uint8)
     mesh = trimesh.Trimesh(vertices, faces, vertex_colors=np.c_[colors, np.full(len(colors), 255, np.uint8)], process=False)
     if mesh.volume < 0:
         mesh.invert()
@@ -802,9 +1087,9 @@ def build(frame: Path, m: np.ndarray, place: tuple[int, int, int], vol: np.ndarr
     cw, ch = max(1, round(w0 * k)), max(1, round(h0 * k))
     sideways = ch >= cw
     atlas = Image.new("RGB", (2 * cw, ch) if sideways else (cw, 2 * ch))
-    atlas.paste(Image.fromarray(flat).resize((cw, ch), Image.LANCZOS), (0, 0))
+    atlas.paste(Image.fromarray(face).resize((cw, ch), Image.LANCZOS), (0, 0))
     atlas.paste(Image.fromarray(back_chart).resize((cw, ch), Image.LANCZOS), (cw, 0) if sideways else (0, ch))
-    Image.fromarray(TX.balanced(np.asarray(atlas), gain)).save(work / ATLAS, quality=93)
+    atlas.save(work / ATLAS, quality=93)
     pick = np.linspace(0, n - 1, min(n, 512)).astype(int)
     np.savez_compressed(work / LAYERS, front=front_t[np.ix_(pick, pick)].astype(np.float32), back=back_t[np.ix_(pick, pick)].astype(np.float32))
     info = {"frame": frame.name, "opposite": opposite, "faces": int(len(mesh.faces)), "azimuth": azimuth, "distance": distance,

@@ -516,3 +516,207 @@ def test_rounded_edge_has_one_height_along_a_straight_rim():
     rim[600:] = False  # the long sides only
     assert np.ptp(clean[rim]) < 0.5 * np.ptp(rough[rim])
     assert np.std(clean[rim]) < 0.01  # the wall starts at one height, so it shows no stripes
+
+
+def d_section_mask(width=360, thick=110, dome=0.6, size=(480, 270), turn=0.0):
+    """Маска (четвърт от кадъра) на предмет, гледан по оста: плоско лице долу и заоблен гръб горе (D)."""
+    from PIL import Image, ImageDraw
+
+    big = Image.new("L", (size[1] * 4, size[0] * 4), 0)
+    cx, cy = size[1] * 2, size[0] * 2
+    xs = np.linspace(-width / 2, width / 2, 200)
+    flat_h = thick * (1 - dome)  # права стена до тук, после елипса
+    top = cy + thick / 2 - flat_h - (thick * dome) * np.sqrt(np.clip(1 - (2 * xs / width) ** 2, 0, 1))
+    points = [(cx + x, t) for x, t in zip(xs, top)] + [(cx + width / 2, cy + thick / 2), (cx - width / 2, cy + thick / 2)]
+    ImageDraw.Draw(big).polygon(points, fill=255)
+    big = big.rotate(turn, Image.BILINEAR)
+    return np.asarray(big.resize((size[1], size[0]), Image.BILINEAR))
+
+
+def bar_quarter_mask(length, width, size=(480, 270), turn=0.0):
+    from PIL import Image, ImageDraw
+
+    big = Image.new("L", (size[1] * 4, size[0] * 4), 0)
+    cx, cy = size[1] * 2, size[0] * 2
+    ImageDraw.Draw(big).rectangle([cx - width / 2, cy - length / 2, cx + width / 2, cy + length / 2], fill=255)
+    big = big.rotate(turn, Image.BILINEAR)
+    return np.asarray(big.resize((size[1], size[0]), Image.BILINEAR))
+
+
+def test_cross_section_comes_from_the_frames_along_the_axis():
+    from app import segment as S
+    from app import sideview as SV
+
+    masks = {}
+    for k in range(4):  # лицето и гърбът: дълги 1200, широки 300
+        masks[f"face_{k}"] = bar_quarter_mask(1200, 300, turn=3 * k)
+    for k in range(3):  # отстрани: дебелина 100
+        masks[f"side_{k}"] = bar_quarter_mask(1200, 100, turn=2 * k)
+    for k in range(3):  # по оста: широко 300, дебело 100, заоблено на 60% от дебелината
+        masks[f"end_{k}"] = d_section_mask(300, 100, 0.6, turn=4 * k)
+    masks["end_hand"] = d_section_mask(300, 190, 0.2)  # с ръка: много по-дебело
+    ratios = {n: S.outline_ratio(m) for n, m in masks.items()}
+    thin = min(ratios[n] for n in masks if n.startswith("side"))
+    ends = SV.end_on_frames(masks, ratios, thin)
+    assert {"end_0", "end_1", "end_2"} <= set(ends) and not any(n.startswith(("face", "side")) for n in ends)
+    got = SV.cross_section(masks, ratios, thin)
+    assert got is not None and int(got["section_frames"]) == 3  # the frame with the hand disagrees
+    flat, dome = got["section_flat"], got["section_dome"]
+    assert float(flat.max()) < 0.02  # the flat face is flat
+    assert abs(float(got["section_thick"]) - 1 / 3) < 0.03
+    deep = float(dome[[0, -1]].mean() - dome.min())  # 60% of the thickness, a fifth of the width, at the very edge
+    assert 0.08 < deep < 0.17
+    assert float(dome[len(dome) // 2]) < 0.01  # the top of the rounded side
+
+
+def test_thickness_along_the_length_keeps_the_slanted_end_and_drops_a_bad_frame():
+    from PIL import Image, ImageDraw
+
+    from app import segment as S
+    from app import sideview as SV
+
+    def side(slant=True, bump=False):
+        big = Image.new("L", (1080, 1920), 0)
+        d = ImageDraw.Draw(big)
+        top = 280 if slant else 400
+        d.polygon([(500, top), (580, 400), (580, 1600), (500, 1600)], fill=255)  # дебелина 80, горе скосено
+        if bump:
+            d.rectangle([540, 700, 580, 1100], fill=0)  # палец пред ръба: маската е непълна
+        return np.asarray(big.resize((270, 480), Image.BILINEAR))
+
+    masks = {"a": side(), "b": side(), "c": side(bump=True), "f": bar_quarter_mask(1240, 300), "g": bar_quarter_mask(1240, 300, turn=5)}
+    ratios = {n: S.outline_ratio(m) for n, m in masks.items()}
+    got = SV.side_thickness(masks, ratios, min(ratios["a"], ratios["b"]))
+    assert got is not None and int(got["side_frames"]) == 2
+    t = got["side_thickness"]
+    assert float(t[:10].mean()) < 0.5 and float(t[len(t) // 2]) == 1.0  # the slanted top and the full middle
+    assert float(t.max()) <= 1.0
+
+
+def test_body_has_a_flat_front_and_the_measured_rounded_back():
+    from app import photo3d as P3
+    from app import sideview as SV
+
+    n = 401
+    on = np.zeros((n, n), bool)
+    on[40:360, 160:240] = True
+    u = np.linspace(SV.SECTION_EDGE, 1 - SV.SECTION_EDGE, SV.SECTION_POINTS)
+    dome = 0.25 * (1 - np.sqrt(1 - (2 * u - 1) ** 2))  # in widths, 0 at the middle
+    along = np.ones(SV.POINTS, np.float32)
+    along[: SV.POINTS // 20] = 0.3  # a slanted top
+    front, back = P3.section_body(on, (np.zeros_like(u), dome, 0.3), along, 0.07, front_round=False)
+    assert np.ptp(front[on]) == 0  # the front is flat
+    assert abs(float(back[200, 200]) - 0.07) < 1e-3  # full thickness in the middle
+    assert float(back[200, 162]) < 0.6 * 0.07  # thinner at the long sides: the back is rounded
+    assert float(back[42, 200]) < 0.4 * 0.07  # and the top is slanted
+    assert (back[on] > front[on]).all()
+    # The other way round: the rounded face looks at the camera.
+    f2, b2 = P3.section_body(on, (np.zeros_like(u), dome, 0.3), None, 0.07, front_round=True)
+    assert np.ptp(b2[on]) == 0 and float(f2[200, 162]) > float(f2[200, 200])
+    # Without a cross-section: a slab of the measured thickness.
+    f3, b3 = P3.section_body(on, None, None, 0.07, False)
+    assert np.allclose(b3[on] - f3[on], 0.07)
+
+
+def test_rounded_side_is_told_by_the_surface_directions():
+    from app import photo3d as P3
+
+    h, w = 400, 100
+    inside = np.ones((h, w), bool)
+    x = np.linspace(-1, 1, w)
+    slope = np.broadcast_to(2 * 0.4 * x, (h, w))  # a dome: the surface turns away towards both long sides
+    n = np.stack([slope, np.zeros((h, w)), -np.ones((h, w))], -1)
+    n /= np.linalg.norm(n, axis=-1, keepdims=True)
+    flat = np.stack([np.full((h, w), 0.1), np.zeros((h, w)), -np.ones((h, w))], -1)  # only tilted
+    flat /= np.linalg.norm(flat, axis=-1, keepdims=True)
+    domed, plain = P3.across_profile(n, inside), P3.across_profile(flat, inside)
+    assert domed[len(domed) // 2] > 0.15 and abs(plain[len(plain) // 2]) < 0.01
+    section, front_round, _ = P3.body_section({}, inside, 0.07, plain, domed)
+    assert section is not None and not front_round  # the back is the rounded side
+    assert P3.body_section({}, inside, 0.07, plain, plain)[0] is None  # two flat faces: a slab
+
+
+def test_light_colour_comes_off_a_white_object_and_a_red_one_stays_red(tmp_path):
+    from PIL import Image
+
+    from app import texture as TX
+
+    rng = np.random.default_rng(5)
+    on = np.zeros((400, 300), bool)
+    on[50:350, 75:225] = True
+    shade = rng.uniform(0.3, 1.0, (400, 300))
+    warm = 230 * shade[..., None] + (1 - shade[..., None]) * np.array([90.0, 60.0, 35.0])  # shadows warm, light places neutral
+    white = np.where(on[..., None], warm, 30).clip(0, 255).astype(np.uint8)
+    red = np.where(on[..., None], np.stack([shade * 200 + 40, shade * 30 + 10, shade * 30 + 10], -1), 30).clip(0, 255).astype(np.uint8)
+    frames = []
+    for k, picture in enumerate((white, white, white, white)):
+        Image.fromarray(picture).save(tmp_path / f"w{k}.png")
+        frames.append((tmp_path / f"w{k}.png", (on[::4, ::4] * 255).astype(np.uint8)))
+    assert TX.neutral_object(frames)
+    for k in range(4):
+        Image.fromarray(red).save(tmp_path / f"r{k}.png")
+    assert not TX.neutral_object([(tmp_path / f"r{k}.png", (on[::4, ::4] * 255).astype(np.uint8)) for k in range(4)])
+    fixed = TX.light_fix(white, on, True)(white)[on].astype(float)
+    spread = np.median(fixed.max(1) - fixed.min(1))
+    assert spread < 6  # no colour cast left
+    assert np.median(fixed.mean(1)) > np.median(white[on].astype(float).mean(1))  # and brighter
+    kept = TX.light_fix(red, on, False)(red)[on].astype(float)
+    assert np.median(kept[:, 0]) > 2 * np.median(kept[:, 1])  # the red object stays red
+
+
+def test_back_is_the_frame_of_the_same_size_not_the_end_of_the_object(tmp_path):
+    from PIL import Image
+
+    from app import photo3d as P3
+
+    def frame(name, picture, box):
+        big = np.full((1600, 1000, 3), 40, np.uint8)
+        on = np.zeros((1600, 1000), bool)
+        x0, y0 = box
+        big[y0 : y0 + picture.shape[0], x0 : x0 + picture.shape[1]] = picture
+        on[y0 : y0 + picture.shape[0], x0 : x0 + picture.shape[1]] = True
+        Image.fromarray(big).save(tmp_path / name, quality=95)
+        return tmp_path / name, np.asarray(Image.fromarray(on.astype(np.uint8) * 255).resize((250, 400), Image.BILINEAR))
+
+    def textured(seed):
+        noise = np.random.default_rng(seed).uniform(0, 1, (120, 30))
+        grey = np.asarray(Image.fromarray((noise * 255).astype(np.uint8)).resize((240, 960), Image.NEAREST), np.float32)
+        return np.repeat((150 + 0.4 * (grey - 128))[..., None], 3, 2).clip(0, 255).astype(np.uint8)
+
+    face = textured(1)
+    chosen = frame("a_front.jpg", face, (380, 320))
+    again = frame("b_front2.jpg", face, (390, 330))  # the same side
+    back = frame("c_back.jpg", textured(2)[:, ::-1], (380, 320))  # the other side, mirrored
+    end = frame("d_end.jpg", np.full((80, 240, 3), 170, np.uint8), (380, 760))  # the end, seen along the axis
+    got = P3.opposite_frame(chosen[0], [again, back, end], chosen[1])
+    assert got is not None and got[0].name == "c_back.jpg"
+    assert P3.opposite_frame(chosen[0], [again, end], chosen[1]) is None
+
+
+def test_a_finger_in_one_frame_is_taken_from_the_other_views():
+    from PIL import Image
+
+    from app import photo3d as P3
+
+    rng = np.random.default_rng(3)
+    noise = rng.uniform(0, 1, (120, 60))
+    face = np.asarray(Image.fromarray((noise * 255).astype(np.uint8)).resize((300, 600), Image.NEAREST).convert("RGB"))
+    big = np.full((800, 600, 3), 30, np.uint8)
+    big[100:700, 150:450] = face
+    inside = np.zeros((800, 600), bool)
+    inside[100:700, 150:450] = True
+    finger = big.copy()
+    finger[390:450, 120:240] = (150, 110, 95)  # a finger across the left side, not far from the colour of the face
+    held = inside.copy()
+    held[390:450, 120:150] = True  # it sticks out of the outline
+    views = []
+    for k in range(3):
+        angle = (k - 1) * 2.0
+        v = Image.fromarray(face).rotate(angle, Image.BICUBIC, fillcolor=(30, 30, 30))
+        views.append((v, np.asarray(Image.fromarray(np.full((600, 300), 255, np.uint8)).rotate(angle, Image.BILINEAR)) > 127))
+    clean, new, box, better, held = P3.without_fingers(Image.fromarray(finger), held, (120, 100, 450, 700), views)
+    assert better in (0, 1, 2) and not held  # every other view shows the face uncovered
+    got = np.asarray(clean).astype(float)
+    assert np.abs(got[400:440, 170:230] - big[400:440, 170:230]).mean() < 25  # the face under the finger is back
+    assert not new[400:440, 125:145].any()  # and the outline is straight again
+    assert box[0] >= 148
