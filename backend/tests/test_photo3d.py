@@ -218,3 +218,69 @@ def test_straight_sides_become_straight_and_curves_stay():
     circle = np.hypot(yy - 300, xx - 300) < 280
     assert np.array_equal(P3.straightened(circle), circle)
 
+
+def bar_mask(width, height=600, tilt=0.0, size=800):
+    from PIL import Image, ImageDraw
+
+    a = Image.new("L", (size, size), 0)
+    c = size / 2
+    d = tilt * height / 2
+    ImageDraw.Draw(a).polygon([(c - width / 2 - d, c - height / 2), (c + width / 2 - d, c - height / 2),
+                               (c + width / 2 + d, c + height / 2), (c - width / 2 + d, c + height / 2)], fill=255)
+    return np.asarray(a).copy()
+
+
+def test_thickness_is_read_from_the_side_frames():
+    from app import segment as S
+
+    frames = {f"f{i}": bar_mask(w, tilt=0.1) for i, w in enumerate([137, 137, 100, 60, 41, 42, 137])}
+    assert abs(S.thinnest(frames) - 41 / 600) < 0.01
+    # One wrong mask, far narrower than the rest, does not count as the thickness.
+    frames["bad"] = bar_mask(12)
+    assert abs(S.thinnest(frames) - 41 / 600) < 0.01
+    # Fingers on part of the object do not change it.
+    held = bar_mask(41)
+    held[500:600, 300:500] = 255
+    assert abs(S.outline_ratio(held) - 41 / 600) < 0.01
+    assert S.thinnest({"only": bar_mask(41)}) is None
+
+
+def test_a_wedge_shape_is_much_thicker_than_the_outlines_show():
+    from app import segment as S
+
+    rng = np.random.default_rng(0)
+    slab = rng.uniform([-96, -22, -6.5], [96, 22, 6.5], (20000, 3))
+    assert abs(S.points_ratio(slab) - 13 / 192) < 0.01
+    wedge = rng.uniform([-96, -40, -24], [96, 40, 24], (20000, 3))
+    assert S.points_ratio(wedge) > 3 * 13 / 192
+
+
+def test_flat_body_has_the_measured_thickness():
+    from app import photo3d as P3
+
+    n = 501
+    on = np.zeros((n, n), bool)
+    on[50:450, 200:290] = True
+    focal = 0.5 / np.tan(np.radians(20))
+    front, back = P3.flat_layers(on, 0.068, 1.9, focal)
+    cell = 1.9 / (focal * (n - 1))
+    assert abs((back - front)[250, 250] / (399 * cell) - 0.068) < 1e-3
+    assert np.ptp(front) == 0 and np.ptp(back) == 0  # the side view is a straight line
+
+
+def test_same_side_has_shared_features_and_the_other_side_has_none():
+    from PIL import Image
+
+    from app import photo3d as P3
+
+    rng = np.random.default_rng(1)
+    noise = rng.uniform(0, 1, (60, 30))
+    face = np.asarray(Image.fromarray((noise * 255).astype(np.uint8)).resize((300, 600), Image.NEAREST))
+    plain = np.full((600, 300), 25, np.uint8)
+    on = np.ones((600, 300), bool)
+    a = P3.features(Image.fromarray(face), on)
+    b = P3.features(Image.fromarray(face).rotate(4, Image.BICUBIC, fillcolor=128), on)
+    assert P3.shared_features(a, b) >= P3.SAME_FEATURES
+    assert P3.features(Image.fromarray(plain), on) is None
+    assert P3.shared_features(a, None) == 0
+

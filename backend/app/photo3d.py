@@ -43,9 +43,11 @@ MIN_IOU = 0.5  # очертание на формата, разминаващо 
 AZIMUTHS = (0.0, 90.0, 180.0, 270.0)
 SAME_WAY = 0.1  # друга посока се избира само ако очертанието ѝ пасва с толкова повече (симетричен предмет не я променя)
 MIRROR_IOU = 0.65  # другата страна: очертанието на кадъра, обърнато огледално, пасва поне толкова (перспективата му пречи)
-# и грубата картина не прилича на снимката: при дистанционно истинският гръб дава корелация 0,03, а същата страна, леко
-# завъртяна, от 0,29 нагоре.
-OTHER_PICTURE = 0.33  # над това кадърът показва същата страна; при дистанционно, вече с изправени кадри: истинският гръб 0,24, същата страна от 0,44 нагоре
+FLAT_BODY = 0.2  # от дължината: толкова тънък предмет е плосък и тялото му идва от измерената дебелина, не от предположението на TripoSR
+FLAT_EDGE = 0.015  # от дължината: радиусът на ръба на плосък предмет (дистанционно: около 3 мм)
+FEATURE_SIDE = 640  # дългата страна на изрязания предмет за сравняване на особености
+SAME_FEATURES = 8  # толкова общи особености и кадърът показва същата страна (дистанционно: истински гръб 0, завъртяно лице 10 до 180)
+OTHER_PICTURE = 0.6  # над това кадърът показва същата страна дори без особености; грубо сравнение: истинският гръб на дистанционно 0,40
 PICTURE_SIDE = 32
 # Предмет в ръка се върти около дългата си ос: обръщане отгоре надолу се приема само ако пасва ясно по-добре, защото
 # симетрично очертание (дистанционно) пасва и на двете, а гърбът тогава излиза с главата надолу.
@@ -317,6 +319,52 @@ def turned_like(photo: Image.Image, inside: np.ndarray, angle: float | None) -> 
     return photo, inside, (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1)
 
 
+def features(photo: Image.Image, inside: np.ndarray) -> tuple[np.ndarray, np.ndarray] | None:
+    """Особеностите на изрязан предмет (ORB): местата им и описанията им, само върху предмета."""
+    from skimage.feature import ORB
+
+    k = FEATURE_SIDE / max(photo.size)
+    size = max(8, round(photo.width * k)), max(8, round(photo.height * k))
+    grey = np.asarray(photo.convert("L").resize(size, Image.LANCZOS), np.float32) / 255
+    on = np.asarray(Image.fromarray(inside).resize(size, Image.NEAREST))
+    orb = ORB(n_keypoints=500, fast_threshold=0.04)
+    try:
+        orb.detect_and_extract(grey)
+    except RuntimeError:  # едноцветна страна няма особености
+        return None
+    keep = on[orb.keypoints[:, 0].astype(int), orb.keypoints[:, 1].astype(int)]
+    return orb.keypoints[keep], orb.descriptors[keep]
+
+
+def shared_features(a: tuple[np.ndarray, np.ndarray] | None, b: tuple[np.ndarray, np.ndarray] | None) -> int:
+    """Колко особености на двата кадъра са едно и също място: истинска проверка дали показват една страна, защото се търси
+    обща перспектива. Върху завъртяно лице остават десетки, а срещу другата страна няма нито една."""
+    from skimage.feature import match_descriptors
+    from skimage.measure import ransac
+    from skimage.transform import ProjectiveTransform
+
+    if a is None or b is None or len(a[0]) < 8 or len(b[0]) < 8:
+        return 0
+    pairs = match_descriptors(a[1], b[1], cross_check=True, max_ratio=0.85)
+    if len(pairs) < 8:
+        return 0
+    _, ok = ransac((a[0][pairs[:, 0]][:, ::-1], b[0][pairs[:, 1]][:, ::-1]), ProjectiveTransform, min_samples=4,
+                   residual_threshold=6, max_trials=300, rng=np.random.default_rng(0))  # fmt: skip
+    return 0 if ok is None else int(ok.sum())
+
+
+def flat_layers(on: np.ndarray, thin: float, depth: float, focal: float) -> tuple[np.ndarray, np.ndarray]:
+    """Двата слоя на плосък предмет: успоредни равнини на измерената дебелина thin (от дължината му), перпендикулярни на
+    камерата, с дълбочина около depth. Така страничният профил е прав и дебелината е истинската. on: (n, n) предметът; focal: в
+    дялове от страната на квадрата."""
+    ys, xs = np.nonzero(on)
+    x, y = xs - xs.mean(), ys - ys.mean()
+    angle = 0.5 * np.arctan2(2 * float((x * y).mean()), float((x * x).mean() - (y * y).mean()))
+    cells = float(np.ptp(x * np.cos(angle) + y * np.sin(angle)))
+    half = 0.5 * thin * cells * depth / (focal * (on.shape[0] - 1))
+    return np.full(on.shape, depth - half, np.float32), np.full(on.shape, depth + half, np.float32)
+
+
 def opposite_frame(frame: Path, others: list[tuple[Path, np.ndarray]], m: np.ndarray):
     """Кадър, показващ другата страна: очертанието му, обърнато огледално, съвпада с това на избрания кадър, а картината
     вътре не прилича на снимката нито обърната, нито както е (иначе е същата страна). Връща (кадър, маска, "lr" или "ud")
@@ -325,6 +373,7 @@ def opposite_frame(frame: Path, others: list[tuple[Path, np.ndarray]], m: np.nda
     shape = shape_of(inside[box[1] : box[3], box[0] : box[2]])
     grey = coarse_picture(photo, box)
     angle = lengthwise(inside)
+    own = features(photo.crop(box), inside[box[1] : box[3], box[0] : box[2]])
     best, best_fit = None, MIRROR_IOU
     for f, mask in others:
         if f == frame or (mask > 127).sum() < 50:
@@ -332,6 +381,10 @@ def opposite_frame(frame: Path, others: list[tuple[Path, np.ndarray]], m: np.nda
         p, ins, b = turned_like(*object_picture(f, mask)[:2], angle)
         s2 = shape_of(ins[b[1] : b[3], b[0] : b[2]])
         g2 = coarse_picture(p, b)
+        same = shared_features(own, features(p.crop(b), ins[b[1] : b[3], b[0] : b[2]]))
+        print(f"{f.name}: {same} features in common", flush=True)
+        if same >= SAME_FEATURES:
+            continue
         for flip, op, handicap in (("lr", np.fliplr, 0.0), ("ud", np.flipud, UPSIDE_DOWN)):
             fit = float((shape & op(s2)).sum() / max(1, (shape | op(s2)).sum())) - handicap
             like = max(correlation(grey, g2), correlation(grey, op(g2)))  # и обърната, и както е
@@ -347,7 +400,7 @@ def flipped(a: np.ndarray, how: str) -> np.ndarray:
 
 def build(frame: Path, m: np.ndarray, place: tuple[int, int, int], vol: np.ndarray, radius: float, level: float,
           distance: float, fov: float, colour_at: Callable[[np.ndarray], np.ndarray], work: Path, out: Path,
-          others: list[tuple[Path, np.ndarray]] = (), strength: float = 1.0) -> dict | None:  # fmt: skip
+          others: list[tuple[Path, np.ndarray]] = (), strength: float = 1.0, thin: float | None = None) -> dict | None:  # fmt: skip
     """Записва модела в `out` и картите в `work`; връща описанието му или None, ако формата на TripoSR не пасва на
     снимката. place: (left, top, side), квадратът от кадъра, показан на TripoSR. colour_at: цветовете на TripoSR (0-1)
     за точки."""
@@ -374,9 +427,10 @@ def build(frame: Path, m: np.ndarray, place: tuple[int, int, int], vol: np.ndarr
 
     square = np.asarray(Image.fromarray(inside.astype(np.uint8) * 255).crop((left, top, left + side, top + side)), np.float32)
     small_mask = lambda n: np.asarray(Image.fromarray(square).resize((n, n), Image.BILINEAR)) > 127  # noqa: E731
+    flat = thin is not None and thin <= FLAT_BODY
     azimuth, fits = best_azimuth(vol, radius, level, distance, fov, small_mask(96))
     print(f"shape against the photo's outline, by direction: { {k: round(v, 2) for k, v in fits.items()} }, using {azimuth}", flush=True)
-    if fits[azimuth] < MIN_IOU:
+    if fits[azimuth] < MIN_IOU and not flat:  # плоският предмет взима от TripoSR само цветовете на гърба, ако няма кадър
         return None
     cam = orbit_camera(distance, fov, azimuth)
 
@@ -397,10 +451,16 @@ def build(frame: Path, m: np.ndarray, place: tuple[int, int, int], vol: np.ndarr
     rel = RL.image_relief(sess, crop, part, max(w0, h0), alone=True)
     print(f"AI detail, {time.time() - started:.0f} s", flush=True)
     amount = RL.STRENGTH * strength * longest
-    front_t = RL.masked_blur(resized(near, n), on, SHAPE_BLUR * width)
+    if flat:
+        middle = np.nanmedian(resized((near + far) / 2, n)[on])
+        front_body, back_body = flat_layers(on, thin, float(middle if np.isfinite(middle) else distance), cam.focal)
+        print(f"flat body, measured thickness {thin:.3f} of the length", flush=True)
+    else:
+        front_body, back_body = RL.masked_blur(resized(near, n), on, SHAPE_BLUR * width), RL.masked_blur(resized(far, n), on, BACK_BLUR * width)
+    front_t = front_body
     if rel is not None:
         front_t = front_t - to_square(rel, n) * amount
-    back_t = RL.masked_blur(resized(far, n), on, BACK_BLUR * width)
+    back_t = back_body
 
     # Другата страна, ако кадрите я показват.
     back_chart, opposite = None, None
@@ -418,7 +478,7 @@ def build(frame: Path, m: np.ndarray, place: tuple[int, int, int], vol: np.ndarr
         opposite = f2.name
         print(f"the other side from {f2.name} ({how}), {time.time() - started:.0f} s", flush=True)
     back_t = np.maximum(back_t, front_t + MIN_THICK * longest)
-    front_t, back_t = rounded_edges(front_t, back_t, on, longest / width, ROUND_EDGE * longest)
+    front_t, back_t = rounded_edges(front_t, back_t, on, longest / width, (FLAT_EDGE if flat else ROUND_EDGE) * longest)
 
     # Мрежата.
     s, t = grid(n)

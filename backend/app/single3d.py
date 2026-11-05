@@ -105,7 +105,7 @@ def cut_out(frame: Path, m: np.ndarray) -> tuple[Image.Image, tuple[int, int, in
     return picture, (int(x0) - ox, int(y0) - oy, side)
 
 
-def main(frames_dir: Path, masks_file: Path, out: Path, strength: float = 1.0):
+def main(frames_dir: Path, masks_file: Path, out: Path, strength: float = 1.0, thin: float | None = None):
     # Кодът на TripoSR импортира rembg и torchmcubes, които не се използват тук: заместители (app/triposr_shims).
     sys.path[:0] = [str(CODE), str(HERE / "triposr_shims")]
     os.environ.setdefault("HF_HOME", str(TOOLS / "hf"))  # config.json на кодировчика на изображения, изтеглен веднъж
@@ -149,7 +149,7 @@ def main(frames_dir: Path, masks_file: Path, out: Path, strength: float = 1.0):
         others = [(f, masks[f.name]) for f in frames if f.name in masks and f != frame]
         try:
             info = photo3d.build(frame, m, place, vol, r, THRESHOLD, CAM_DISTANCE, CAM_FOV, colour_at, out.parent, out, others,
-                                 strength)  # fmt: skip
+                                 strength, thin)  # fmt: skip
         except Exception as e:  # каквото и да е: моделът на TripoSR пак си заслужава
             print(f"two sided model failed: {e!r}", flush=True)
             info = None
@@ -171,4 +171,5 @@ def main(frames_dir: Path, masks_file: Path, out: Path, strength: float = 1.0):
 
 
 if __name__ == "__main__":
-    main(Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3]), float(sys.argv[4]) if len(sys.argv) > 4 else 1.0)
+    main(Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3]), float(sys.argv[4]) if len(sys.argv) > 4 else 1.0,
+         float(sys.argv[5]) if len(sys.argv) > 5 else None)  # fmt: skip
