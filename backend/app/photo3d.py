@@ -45,11 +45,13 @@ SAME_WAY = 0.1  # друга посока се избира само ако оч
 MIRROR_IOU = 0.65  # другата страна: очертанието на кадъра, обърнато огледално, пасва поне толкова (перспективата му пречи)
 # и грубата картина не прилича на снимката: при дистанционно истинският гръб дава корелация 0,03, а същата страна, леко
 # завъртяна, от 0,29 нагоре.
-OTHER_PICTURE = 0.15
+OTHER_PICTURE = 0.33  # над това кадърът показва същата страна; при дистанционно, вече с изправени кадри: истинският гръб 0,24, същата страна от 0,44 нагоре
 PICTURE_SIDE = 32
 # Предмет в ръка се върти около дългата си ос: обръщане отгоре надолу се приема само ако пасва ясно по-добре, защото
 # симетрично очертание (дистанционно) пасва и на двете, а гърбът тогава излиза с главата надолу.
 UPSIDE_DOWN = 0.08
+ROUND = 0.15  # под тази издълженост (0: кръг, 1: линия) предметът няма посока на дължината
+MIN_TURN = 1.0  # градуса: по-малък наклон не се поправя, за да не се размазва кадърът излишно
 COMPARE_SIDE = 96
 RIM = 0.005  # от размера: толкова навътре от очертанието започват цветовете (при ръба има малко от фона зад предмета)
 
@@ -214,6 +216,32 @@ def object_picture(frame: Path, m: np.ndarray) -> tuple[Image.Image, np.ndarray,
     return photo, inside, (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1)
 
 
+def lengthwise(inside: np.ndarray) -> float | None:
+    """Посоката на дължината на предмета в кадъра, в градуси спрямо хоризонталата (по часовника в кадъра); None за почти
+    кръгъл предмет, при който такава посока няма."""
+    ys, xs = np.nonzero(inside)
+    x, y = xs - xs.mean(), ys - ys.mean()
+    xx, yy, xy = float((x * x).mean()), float((y * y).mean()), float((x * y).mean())
+    spread = float(np.hypot(xx - yy, 2 * xy))
+    if spread < ROUND * (xx + yy):
+        return None
+    return float(np.degrees(0.5 * np.arctan2(2 * xy, xx - yy)))
+
+
+def turned_like(photo: Image.Image, inside: np.ndarray, angle: float | None) -> tuple[Image.Image, np.ndarray, tuple[int, int, int, int]]:
+    """Кадър на другата страна, завъртян така, че след обръщането предметът да лежи като на снимката (angle: посоката му
+    там). Иначе наклонен в ръката предмет заема кутията си по диагонал и върху модела гърбът излиза като наклонена ивица."""
+    own = lengthwise(inside)
+    if angle is not None and own is not None:
+        turn = (-angle - own + 90.0) % 180.0 - 90.0  # обръщането сменя знака на посоката, а тя е до 180 градуса
+        if abs(turn) >= MIN_TURN:
+            photo = photo.rotate(-turn, Image.BICUBIC, expand=True)  # PIL върти обратно на часовника
+            alpha = Image.fromarray(inside.astype(np.uint8) * 255).rotate(-turn, Image.BICUBIC, expand=True)
+            inside = RL.one_piece(np.asarray(alpha) > 127)
+    ys, xs = np.nonzero(inside)
+    return photo, inside, (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1)
+
+
 def opposite_frame(frame: Path, others: list[tuple[Path, np.ndarray]], m: np.ndarray):
     """Кадър, показващ другата страна: очертанието му, обърнато огледално, съвпада с това на избрания кадър, а картината
     вътре не прилича на снимката нито обърната, нито както е (иначе е същата страна). Връща (кадър, маска, "lr" или "ud")
@@ -221,11 +249,12 @@ def opposite_frame(frame: Path, others: list[tuple[Path, np.ndarray]], m: np.nda
     photo, inside, box = object_picture(frame, m)
     shape = shape_of(inside[box[1] : box[3], box[0] : box[2]])
     grey = coarse_picture(photo, box)
+    angle = lengthwise(inside)
     best, best_fit = None, MIRROR_IOU
     for f, mask in others:
         if f == frame or (mask > 127).sum() < 50:
             continue
-        p, ins, b = object_picture(f, mask)
+        p, ins, b = turned_like(*object_picture(f, mask)[:2], angle)
         s2 = shape_of(ins[b[1] : b[3], b[0] : b[2]])
         g2 = coarse_picture(p, b)
         for flip, op, handicap in (("lr", np.fliplr, 0.0), ("ud", np.flipud, UPSIDE_DOWN)):
@@ -303,7 +332,7 @@ def build(frame: Path, m: np.ndarray, place: tuple[int, int, int], vol: np.ndarr
     found = opposite_frame(frame, list(others), m) if others else None
     if found is not None:
         f2, m2, how = found
-        p2, ins2, b2 = object_picture(f2, m2)
+        p2, ins2, b2 = turned_like(*object_picture(f2, m2)[:2], lengthwise(part))
         crop2, part2 = p2.crop(b2), ins2[b2[1] : b2[3], b2[0] : b2[2]]
         rel2 = RL.unit_relief(RL.object_depth(sess, crop2, part2, shifts=(0, RL.PATCH // 2)), part2, max(crop2.size))
         if rel2 is not None:

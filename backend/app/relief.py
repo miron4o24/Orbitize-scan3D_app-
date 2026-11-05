@@ -33,14 +33,16 @@ else:  # изпълнение като скрипт: импортира паке
 
 PIXELS = 705_600  # колко пиксела вижда мрежата от предмета (квадрат 840 x 840 по площ)
 MOST_UP = 2.0  # малък в кадъра предмет се увеличава най-много толкова пъти
+BASE_SIDE = 400  # повърхността под детайла се търси при толкова точки по дългата страна
 PATCH = 14  # стъпката на мрежата; входът е кратен на нея
-# От размера на предмета в кадъра: по-широкото вече го има във формата. Издадена площ, по-широка от около два пъти това,
-# излиза само като повдигнат ръб, затова лентата е достатъчно широка за кръстачката на дистанционно.
+# От размера на предмета в кадъра: по-широкото вече го има във формата. По-широки части (дръжката на дрелка) не бива да се
+# надуват, а издадена площ, по-широка от това, излиза само като повдигнат ръб.
 BAND = 0.08
-EDGE = 0.015  # от размера на предмета в кадъра: при очертанието AI дълбочината е ненадеждна, затова там детайлът намалява
+EDGE = 0.025  # от размера на предмета в кадъра: при очертанието AI дълбочината е ненадеждна, затова там детайлът намалява
 STRENGTH = 0.012  # от най-дългата страна на модела: колко се издига издаденото (при дистанционно от 15 см около 1,3 мм)
 MOST = 0.025  # от най-дългата страна: повече от това не се мести никое място
 PEAK = 1.2  # от разликата: нищо не стърчи повече (пръст или сянка при ръба даваха парцали по страните)
+QUIET = 0.15  # от издаденото: по-малките разлики са вълни от мрежата, а не детайл на предмета
 FLAT = 0.03  # лента под този дял от целия обхват на дълбочината е шум върху плоска повърхност и се усилва по-малко
 VIEWS = 12
 FEWER_VIEWS = 6  # когато времето не стига (app/ai.py)
@@ -114,6 +116,19 @@ def masked_blur(a: np.ndarray, inside: np.ndarray, sigma: float) -> np.ndarray:
     return np.asarray(Image.fromarray(low).resize((w, h), Image.BILINEAR)) if k > 1 else low
 
 
+def base_surface(d: np.ndarray, inside: np.ndarray, width: float) -> np.ndarray:
+    """Повърхността под детайла: средата между горната и долната обвивка (морфологично отваряне и затваряне). Те следват
+    плавните наклони докрай, затова заобляне към очертанието не оставя улей, какъвто оставяше обикновеното размазване, а
+    копче или процеп, по-тесни от BAND, остават над или под нея. Проверено върху дистанционно, дрелка и фигура."""
+    h, w = d.shape
+    k = max(1, int(width / BASE_SIDE))
+    iy, ix = ndimage.distance_transform_edt(~inside, return_distances=False, return_indices=True)
+    small = np.asarray(Image.fromarray(d[iy, ix].astype(np.float32)).resize((max(1, w // k), max(1, h // k)), Image.BOX))
+    size = max(3, int(BAND * width / k)) | 1
+    middle = (ndimage.grey_opening(small, size=(size, size)) + ndimage.grey_closing(small, size=(size, size))) / 2
+    return np.asarray(Image.fromarray(ndimage.gaussian_filter(middle, size / 6)).resize((w, h), Image.BILINEAR))
+
+
 def rim_of(band: np.ndarray, inside: np.ndarray, reach: int) -> np.ndarray:
     """Заобляването към очертанието: AI дълбочината "закръгля" всеки предмет там, дори когато е плосък, а това заемаше
     почти целия обхват на детайла (при дистанционно копчетата получаваха една четвърт от него). Това е обичайната
@@ -132,7 +147,7 @@ def unit_relief(d: np.ndarray, inside: np.ndarray, width: float) -> np.ndarray |
     inner = ndimage.binary_erosion(inside, iterations=max(2, int(EDGE * width)))
     if inner.sum() < 100:
         return None
-    band = d - masked_blur(d, inside, BAND * width)
+    band = d - base_surface(d, inside, width)
     band = band - rim_of(band, inside, int(2 * BAND * width))
     lo, mid, hi = np.percentile(band[inner], [2, 50, 98])
     spread, whole = float(hi - lo), float(np.ptp(d[inner]))
@@ -142,7 +157,9 @@ def unit_relief(d: np.ndarray, inside: np.ndarray, width: float) -> np.ndarray |
     unit = max(float(hi - mid), 0.5 * spread)
     gain = min(1.0, spread / (FLAT * whole)) / unit
     fade = np.clip(ndimage.distance_transform_edt(inside) / max(1.0, EDGE * width), 0, 1)
-    return np.where(inside, np.clip((band - mid) * gain, -PEAK, PEAK) * fade, 0).astype(np.float32)
+    level = np.clip((band - mid) * gain, -PEAK, PEAK)
+    level = level * level**2 / (level**2 + QUIET**2)  # плавно, защото рязък праг оставя плоски петна с видими граници
+    return np.where(inside, level * fade, 0).astype(np.float32)
 
 
 class Scene:
