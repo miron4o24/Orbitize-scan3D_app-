@@ -175,3 +175,22 @@ def test_failed_room_solve_still_tries_the_object_alone(monkeypatch, tmp_path):
     got = ai.from_video(tmp_path, tmp_path, tmp_path, 30, True, None, None, {})
     assert tried == [False, True]
     assert got[6:8] == ("model", 30) and got[-1] is True  # камерите от втория опит, предметът е бил в ръка
+
+
+def test_surface_directions_become_real_height():
+    from app import relief as R
+
+    # A flat plate with a dome: its true height and directions, z pointing from the camera to the object.
+    yy, xx = np.mgrid[:200, :200].astype(np.float32)
+    dome = 8.0 * np.exp(-((yy - 100) ** 2 + (xx - 100) ** 2) / (2 * 14.0**2))
+    gy, gx = np.gradient(dome)
+    n = np.stack([-gx, -gy, -np.ones_like(gx)], -1)
+    n /= np.linalg.norm(n, axis=-1, keepdims=True)
+    inside = np.zeros((200, 200), bool)
+    inside[20:180, 20:180] = True
+    high = R.height_from_normals(n, inside)
+    rise = high[100, 100] - high[100, 40]
+    assert 6.0 < rise < 10.0  # a dome of 8 pixels comes out about 8 pixels, and outward
+    rel = R.relief_from_normals(n, inside, 200.0)
+    assert rel[100, 100] > 0.5 and abs(rel[40, 40]) < 0.2  # the dome rises, the flat part stays flat
+

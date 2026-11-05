@@ -6,6 +6,8 @@ $SEG_URL = 'https://github.com/danielgatis/rembg/releases/download/v0.0.0/isnet-
 $SEG_SHA256 = '60920E99C45464F2BA57BEE2AD08C919A52BBF852739E96947FBB4358C0D964A'
 $DEPTH_URL = 'https://huggingface.co/onnx-community/depth-anything-v2-small/resolve/main/onnx/model.onnx'
 $DEPTH_SHA256 = 'AFB6A5C28F3B6BF1618C6E43F02073EF9DFDC70E937502D51603E57B0A1DF10C'
+$NORMAL_URL = 'https://huggingface.co/Ruicheng/moge-2-vits-normal-onnx/resolve/e50ffda41565591092adea54c6ac83d6212e1e23/model.onnx'
+$NORMAL_SHA256 = '24EACB5DC7A2C54C7BC98F7DE085FFBED79AD006EA5B664C2C2CDC02FF3A52F0'
 $SAM_BASE = 'https://huggingface.co/Acly/MobileSAM/resolve/0d3b403339b4674a82493d5e97964dd78089ddc8'
 $SAM_ENCODER_SHA256 = '580F5FB648EA1062C0AABC26217AED56921985F03F0CBBD852BBA81D760CC749'
 $SAM_DECODER_SHA256 = '8976B90A87BA50A6A72217A5FF994F7D25CE16F2229FCC1ED259E1294C622FFE'
@@ -64,6 +66,8 @@ function Install-Models {
   Install-Model (Join-Path $modelDir 'seg\isnet-general-use.onnx') $SEG_URL $SEG_SHA256
   Write-Host "`n==> AI depth model (100 MB, Depth Anything V2 Small: the shape of plain and shiny surfaces)" -ForegroundColor Cyan
   Install-Model (Join-Path $modelDir 'depth\depth_anything_v2_small.onnx') $DEPTH_URL $DEPTH_SHA256
+  Write-Host "`n==> AI fine detail (141 MB, MoGe-2 small: the direction of every part of the surface)" -ForegroundColor Cyan
+  Install-Model (Join-Path $modelDir 'depth\moge2_vits_normal.onnx') $NORMAL_URL $NORMAL_SHA256
   Write-Host "`n==> AI outline sharpener (45 MB, MobileSAM: cuts the object out where the 3D shape points)" -ForegroundColor Cyan
   Install-Model (Join-Path $modelDir 'sam\mobile_sam_image_encoder.onnx') "$SAM_BASE/mobile_sam_image_encoder.onnx" $SAM_ENCODER_SHA256
   Install-Model (Join-Path $modelDir 'sam\sam_mask_decoder_multi.onnx') "$SAM_BASE/sam_mask_decoder_multi.onnx" $SAM_DECODER_SHA256

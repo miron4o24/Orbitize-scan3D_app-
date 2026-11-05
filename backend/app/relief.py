@@ -21,7 +21,7 @@ from pathlib import Path
 import numpy as np
 import trimesh
 from PIL import Image
-from scipy import ndimage, sparse
+from scipy import fft, ndimage, sparse
 
 if __package__:
     from . import depth as D
@@ -34,6 +34,12 @@ else:  # изпълнение като скрипт: импортира паке
 PIXELS = 705_600  # колко пиксела вижда мрежата от предмета (квадрат 840 x 840 по площ)
 MOST_UP = 2.0  # малък в кадъра предмет се увеличава най-много толкова пъти
 BASE_SIDE = 400  # повърхността под детайла се търси при толкова точки по дългата страна
+NORMAL_MODEL = Path(os.environ.get("NORMAL_MODEL", Path(__file__).resolve().parent.parent / "tools" / "depth" / "moge2_vits_normal.onnx"))
+MIN_TOKENS, MAX_TOKENS = 1200, 3600  # колко части от кадъра гледа MoGe-2
+MIN_FACING_Z, MOST_SLOPE = 0.2, 2.0  # при очертанието посоката е почти успоредна на кадъра и наклонът е безкраен
+RAISED = 0.008  # от дължината: под това издаденото се усилва; оценка, за проверка с линийка върху истински предмет
+BOOST = 10.0
+FINE_QUIET = 0.05  # от издаденото: равното остава равно
 PATCH = 14  # стъпката на мрежата; входът е кратен на нея
 # От размера на предмета в кадъра: по-широкото вече го има във формата. По-широки части (дръжката на дрелка) не бива да се
 # надуват, а издадена площ, по-широка от това, излиза само като повдигнат ръб.
@@ -59,12 +65,32 @@ ENOUGH = 0.3  # толкова тегло (около един кадър пра
 
 
 def session(threads: int = THREADS):
+    """Мрежата за детайла: MoGe-2, а ако файлът ѝ липсва, AI дълбочината от преди нея."""
     import onnxruntime as ort
 
     options = ort.SessionOptions()
     options.intra_op_num_threads = threads
     options.add_session_config_entry("session.intra_op.allow_spinning", "0")
-    return ort.InferenceSession(str(D.MODEL), options, providers=["CPUExecutionProvider"])
+    model = NORMAL_MODEL if NORMAL_MODEL.exists() else D.MODEL
+    return ort.InferenceSession(str(model), options, providers=["CPUExecutionProvider"])
+
+
+def gives_normals(sess) -> bool:
+    return len(sess.get_inputs()) == 2  # MoGe-2 иска и брой токени
+
+
+def filled_background(crop: Image.Image, inside: np.ndarray) -> np.ndarray:
+    """Кадърът с фон от най-близкия цвят на предмета, размазан, за да не заема вниманието на мрежата."""
+    rgb = np.asarray(crop.convert("RGB"), np.float32)
+    iy, ix = ndimage.distance_transform_edt(~inside, return_distances=False, return_indices=True)
+    soft = 0.02 * max(inside.shape)
+    filled = ndimage.gaussian_filter(rgb[iy, ix], (soft, soft, 0), truncate=2.5)
+    return np.where(inside[..., None], rgb, filled)
+
+
+def input_size(w: int, h: int) -> tuple[int, int]:
+    k = min(MOST_UP, (PIXELS / (w * h)) ** 0.5)
+    return max(PATCH, round(w * k / PATCH) * PATCH), max(PATCH, round(h * k / PATCH) * PATCH)
 
 
 def one_piece(mask: np.ndarray, hole: float = 0.005) -> np.ndarray:
@@ -84,14 +110,9 @@ def object_depth(sess, crop: Image.Image, inside: np.ndarray, shifts: tuple[int,
     """AI дълбочината (по-голямо: по-близо) на предмета сам, при размера на изрязването. Фонът е запълнен с най-близкия
     цвят на предмета и размазан, за да не заема обхвата на мрежата. shifts: няколко изпълнения с вход, изместен с толкова
     пиксела: осреднени, те премахват бледите ивици на стъпката на мрежата там, където няма друг кадър да ги осредни."""
-    rgb = np.asarray(crop.convert("RGB"), np.float32)
-    iy, ix = ndimage.distance_transform_edt(~inside, return_distances=False, return_indices=True)
-    soft = 0.02 * max(inside.shape)
-    filled = ndimage.gaussian_filter(rgb[iy, ix], (soft, soft, 0), truncate=2.5)
-    rgb = np.where(inside[..., None], rgb, filled)
+    rgb = filled_background(crop, inside)
     w, h = crop.size
-    k = min(MOST_UP, (PIXELS / (w * h)) ** 0.5)
-    iw, ih = max(PATCH, round(w * k / PATCH) * PATCH), max(PATCH, round(h * k / PATCH) * PATCH)
+    iw, ih = input_size(w, h)
     small = np.asarray(Image.fromarray(rgb.astype(np.uint8)).resize((iw, ih), Image.BICUBIC), np.float32) / 255
     x = ((small - D.MEAN) / D.STD).astype(np.float32).transpose(2, 0, 1)
     name = sess.get_inputs()[0].name
@@ -101,6 +122,69 @@ def object_depth(sess, crop: Image.Image, inside: np.ndarray, shifts: tuple[int,
         out = sess.run(None, {name: y[None]})[0][0]
         total += np.roll(out, (-shift, -shift), (0, 1)) if shift else out
     return np.asarray(Image.fromarray(total / len(shifts)).resize((w, h), Image.BICUBIC))
+
+
+def object_normals(sess, crop: Image.Image, inside: np.ndarray, shifts: tuple[int, ...] = (0,)) -> np.ndarray:
+    """Посоките на повърхността от MoGe-2 при размера на изрязването (ос z: от камерата към предмета)."""
+    w, h = crop.size
+    iw, ih = input_size(w, h)
+    small = np.asarray(Image.fromarray(filled_background(crop, inside).astype(np.uint8)).resize((iw, ih), Image.BICUBIC), np.float32) / 255
+    tokens = int(np.clip(iw * ih / PATCH**2, MIN_TOKENS, MAX_TOKENS))
+    x = small.transpose(2, 0, 1)
+    n = np.zeros((ih, iw, 3), np.float32)
+    for shift in shifts:  # вход, изместен с половин стъпка на мрежата: осреднени, махат решетката ѝ там, където няма други кадри
+        y = np.roll(x, (shift, shift), (1, 2)) if shift else x
+        out = sess.run(["normal"], {"image": y[None], "num_tokens": np.array(tokens, np.int64)})[0][0]
+        n += np.roll(out, (-shift, -shift), (0, 1)) if shift else out
+    n = np.stack([np.asarray(Image.fromarray(n[..., c]).resize((w, h), Image.BILINEAR)) for c in range(3)], -1)
+    return n / np.maximum(np.linalg.norm(n, axis=-1, keepdims=True), 1e-6)
+
+
+def height_from_normals(n: np.ndarray, inside: np.ndarray) -> np.ndarray:
+    """Височината към камерата (в пиксели), чиито наклони най-добре пасват на посоките върху предмета: уравнение на Поасон,
+    решено с косинусово преобразуване."""
+    facing = np.maximum(np.abs(n[..., 2]), MIN_FACING_Z)
+    p = np.clip(-n[..., 0] / facing, -MOST_SLOPE, MOST_SLOPE) * inside
+    q = np.clip(-n[..., 1] / facing, -MOST_SLOPE, MOST_SLOPE) * inside
+    div = np.zeros_like(p, np.float64)
+    div[:, 1:] += p[:, 1:] - p[:, :-1]
+    div[1:, :] += q[1:, :] - q[:-1, :]
+    h, w = div.shape
+    bottom = (2 * np.cos(np.pi * np.arange(w) / w) - 2)[None, :] + (2 * np.cos(np.pi * np.arange(h) / h) - 2)[:, None]
+    bottom[0, 0] = 1.0
+    spectrum = fft.dctn(div, type=2, norm="ortho") / bottom
+    spectrum[0, 0] = 0.0
+    return fft.idctn(spectrum, type=2, norm="ortho").astype(np.float32)
+
+
+def relief_from_normals(n: np.ndarray, inside: np.ndarray, width: float) -> np.ndarray | None:
+    """Детайлът от посоките на повърхността, в единици STRENGTH от дължината на предмета. Истинска пропорция, а не избран
+    мащаб: при дрелка и фигура издаденото излиза около 0,8%. Гладка черна пластмаса излиза с твърде малки наклони (бутоните на
+    дистанционно: 0,1%, видимо по-малко от истинските), затова слабият релеф се усилва, но най-много BOOST пъти, за да не се раздуват вълни."""
+    inner = ndimage.binary_erosion(inside, iterations=max(2, int(EDGE * width)))
+    if inner.sum() < 100:
+        return None
+    high = height_from_normals(n, inside)
+    band = high - base_surface(high, inside, width)
+    band = band - rim_of(band, inside, int(2 * BAND * width))
+    lo, mid, hi = np.percentile(band[inner], [2, 50, 98])
+    raised = max(float(hi - mid), 1e-6 * width)
+    gain = np.clip(RAISED * width / raised, 1.0, BOOST)
+    level = np.clip((band - mid) * gain / width / STRENGTH, -MOST / STRENGTH, MOST / STRENGTH)
+    level = level * level**2 / (level**2 + FINE_QUIET**2)
+    level = ndimage.gaussian_filter(level, max(1.0, SOFT * width))
+    fade = np.clip(ndimage.distance_transform_edt(inside) / max(1.0, EDGE * width), 0, 1)
+    fade = fade * fade * (3 - 2 * fade)
+    return np.where(inside, level * fade, 0).astype(np.float32)
+
+
+def image_relief(sess, crop: Image.Image, inside: np.ndarray, width: float, alone: bool = False) -> np.ndarray | None:
+    """Детайлът в един кадър. alone: няма други кадри, които да проверят AI дълбочината (важи само за нея)."""
+    if gives_normals(sess):
+        return relief_from_normals(object_normals(sess, crop, inside, (0, PATCH // 2) if alone else (0,)), inside, width)
+    if alone:
+        return agreed_relief(sess, crop, inside, width, shifts=(0, PATCH // 2))
+    return unit_relief(object_depth(sess, crop, inside), inside, width)
 
 
 def masked_blur(a: np.ndarray, inside: np.ndarray, sigma: float) -> np.ndarray:
@@ -129,7 +213,7 @@ def base_surface(d: np.ndarray, inside: np.ndarray, width: float) -> np.ndarray:
     small = np.asarray(Image.fromarray(d[iy, ix].astype(np.float32)).resize((max(1, w // k), max(1, h // k)), Image.BOX))
     size = max(3, int(BAND * width / k)) | 1
     middle = (ndimage.grey_opening(small, size=(size, size)) + ndimage.grey_closing(small, size=(size, size))) / 2
-    return np.asarray(Image.fromarray(ndimage.gaussian_filter(middle, size / 6)).resize((w, h), Image.BILINEAR))
+    return np.asarray(Image.fromarray(ndimage.gaussian_filter(middle, size / 3)).resize((w, h), Image.BILINEAR))  # без тераси
 
 
 def rim_of(band: np.ndarray, inside: np.ndarray, reach: int) -> np.ndarray:
@@ -261,7 +345,7 @@ def view_relief(sess, scene: Scene, images: Path, i: int):
         return None
     x0, x1, y0, y1 = int(xs.min()), int(xs.max()) + 1, int(ys.min()), int(ys.max()) + 1
     crop, part = photo.crop((x0, y0, x1, y1)), inside[y0:y1, x0:x1]
-    rel = unit_relief(object_depth(sess, crop, part), part, max(x1 - x0, y1 - y0))
+    rel = image_relief(sess, crop, part, max(x1 - x0, y1 - y0))
     return None if rel is None else (x0, y0, rel)
 
 
