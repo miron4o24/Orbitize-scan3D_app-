@@ -288,7 +288,7 @@ def along_normals(scene: Scene, images: Path, chosen: list[int]) -> np.ndarray:
         good, u, v, _, cos = scene.seen(i)
         where = np.flatnonzero(good)
         got = ndimage.map_coordinates(rel, [v[where] - y0, u[where] - x0], order=1, mode="constant", cval=0.0)
-        values[k, where] = got * cos[where]  # лъчът на кадъра не е нормалата
+        values[k, where] = got  # всяка карта е в свой мащаб (unit_relief), затова косият кадър не бива да намалява височината още веднъж
         weights[k, where] = cos[where] ** 2
 
     PAR.each(sample, list(zip(range(len(chosen)), chosen, maps)))
