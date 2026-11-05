@@ -305,7 +305,7 @@ def build(frame: Path, m: np.ndarray, place: tuple[int, int, int], vol: np.ndarr
         f2, m2, how = found
         p2, ins2, b2 = object_picture(f2, m2)
         crop2, part2 = p2.crop(b2), ins2[b2[1] : b2[3], b2[0] : b2[2]]
-        rel2 = RL.unit_relief(RL.object_depth(sess, crop2, part2), part2, max(crop2.size))
+        rel2 = RL.unit_relief(RL.object_depth(sess, crop2, part2, shifts=(0, RL.PATCH // 2)), part2, max(crop2.size))
         if rel2 is not None:
             lay = np.asarray(Image.fromarray(flipped(rel2, how)).resize((w0, h0), Image.BILINEAR))
             back_t = back_t + to_square(lay, n) * amount

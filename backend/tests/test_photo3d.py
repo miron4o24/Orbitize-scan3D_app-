@@ -115,3 +115,21 @@ def test_white_balance_reads_only_the_background(tmp_path):
     # Сиво си остава сиво, а алфата не се променя.
     grey = np.array([[[128, 128, 128, 200]]], np.uint8)
     assert np.array_equal(TX.balanced(grey, np.ones(3)), grey)
+
+
+def test_rim_does_not_eat_the_range_of_the_buttons():
+    from app import relief as R
+
+    # Плосък предмет със заобляне към очертанието (два пъти по-силно от копчетата, както на истинско дистанционно).
+    inside = np.zeros((200, 200), bool)
+    inside[20:180, 20:180] = True
+    d = -0.6 * np.exp(-ndimage.distance_transform_edt(inside) / 12.0)
+    yy, xx = np.mgrid[:200, :200]
+    spots = [(y, x) for y in (60, 80, 100, 120, 140) for x in (68, 100, 132)]
+    for y, x in spots:
+        d = d + 0.3 * (np.hypot(yy - y, xx - x) < 6)
+    rel = R.unit_relief(d.astype(np.float32), inside, 200.0)
+    assert np.mean([rel[s] for s in spots]) > 0.5  # копчетата получават обхвата
+    assert abs(rel[100, 45]) < 0.2  # равното между копчетата и ръба остава равно
+    assert abs(rel[30, 30]) < 0.6  # ъгълът не изскача над копчетата
+    assert abs(rel[100, 26]) < 0.3  # и край очертанието няма улей, който го няма на предмета
