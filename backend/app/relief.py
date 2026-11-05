@@ -38,7 +38,7 @@ PATCH = 14  # стъпката на мрежата; входът е кратен
 # излиза само като повдигнат ръб, затова лентата е достатъчно широка за кръстачката на дистанционно.
 BAND = 0.08
 EDGE = 0.015  # от размера на предмета в кадъра: при очертанието AI дълбочината е ненадеждна, затова там детайлът намалява
-STRENGTH = 0.012  # от най-дългата страна на модела: разликата между ниските и високите места (2-ри и 98-и процентил)
+STRENGTH = 0.012  # от най-дългата страна на модела: колко се издига издаденото (при дистанционно от 15 см около 1,3 мм)
 MOST = 0.025  # от най-дългата страна: повече от това не се мести никое място
 PEAK = 1.2  # от разликата: нищо не стърчи повече (пръст или сянка при ръба даваха парцали по страните)
 FLAT = 0.03  # лента под този дял от целия обхват на дълбочината е шум върху плоска повърхност и се усилва по-малко
@@ -114,18 +114,33 @@ def masked_blur(a: np.ndarray, inside: np.ndarray, sigma: float) -> np.ndarray:
     return np.asarray(Image.fromarray(low).resize((w, h), Image.BILINEAR)) if k > 1 else low
 
 
+def rim_of(band: np.ndarray, inside: np.ndarray, reach: int) -> np.ndarray:
+    """Заобляването към очертанието: AI дълбочината "закръгля" всеки предмет там, дори когато е плосък, а това заемаше
+    почти целия обхват на детайла (при дистанционно копчетата получаваха една четвърт от него). Това е обичайната
+    стойност на всяко разстояние от очертанието: копчетата заемат само част от всяко такова разстояние и остават."""
+    far = ndimage.distance_transform_edt(inside)
+    reach = max(1, min(reach, int(far.max())))
+    rows = np.minimum(far, reach).astype(np.int32)
+    typical = np.nan_to_num(ndimage.median(band, rows, np.arange(1, reach + 1)))
+    smooth = ndimage.gaussian_filter1d(typical, 2.0, mode="nearest")
+    return np.where(inside, smooth[np.maximum(rows, 1) - 1], 0).astype(np.float32)
+
+
 def unit_relief(d: np.ndarray, inside: np.ndarray, width: float) -> np.ndarray | None:
     """Тясната лента на детайла от AI дълбочината: равната повърхност е 0, а разликата между ниските и високите места
-    (2-ри и 98-и процентил) е 1. Намалява към очертанието. None, когато предметът е твърде малък за това."""
+    (2-ри и 98-и процентил) е 2, а издаденото над равното е около 1. Намалява към очертанието. None, когато предметът е твърде малък за това."""
     inner = ndimage.binary_erosion(inside, iterations=max(2, int(EDGE * width)))
     if inner.sum() < 100:
         return None
     band = d - masked_blur(d, inside, BAND * width)
+    band = band - rim_of(band, inside, int(2 * BAND * width))
     lo, mid, hi = np.percentile(band[inner], [2, 50, 98])
     spread, whole = float(hi - lo), float(np.ptp(d[inner]))
     if spread <= 1e-6 or whole <= 1e-6:
         return None
-    gain = min(1.0, spread / (FLAT * whole)) / spread
+    # Мярката е за издаденото: дълбоки тесни процепи (между копчета, при дръжка) не бива да свиват копчетата до нищо.
+    unit = max(float(hi - mid), 0.5 * spread)
+    gain = min(1.0, spread / (FLAT * whole)) / unit
     fade = np.clip(ndimage.distance_transform_edt(inside) / max(1.0, EDGE * width), 0, 1)
     return np.where(inside, np.clip((band - mid) * gain, -PEAK, PEAK) * fade, 0).astype(np.float32)
 
@@ -260,7 +275,7 @@ def main(images: Path, inputs: Path, out: Path):
     started = time.time()
     z = np.load(inputs)
     v, f, c = z["vertices"].astype(np.float64), z["faces"].astype(np.int64), z["colors"].astype(np.float32)
-    while len(f) < SUBDIVIDE_TO:
+    while 2 * len(f) < SUBDIVIDE_TO:  # всяко деление учетворява стените: така не излизат над 2 милиона, които бавят всичко
         v, f, attributes = trimesh.remesh.subdivide(v, f, vertex_attributes={"c": c})
         c = attributes["c"]
     normals = np.asarray(trimesh.Trimesh(v, f, process=False).vertex_normals)
