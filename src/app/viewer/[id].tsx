@@ -186,7 +186,13 @@ export default function Viewer() {
     }
   }
 
-  const exportAs = (format: Format) =>
+  const setRealSize = (text: string) => {
+    setMmInput(text);
+    const typed = Number(text.replace(',', '.'));
+    if (Number.isFinite(typed) && typed >= 1 && typed <= 2000) setScan(updateScan(id, { longestMm: typed, sizeSet: true }));
+  };
+
+  const exportFile = (format: Format) =>
     run(format, async () => {
       if (!model || !mmValid) return;
       setScan(updateScan(id, { longestMm: mm }));
@@ -205,6 +211,19 @@ export default function Viewer() {
       const mime = FORMATS.find((f) => f.format === format)!.mime;
       await Sharing.shareAsync(file.uri, { mimeType: mime, dialogTitle: 'Изнасяне на 3D модел' });
     });
+
+  // От видео не може да се разбере истинският размер: без него копието не е 1:1, затова това се казва преди печат.
+  const exportAs = (format: Format) => {
+    if (format === 'glb' || scan?.sizeSet || !mmValid) return exportFile(format);
+    Alert.alert(
+      'Размерът не е зададен',
+      `Моделът ще излезе с най-дълга страна ${mm} мм. За копие 1:1 първо измерете предмета с линийка и въведете истинския му размер.`,
+      [
+        { text: 'Въведи размера', style: 'cancel', onPress: () => setTab('size') },
+        { text: 'Изнеси така', onPress: () => exportFile(format) },
+      ],
+    );
+  };
 
   const viewAr = () => {
     if (blocked(arAllowed)) return Alert.alert('Виж в стаята', allowanceNote(arAllowed));
@@ -471,7 +490,7 @@ export default function Viewer() {
                     <Field
                       style={s.mm}
                       value={mmInput}
-                      onChangeText={setMmInput}
+                      onChangeText={setRealSize}
                       keyboardType="decimal-pad"
                       accessibilityLabel="Най-дълга страна в милиметри"
                       selectTextOnFocus
@@ -480,6 +499,9 @@ export default function Viewer() {
                   </View>
                 </View>
                 {!mmValid && <Small style={s.danger}>Въведете размер от 1 до 2000 мм.</Small>}
+                {mmValid && !scan?.sizeSet && (
+                  <Small style={s.danger}>За копие 1:1 измерете предмета с линийка и въведете най-дългата му страна.</Small>
+                )}
                 {model && mmValid && (
                   <View style={s.measure}>
                     <Button title="Измери на модела" icon="resize-outline" variant="ghost" onPress={() => setMeasuring(true)} />
@@ -660,7 +682,7 @@ export default function Viewer() {
           onApply={(longest) => {
             const rounded = Math.round(longest * 10) / 10;
             setMmInput(String(rounded));
-            setScan(updateScan(id, { longestMm: rounded }));
+            setScan(updateScan(id, { longestMm: rounded, sizeSet: true }));
             setMeasuring(false);
           }}
         />
