@@ -689,6 +689,29 @@ def smooth(mesh: trimesh.Trimesh, passes: int) -> trimesh.Trimesh:
     return out
 
 
+# Тесни пукнатини и ямки по повърхността (фигура: резки по лицето и тялото, каквито истинската няма): места под леко загладеното
+# копие се вдигат до него. Издаденото и широките вдлъбнатини (кичури коса) остават, защото заглаждането ги следва.
+PIT_PASSES = 10  # стъпки на заглаждането (Лаплас): около пет ръба от мрежата
+PIT_ROUNDS = 5  # всеки кръг вдига ямката до загладеното, което при тясна ямка още е под околното
+PIT_DEPTH = 0.0005  # от размера: по-плитко е шум и не се пипа
+
+
+def filled_pits(mesh: trimesh.Trimesh) -> tuple[trimesh.Trimesh, float]:
+    """Мрежата с вдигнати тесни ямки и пукнатини (същите върхове, стени и цветове) и делът на преместените върхове."""
+    out = mesh.copy()
+    outward = -1.0 if mesh.is_watertight and mesh.volume < 0 else 1.0  # обърната мрежа: навън е обратно
+    moved = np.zeros(len(mesh.vertices), bool)
+    for _ in range(PIT_ROUNDS):
+        soft = trimesh.Trimesh(out.vertices.copy(), out.faces, process=False)
+        trimesh.smoothing.filter_laplacian(soft, lamb=0.5, iterations=PIT_PASSES)  # свива изпъкналото, затова вдига само ямки
+        normals = soft.vertex_normals * outward
+        below = np.einsum("ij,ij->i", out.vertices - soft.vertices, normals)
+        pit = below < -PIT_DEPTH * float(mesh.extents.max())
+        out.vertices[pit] = out.vertices[pit] - below[pit, None] * normals[pit]
+        moved |= pit
+    return out, float(moved.mean())
+
+
 def make_printable(mesh: trimesh.Trimesh, floor: float, flat_base: bool, longest_mm: float = 100.0,
                    smoothing: int = LIGHT, max_faces: int = MAX_FACES) -> trimesh.Trimesh:  # fmt: skip
     """smoothing: проходи на smooth(); 0 за проектиран модел (CAD от app/ai.py), чиито стени вече са плоски, и за модел

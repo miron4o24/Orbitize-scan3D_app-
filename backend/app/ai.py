@@ -716,6 +716,9 @@ def model_from_solved(job: Path, work: Path, photos: Path, flat_base: bool, set_
     M.paint(surface, views, images, cloud.to_up)
     out = M.make_printable(surface, M.floor_z(cloud), flat_base and not in_hand)
     out = with_detail(job, work, dense / "images", views, masks, out, cloud, sh, tune)
+    if not tune.get("no_pits"):
+        out, share = M.filled_pits(out)
+        P.note(job, f"AI model: narrow pits and cracks filled at {share:.1%} of the points")
     used = set(views.names)
     posed, texture_masks = texture_frames(work, solved, [n for n in all_masks if n not in used], all_masks, sh)
     P.photo_texture(job, work, photos, posed, out, cloud, sh, texture_masks)

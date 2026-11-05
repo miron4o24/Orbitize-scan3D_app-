@@ -63,6 +63,7 @@ export default function CommunityPost() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
   const [wireframe, setWireframe] = useState(false);
+  const [plain, setPlain] = useState(false); // моделът без цветовете, само формата
   const [full, setFull] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -172,7 +173,7 @@ export default function CommunityPost() {
       <View style={s.preview}>
         {model ? (
           <Animated.View entering={fade} style={s.flex}>
-            {!full && <ModelView model={model} wireframe={wireframe} background={c.viewer} />}
+            {!full && <ModelView model={model} wireframe={wireframe} plain={plain} background={c.viewer} />}
           </Animated.View>
         ) : loadError ? (
           <View style={s.center}>
@@ -298,6 +299,8 @@ export default function CommunityPost() {
           title={post?.title ?? ''}
           wireframe={wireframe}
           onWireframe={() => setWireframe((w) => !w)}
+          plain={plain}
+          onPlain={() => setPlain((p) => !p)}
           onClose={() => setFull(false)}
         />
       )}
