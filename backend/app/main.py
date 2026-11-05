@@ -22,6 +22,7 @@ from . import ai as AI
 from . import ar as AR
 from . import billing
 from . import community
+from . import db
 from . import edit as ED
 from . import jobs
 from . import mesh as M
@@ -241,14 +242,38 @@ class Tune(BaseModel):
     no_geo: bool = False  # гъсто съпоставяне без втория, проверяващ проход
     passes: int | None = Field(None, ge=1, le=3)  # проходите за гласуване при сливането
     features: int | None = Field(None, ge=2000, le=8192)  # най-много особености на кадър за решаващия алгоритъм
+    frames: int | None = Field(None, ge=16, le=48)  # колко кадъра от видеото
+    no_relief: bool = False  # без фините детайли от AI дълбочината (app/relief.py)
+    relief: float | None = Field(None, gt=0, le=4)  # колко силни да са те (1: обичайното)
+    relief_views: int | None = Field(None, ge=2, le=24)  # от колко кадъра
+    solve: Literal["room", "object"] | None = None  # по какво да се разположат кадрите, вместо да се реши от видеото
+    one_frame: bool = False  # направо моделът от един кадър (app/photo3d.py)
+
+
+# Старото сканиране за около 35 минути е спряно за всички потребители; кодът му остава (app/pipeline.py run, Git етикет
+# standard-scan-35min), а CLASSIC_SCAN=1 в средата на сървъра го пуска отново.
+CLASSIC_SCAN = os.environ.get("CLASSIC_SCAN") == "1"
+
+
+@app.get("/admin/tune", dependencies=[Depends(admin_only)])
+def get_tune():
+    """Настройките по подразбиране на AI модела: променят се отдалечено, без ново инсталиране."""
+    return json.loads(db.get_setting("ai_tune") or "{}")
+
+
+@app.put("/admin/tune", dependencies=[Depends(admin_only)])
+def set_tune(t: Tune):
+    saved = t.model_dump(exclude_defaults=True)
+    db.set_setting("ai_tune", json.dumps(saved))
+    return saved
 
 
 class StartParams(BaseModel):
     flat_base: bool = True
     video_bytes: int | None = None  # размерът на файла в приложението, за да не се обработва никога наполовина качено видео
     quality: Literal["detailed", "quick"] = "detailed"  # quick: по-малко и по-малки кадри (pipeline.run)
-    # scan: сканирането за около 35 минути (за всички). Pro: single, AI моделът (claude, photo: AI моделите, изискващи
-    # платени ключове; app/ai.py). quick или express от по-старо приложение е scan (start_job).
+    # single: AI моделът, за всички профили. claude, photo: AI моделите на Pro, изискващи платени ключове (app/ai.py).
+    # scan, quick или express от по-старо приложение стават single, освен ако CLASSIC_SCAN е включен (start_job).
     method: Literal["scan", "express", "single", "claude", "photo"] = "scan"
     tune: Tune | None = None
     extend: str | None = Field(None, pattern=r"^[0-9a-f]{32}$")  # това видео добавя липсваща страна към този модел
@@ -272,14 +297,12 @@ def start_job(job_id: str, params: StartParams, p: Principal = Depends(principal
         params.tune = None
     if params.method == "express":
         params.method = "scan"
+    if params.method == "scan" and not CLASSIC_SCAN:  # и от по-стари приложения
+        params.method = "single"
     pro = params.method != "scan"
-    trial = False
     if pro:
-        if not A.is_pro(p):
-            if params.method != "single":
-                raise HTTPException(403, "Това е само за Pro профили.")
-            PL.check(p, "ai", job_id)  # единственият AI модел на безплатен профил; 402, когато е използван
-            trial = True
+        if params.method != "single" and not A.is_pro(p):
+            raise HTTPException(403, "Това е само за Pro профили.")
         if not AI.available()[params.method]:
             raise HTTPException(503, "Тази AI услуга още не е включена.")
     if not status["video_bytes"] and n < (1 if params.method in AI.METHODS else MIN_PHOTOS):
@@ -290,8 +313,6 @@ def start_job(job_id: str, params: StartParams, p: Principal = Depends(principal
         if not status["video_bytes"] or params.extend == job_id:
             raise HTTPException(400, "За допълнение е нужно ново видео.")
         add_frames_of(existing(params.extend, p), params.extend, job_id)
-    if trial:
-        PL.record(p, "ai", job_id)
     worker.submit(job_id, params.model_dump(exclude={"extend"}))
     return jobs.public(job_id)
 

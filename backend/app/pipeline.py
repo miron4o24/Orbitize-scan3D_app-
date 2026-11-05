@@ -64,6 +64,7 @@ SFM_ENOUGH = 0.85
 # нея (медиана, от размера на предмета; при дрелка 0,2%) и поне половината кадри са влезли в нея; иначе Поасон върху
 # гъстите точки.
 FUSED_OFF = 0.01
+OBJECT_MARGIN = 6  # пиксела на маската: около предмета, за особености по ръба му (object_only в solve_cameras)
 
 
 class Failed(Exception):
@@ -629,21 +630,67 @@ def match_pairs(names: list[str], near: int = PAIR_NEAR, every: int = PAIR_EVERY
     return [(names[i], names[j]) for i, j in sorted(pairs)]
 
 
+def object_masks(work: Path, photos: Path, sh: Callable[[str, list], None]) -> dict[str, np.ndarray]:
+    """Предметът във всеки кадър (AI маски, app/segment.py)."""
+    found = work / "photo_masks.npz"
+    sh("finding the object", [sys.executable, S.__file__, photos, found])
+    with np.load(found) as npz:
+        return {name: npz[name] for name in npz.files}
+
+
+def camera_stayed_still(job: Path, photos: Path, masks: dict[str, np.ndarray]) -> bool:
+    """Дали телефонът е стоял на място, а предметът се е въртял в ръка: тогава фонът остава същият през видеото."""
+    names = sorted(masks)
+    picked = names[:: max(1, len(names) // V.STILL_FRAMES)][: V.STILL_FRAMES]
+    grey, cover = [], []
+    for name in picked:
+        with Image.open(photos / name) as im:
+            small = im.convert("L")
+            small.thumbnail((V.STILL_SIDE, V.STILL_SIDE))
+            grey.append(np.asarray(small, np.float32))
+        on = Image.fromarray(masks[name]).resize(small.size, Image.BILINEAR)
+        cover.append(np.asarray(on) > 40)
+    score = V.background_stays(grey, cover)
+    still = score >= V.STILL_SCORE
+    note(job, f"camera: the background stays the same by {score:.2f} through the video: "
+         + ("the phone stood still and the object turned" if still else "the phone moved around the object"))  # fmt: skip
+    return still
+
+
+def feature_masks(work: Path, photos: Path, masks: dict[str, np.ndarray]) -> Path:
+    """Маските за feature_extractor на COLMAP (кадърът + .png, черно: без особености): предметът, малко разширен."""
+    folder = work / "feature_masks"
+    folder.mkdir(exist_ok=True)
+    for name, m in masks.items():
+        with Image.open(photos / name) as im:
+            size = im.size
+        wide = ndimage.binary_dilation(m > 127, iterations=OBJECT_MARGIN)
+        Image.fromarray(wide.astype(np.uint8) * 255).resize(size, Image.NEAREST).save(folder / f"{name}.png")
+    return folder
+
+
 def solve_cameras(job: Path, work: Path, photos: Path, n_photos: int, sh: Callable[[str, list], None],
-                  paired: bool = False, mask_every: int = 1, features: int | None = None):  # fmt: skip
+                  paired: bool = False, mask_every: int = 1, features: int | None = None,
+                  known_masks: dict[str, np.ndarray] | None = None, object_only: bool = False):  # fmt: skip
     """Откъде е заснет всеки кадър (COLMAP) и предметът във всеки кадър (AI маски, app/segment.py). paired: съпоставя
     двойките от match_pairs, а не всеки кадър с всеки (повече кадри за същото време). mask_every: изрязва предмета
     само от всеки толкова-ти кадър; останалите само помагат да се разположат и се броят за отклонени. Връща (папката
     на най-добрия модел на камерите или None, колко от кадрите му с маска са съгласувани с очертанията на предмета,
     кадрите, които не са или нямат маска, {име на кадър: маска}, файла на маските). features: най-много на кадър,
-    вместо 8192 на COLMAP."""
+    вместо 8192 на COLMAP. known_masks: вече намерените маски. object_only: особености само върху предмета (нужни са
+    known_masks): когато телефонът стои, а предметът се върти в ръка, фонът казва на алгоритъма, че камерата стои, а
+    предметът в кадрите не пасва на нищо (дистанционно: 48 от 48 разположени, 0 съгласувани с очертанието, 2026-11-05)."""
     sparse, db = work / "sparse", work / "db.db"
+    if known_masks is not None:  # може да е втори опит
+        shutil.rmtree(sparse, ignore_errors=True)
+        db.unlink(missing_ok=True)
     sparse.mkdir(parents=True, exist_ok=True)
     ext, match = colmap_prefixes()
     sh("feature extraction", [COLMAP, "feature_extractor", "--database_path", db, "--image_path", photos,
         "--ImageReader.single_camera", "1", f"--{ext}.use_gpu", "0",
         f"--{ext}.max_image_size", MAX_IMAGE, f"--{ext}.num_threads", THREADS,
-        "--SiftExtraction.peak_threshold", "0.002",
+        "--SiftExtraction.peak_threshold", "0.0015" if object_only else "0.002",
+        *(["--ImageReader.mask_path", feature_masks(work, photos, known_masks)] if object_only else []),
         *(["--SiftExtraction.max_num_features", str(features)] if features else [])])  # fmt: skip
     # По-нисък праг на пика: повече особености по еднообразни повърхности (велурена възглавница: 80 от 80 разположени
     # кадъра вместо 70). Всеки кадър с всеки друг: затваря кръга и свързва ниския кръг с високия. Без насочвано
@@ -669,12 +716,14 @@ def solve_cameras(job: Path, work: Path, photos: Path, n_photos: int, sh: Callab
     # приемат кадри с по-малко (но проверени) съвпадения, защото размазването струва особености.
     sh("camera solving", [COLMAP, "mapper", "--database_path", db, "--image_path", photos,
         "--output_path", sparse / "incremental", "--Mapper.num_threads", THREADS,
-        "--Mapper.init_min_tri_angle", "8", "--Mapper.abs_pose_min_num_inliers", "20"])  # fmt: skip
+        "--Mapper.init_min_tri_angle", "8", "--Mapper.abs_pose_min_num_inliers", "12" if object_only else "20",
+        *(["--Mapper.init_min_num_inliers", "40"] if object_only else [])])  # fmt: skip
     pieces = [read_views(d) for d in sorted((sparse / "incremental").iterdir()) if (d / "images.bin").exists()]
     one_piece = len(pieces) == 1 and len(pieces[0]) >= ONE_PIECE * n_photos
     if one_piece:
         note(job, f"camera solving: one piece with {len(pieces[0])} of {n_photos} frames; global solver not needed")
-    if has_global_mapper() and not one_piece:
+    # Глобалният алгоритъм не помага, когато страните на предмета нямат общи особености, а струва време.
+    if has_global_mapper() and not one_piece and not object_only:
         try:
             # Видео кадрите нямат фокусно разстояние; глобалният алгоритъм изисква то първо да се оцени.
             sh("camera solving", [COLMAP, "view_graph_calibrator", "--database_path", db])
@@ -689,15 +738,16 @@ def solve_cameras(job: Path, work: Path, photos: Path, n_photos: int, sh: Callab
     # Всяко решение се оценява по AI маските: при верни положения формата от очертанията от всички кадри съвпада с
     # маската на всеки кадър; несъвпадащите са грешно разположени и отпадат.
     photo_masks = work / "photo_masks.npz"
-    masked = photos
-    if mask_every > 1:
-        masked = work / "masked"
-        masked.mkdir(exist_ok=True)
-        for name in names[::mask_every]:
-            shutil.copy(photos / name, masked / name)
-    sh("finding the object", [sys.executable, S.__file__, masked, photo_masks])
-    with np.load(photo_masks) as npz:
-        all_masks = {name: npz[name] for name in npz.files}
+    if known_masks is not None:
+        all_masks = known_masks
+    else:
+        masked = photos
+        if mask_every > 1:
+            masked = work / "masked"
+            masked.mkdir(exist_ok=True)
+            for name in names[::mask_every]:
+                shutil.copy(photos / name, masked / name)
+        all_masks = object_masks(work, masked, sh)
     models = []
     for d in sorted(p for p in sparse.rglob("*") if (p / "images.bin").exists()):
         views = read_views(d)

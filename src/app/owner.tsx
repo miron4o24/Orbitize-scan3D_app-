@@ -66,7 +66,7 @@ export default function Owner() {
 
   return (
     <Screen>
-      <Header kicker="Собственик" title="Pro" sub="Кой може да прави AI модели" />
+      <Header kicker="Собственик" title="Pro" sub="Кой има Pro" />
       {error && <ErrorText>{error}</ErrorText>}
 
       <Appear index={1}>
@@ -102,7 +102,7 @@ export default function Owner() {
               ))}
             </Card>
           )}
-          <Small>Pro профилите виждат „AI модел“ на началния екран. Промяната важи веднага.</Small>
+          <Small>Pro дава промени с AI и неограничени тестове за здравина и AR. Промяната важи веднага.</Small>
         </Section>
       </Appear>
     </Screen>

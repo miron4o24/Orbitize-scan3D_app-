@@ -17,8 +17,8 @@ import Animated, {
 } from 'react-native-reanimated';
 
 import { Appear, CountUp, LiveDot } from '@/components/motion';
-import { Button, Card, ErrorText, H3, Header, Mono, Row, Screen, Section, Segmented, Small } from '@/components/ui';
-import { aiAvailable, PRO_INFO, SCAN_INFO } from '@/lib/prefs';
+import { Button, Card, ErrorText, H3, Header, Mono, Row, Screen, Small } from '@/components/ui';
+import { OLD_SCAN_INFO, PRO_INFO } from '@/lib/prefs';
 import { refreshProfile } from '@/lib/auth';
 import { checkProgress } from '@/lib/progress';
 import { setUpPush } from '@/lib/push';
@@ -64,6 +64,7 @@ const SUBSTEPS: Record<string, string> = {
   'dense matching': 'Измерване на повърхността',
   'sharpening the outlines': 'Уточняване на очертанията',
   'fusing depth': 'Изграждане на повърхността',
+  'adding detail': 'Добавяне на фините детайли',
   texturing: 'Оцветяване със снимките',
   'shape from motion sensors': 'Изграждане на формата',
   // AI модели (Pro)
@@ -108,8 +109,8 @@ const PLAN: [string, number][] = [
 // Модел от една снимка: сървърът търси предмета и AI изгражда формата.
 const ONE_PHOTO_PLAN: [string, number][] = [
   ['finding the object', 5],
-  ['ai modelling', 47],
-  ['cleaning', 2],
+  ['ai modelling', 70],
+  ['cleaning', 10],
 ];
 const PRO_PLANS: Record<ProMethod, [string, number][]> = {
   edit: [
@@ -139,18 +140,19 @@ const PRO_PLANS: Record<ProMethod, [string, number][]> = {
   single: [
     ['reading video', 4],
     ['picking frames', 4],
-    ['feature extraction', 10],
-    ['photo matching', 55],
-    ['camera solving', 10],
-    ['finding the object', 94],
+    ['finding the object', 40],
+    ['feature extraction', 8],
+    ['photo matching', 30],
+    ['camera solving', 12],
     ['undistorting', 3],
-    ['sharpening the outlines', 90],
+    ['sharpening the outlines', 30],
     ['dense setup', 1],
-    ['dense matching', 100],
-    ['meshing', 15],
-    ['estimating depth', 30],
+    ['dense matching', 90],
+    ['meshing', 10],
+    ['estimating depth', 15],
     ['fusing depth', 40],
-    ['cleaning', 20],
+    ['cleaning', 10],
+    ['adding detail', 45],
     ['texturing', 20],
   ],
   claude: [
@@ -329,16 +331,14 @@ export default function Processing() {
       }
       // Изборите в момента: могат да се променят, докато качването върви.
       const now = getScan(id) ?? scan!;
-      // Само предлаганите два начина: друг начин от по-старо сканиране (express, quick) се опитва отново като
-      // стандартно сканиране.
-      const chosen = now.method === 'single' && aiAvailable() ? 'single' : undefined;
-      update({ method: chosen, quality: undefined });
+      // Само AI моделът: и по-старо сканиране се опитва отново така.
+      update({ method: 'single', quality: undefined });
       const started = await retrying(() =>
         startJob(job.id, {
           flat_base: now.flatBase ?? true,
           quality: 'detailed',
           ...(hasVideo && { video_bytes: video.size }),
-          ...(chosen && { method: chosen }),
+          method: 'single',
           ...(now.extendFrom && { extend: now.extendFrom }),
         }),
       ).catch((e) => {
@@ -347,7 +347,7 @@ export default function Processing() {
         throw e;
       });
       update({ status: started.state, error: undefined });
-      refreshProfile().catch(() => {}); // пробният AI модел на безплатния профил вече е използван
+      refreshProfile().catch(() => {});
       setUpPush(true); // моментът, в който "кажи ми, когато е готово" има смисъл
     } catch (e) {
       setNetError(`Качването спря. ${errorText(e)}`);
@@ -360,7 +360,6 @@ export default function Processing() {
   // Дневникът на задачата на сървъра: само за собственика на приложението, за да види защо сканирането се е
   // провалило.
   const owner = !!user?.owner;
-  const canAi = !!user && aiAvailable();
   async function showLog() {
     if (!scan!.jobId) return setLog('Няма данни за това сканиране.');
     setLog('Зареждане…');
@@ -397,7 +396,7 @@ export default function Processing() {
     );
 
   if (active) {
-    const total = pro ? PRO_INFO[pro].minutes : scan.quality === 'quick' ? 10 : SCAN_INFO.minutes;
+    const total = scan.photoCount === 1 ? 2 : pro ? PRO_INFO[pro].minutes : scan.quality === 'quick' ? 10 : OLD_SCAN_INFO.minutes;
     const queued = scan.status === 'queued';
     const share = queued ? 0 : progress;
     const left = Math.max(1, Math.round(total * (1 - share)));
@@ -405,7 +404,7 @@ export default function Processing() {
     const at = steps.findIndex(([st]) => st === scan.status);
     return (
       <Screen>
-        <Header kicker={pro ? PRO_INFO[pro].label : canAi ? SCAN_INFO.label : undefined} title={scanTitle(scan)} />
+        <Header kicker={pro ? PRO_INFO[pro].label : OLD_SCAN_INFO.label} title={scanTitle(scan)} />
         <Appear index={1}>
           <Card style={s.overall}>
             <View style={s.row}>
@@ -478,7 +477,6 @@ export default function Processing() {
     );
 
   const uploading = uploaded !== null;
-  const way = method === 'single' && canAi ? 'single' : 'scan';
   const failed = scan.status === 'failed';
   return (
     <Screen>
@@ -500,21 +498,6 @@ export default function Processing() {
         </Appear>
       )}
       {info && <Small>{info}</Small>}
-      {canAi && (
-        <Appear index={2}>
-          <Section label="Начин">
-            <Segmented<'scan' | 'single'>
-              value={way}
-              onChange={(m) => update({ method: m === 'single' ? 'single' : undefined })}
-              options={[
-                { value: 'scan', label: SCAN_INFO.label },
-                { value: 'single', label: PRO_INFO.single.label },
-              ]}
-            />
-            <Small>{way === 'single' ? PRO_INFO.single.time : SCAN_INFO.time}</Small>
-          </Section>
-        </Appear>
-      )}
       <Appear index={3}>
         <Card style={s.list}>
           <Row
