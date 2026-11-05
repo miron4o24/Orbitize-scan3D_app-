@@ -17,7 +17,7 @@ from typing import Callable
 
 import numpy as np
 import trimesh
-from PIL import Image
+from PIL import Image, ImageDraw
 from scipy import ndimage
 
 if __package__:
@@ -52,6 +52,9 @@ PICTURE_SIDE = 32
 UPSIDE_DOWN = 0.08
 ROUND = 0.15  # под тази издълженост (0: кръг, 1: линия) предметът няма посока на дължината
 MIN_TURN = 1.0  # градуса: по-малък наклон не се поправя, за да не се размазва кадърът излишно
+STRAIGHT_TOL = 0.006  # от дължината на предмета: толкова отклонение още се смята за права
+STRAIGHT_RUN = 0.2  # от дължината на предмета: само толкова дълъг участък се изправя
+ROUND_SMOOTH = 2.0  # клетки от решетката
 OUTLINE_BLUR = 0.004  # от размера на предмета в кадъра
 RIM_SMOOTH = 6
 ROUND_EDGE = 0.03  # от най-дългата страна: най-големият радиус на заобляне на ръбовете
@@ -220,6 +223,48 @@ def coarse_picture(photo: Image.Image, box: tuple[int, int, int, int]) -> np.nda
     return np.asarray(photo.crop(box).convert("L").resize((PICTURE_SIDE, PICTURE_SIDE), Image.BOX), np.float32)
 
 
+def straightened(inside: np.ndarray) -> np.ndarray:
+    """Маската с дългите почти прави участъци от очертанието, поставени върху истинска права: страните на дистанционно са
+    прави, а AI маската леко се колебае. Закръглени места остават: кръг, колкото и голям в кадъра, няма участък от
+    STRAIGHT_RUN в рамките на STRAIGHT_TOL."""
+    from skimage import measure
+
+    padded = np.pad(inside, 1).astype(np.float32)
+    contours = measure.find_contours(padded, 0.5)
+    if not contours:
+        return inside
+    outline = max(contours, key=len)
+    if len(outline) < 50 or not np.array_equal(outline[0], outline[-1]):
+        return inside
+    ys, xs = np.nonzero(inside)
+    longest = float(max(np.ptp(ys), np.ptp(xs)) + 1)
+    corners = measure.approximate_polygon(outline, STRAIGHT_TOL * longest)
+    points = outline[:-1].copy()
+    found = 0
+    at = np.array([np.flatnonzero((points == c).all(1))[0] for c in corners[:-1]])
+    for a, b in zip(at, np.r_[at[1:], at[0]]):
+        span = np.arange(a, b + 1) if a < b else np.r_[np.arange(a, len(points)), np.arange(0, b + 1)]
+        part = points[span]
+        if np.linalg.norm(part[-1] - part[0]) < STRAIGHT_RUN * longest:
+            continue
+        keep = max(1, int(0.03 * len(span)))  # краищата на участъка остават: там започва заобленият ъгъл
+        middle = span[keep:-keep]
+        centre = points[middle].mean(0)
+        rel = points[middle] - centre
+        xx, yy, xy = float((rel[:, 1] ** 2).sum()), float((rel[:, 0] ** 2).sum()), float((rel[:, 0] * rel[:, 1]).sum())
+        angle = 0.5 * np.arctan2(2 * xy, xx - yy)
+        along = np.array([np.sin(angle), np.cos(angle)])  # (ред, колона)
+        points[middle] = centre + np.outer(rel @ along, along)
+        found += 1
+    if not found:
+        return inside
+    drawing = Image.new("L", (padded.shape[1], padded.shape[0]), 0)
+    ImageDraw.Draw(drawing).polygon([(float(c), float(r)) for r, c in points], fill=255)
+    new = np.asarray(drawing)[1:-1, 1:-1] > 127
+    holes = ndimage.binary_fill_holes(inside) & ~inside  # истинските отвори (дръжка) остават
+    return RL.one_piece(new & ~holes)
+
+
 def object_picture(frame: Path, m: np.ndarray) -> tuple[Image.Image, np.ndarray, tuple[int, int, int, int]]:
     """Кадърът, маската му при неговия размер (едно парче) и кутията на предмета."""
     with Image.open(frame) as im:
@@ -227,6 +272,7 @@ def object_picture(frame: Path, m: np.ndarray) -> tuple[Image.Image, np.ndarray,
     alpha = np.asarray(Image.fromarray(m).resize(photo.size, Image.BICUBIC), np.float32)
     # Маската е с четвърт от размера на кадъра: без това очертанието излиза на стъпала.
     inside = RL.one_piece(ndimage.gaussian_filter(alpha, OUTLINE_BLUR * max(1.0, float((alpha > 127).sum()) ** 0.5)) > 127)
+    inside = straightened(inside)
     ys, xs = np.nonzero(inside)
     return photo, inside, (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1)
 
@@ -237,7 +283,10 @@ def rounded_edges(front: np.ndarray, back: np.ndarray, on: np.ndarray, cell: flo
     most: най-големият радиус на заоблянето."""
     half = (back - front) / 2
     radius = max(1e-9, min(most, float(np.median(half[on]))) if on.any() else most)
-    u = np.clip(ndimage.distance_transform_edt(on) * cell / radius, 0, 1)
+    # Разстоянието се заглажда: по наклонен прав ръб решетката прави стъпала, а всяко стъпало оставаше като резка през заобления
+    # ръб на модела.
+    far = ndimage.gaussian_filter(ndimage.distance_transform_edt(on).astype(np.float32), ROUND_SMOOTH)
+    u = np.clip(far * cell / radius, 0, 1)
     lift = 1 - np.sqrt(np.maximum(1 - (1 - u) ** 2, 0))
     return front + lift * half, back - lift * half
 
