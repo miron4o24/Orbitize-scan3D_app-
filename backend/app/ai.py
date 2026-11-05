@@ -525,6 +525,8 @@ def single(job: Path, work: Path, flat_base: bool, set_state: Callable[[str], No
             TX.clear(job)  # текстура, направена за този модел, ако се е стигнало дотам
     if not found:
         found = frames(job, sh)
+    elif tune.get("one_frame") and len(found) >= MIN_FRAMES:  # тестова задача: дебелината се мери както след видео
+        keep_thinnest(job, work, P.object_masks(work, photos, sh))
     set_state("reconstructing")
     model, info = by_single(job, work, found, sh, float(tune.get("relief") or 1.0))
     set_state("cleaning")
@@ -550,6 +552,7 @@ def from_video(job: Path, work: Path, photos: Path, n_photos: int, flat_base: bo
     върху него (app/outline.py). None, когато твърде малко кадри могат да се разположат."""
     tune = tune or {}
     all_masks = P.object_masks(work, photos, sh)
+    keep_thinnest(job, work, all_masks)
     forced = tune.get("solve")
     in_hand = forced == "object" if forced else P.camera_stayed_still(job, photos, all_masks)
     best, placed, stray = None, 0, []
@@ -568,6 +571,36 @@ def from_video(job: Path, work: Path, photos: Path, n_photos: int, flat_base: bo
         if best is not None and placed >= MIN_PLACED:
             break
     return model_from_solved(job, work, photos, flat_base, set_state, sh, best, placed, stray, all_masks, tune, in_hand)
+
+
+THINNEST = "thinnest.json"
+TOO_THICK = 1.6  # пъти по-дебела форма от очертанията показва, че кадрите не са видели предмета отстрани (дистанционно: 3,4 пъти)
+
+
+def keep_thinnest(job: Path, work: Path, masks: dict[str, np.ndarray]) -> None:
+    """Колко тънък е предметът по очертанията на всички кадри (segment.thinnest), за проверката на формата и за модела от един
+    кадър, който иначе вижда само 12 от тях."""
+    thin = S.thinnest(masks)
+    (work / THINNEST).write_text(json.dumps(thin))
+    P.note(job, f"thickness from the outlines: {thin if thin is None else round(thin, 3)} of the length")
+
+
+def read_thinnest(work: Path) -> float | None:
+    file = work / THINNEST
+    return json.loads(file.read_text()) if file.exists() else None
+
+
+def shape_too_thick(views: M.Views, masks: list[np.ndarray], cloud: M.Cloud, agree: float, thin: float | None) -> float | None:
+    """Дебелината на формата от разположените кадри, ако е много над измерената от всички очертания, иначе None. Плоски предмети:
+    кадрите на дистанционно с еднообразен черен гръб се разполагат само около лицето и формата излиза клин, 47 вместо 13 мм."""
+    if thin is None or thin > photo3d.FLAT_BODY:
+        return None
+    found = M.hull_volume(views, masks, S.MASK_SCALE, cloud, agree=agree)
+    if found is None:
+        return None
+    frac, axes, _ = found
+    got = S.points_ratio(M.voxels_inside(frac, axes, agree)[1])
+    return got if got > TOO_THICK * thin else None
 
 
 ROUNDS = 2  # проходи на MobileSAM, всеки с подсказки от формата на очертанията от предишния
@@ -657,6 +690,11 @@ def model_from_solved(job: Path, work: Path, photos: Path, flat_base: bool, set_
         views, masks = M.subset(views, keep), [m for m, k in zip(masks, keep) if k]
     images = [dense / "images" / n for n in views.names]
     agree = tune.get("agree") or (OL.AGREE_SHARP if sharpened else M.HULL_AGREE)
+    wedge = shape_too_thick(views, masks, cloud, agree, read_thinnest(work))
+    if wedge is not None:
+        P.note(job, f"AI model: the shape is {wedge:.3f} thick for its length and the outlines show {read_thinnest(work):.3f}: "
+               "the frames did not see it from the side; making it from one frame")  # fmt: skip
+        return None
     geometric = not tune.get("no_geo") and seconds_left(tune) >= rest
     P.note(job, f"AI model: {seconds_left(tune):.0f} s left of the promised time, {rounds} rounds of outlines, "
            f"second pass of dense matching: {geometric}")  # fmt: skip
@@ -787,7 +825,8 @@ def by_single(job: Path, work: Path, found: list[Path], sh: Callable[[str, list]
         im.save(pick / f.name, "JPEG", quality=95)
     masks, out = work / "single_masks.npz", work / "single.ply"
     sh("finding the object", [sys.executable, S.__file__, pick, masks])
-    sh("ai modelling", [sys.executable, single3d.__file__, pick, masks, out, str(strength)])
+    thin = read_thinnest(work)
+    sh("ai modelling", [sys.executable, single3d.__file__, pick, masks, out, str(strength), *([] if thin is None else [str(thin)])])
     info = json.loads(out.with_suffix(".json").read_text())
     model = trimesh.load(out, force="mesh")
     P.note(job, f"single frame AI: {info}")

@@ -122,10 +122,58 @@ def crop_mask(sess, image: Image.Image, cx: float, cy: float, size: float) -> np
     return out
 
 
+RATIO_POINTS = 200  # точки на маската: по-малко не е предмет
+RATIO_BANDS = 40
+RATIO_CLOSE = 1.15
+
+
 def object_width(m: np.ndarray) -> float:
     """Дял от ширината на кадъра, зает от предмета (0, ако не е намерен)."""
     xs = np.nonzero((m > 127).any(axis=0))[0]
     return (xs[-1] - xs[0] + 1) / m.shape[1] if len(xs) else 0.0
+
+
+def outline_ratio(m: np.ndarray) -> float:
+    """Ширината на очертанието през дължината му, по собствената му ос: медианата от ивици напречно на дължината, за да не
+    я променят пръсти върху част от предмета. 0, ако предметът не е намерен."""
+    ys, xs = np.nonzero(m > 127)
+    if len(ys) < RATIO_POINTS:
+        return 0.0
+    x, y = xs - xs.mean(), ys - ys.mean()
+    angle = 0.5 * np.arctan2(2 * float((x * y).mean()), float((x * x).mean() - (y * y).mean()))
+    along, across = x * np.cos(angle) + y * np.sin(angle), y * np.cos(angle) - x * np.sin(angle)
+    return band_ratio(along, across)
+
+
+def points_ratio(points: np.ndarray) -> float:
+    """Същото за точки в пространството: дебелината им (най-късата ос) спрямо дължината им."""
+    rel = points - points.mean(0)
+    _, axes = np.linalg.eigh(np.cov(rel.T))
+    return band_ratio(rel @ axes[:, 2], rel @ axes[:, 0])
+
+
+def band_ratio(along: np.ndarray, across: np.ndarray) -> float:
+    """Медианата от ширините на ивици по дължината, спрямо дължината; 0 без дължина."""
+    length = float(np.ptp(along))
+    if length <= 0:
+        return 0.0
+    bands = np.clip(((along - along.min()) / length * RATIO_BANDS).astype(int), 0, RATIO_BANDS - 1)
+    low, high = np.full(RATIO_BANDS, np.inf), np.full(RATIO_BANDS, -np.inf)
+    np.minimum.at(low, bands, across)
+    np.maximum.at(high, bands, across)
+    seen = high >= low
+    return float(np.median(high[seen] - low[seen]) / length)
+
+
+def thinnest(masks: dict[str, np.ndarray]) -> float | None:
+    """Колко тънък е предметът спрямо дължината си, измерено от очертанията на всички кадри: в кадър отстрани то е истинската
+    дебелина (дистанционно 192 x 44 x 13 мм: 0,071 при истински 0,068). Най-малката стойност с още един кадър близо до нея,
+    защото една грешна маска лесно излиза по-тясна. None при по-малко от два кадъра с такава."""
+    ratios = sorted(r for r in (outline_ratio(m) for m in masks.values()) if r > 0)
+    for a, b in zip(ratios, ratios[1:]):
+        if b <= a * RATIO_CLOSE:
+            return a
+    return None
 
 
 def dense_area(m: np.ndarray, size: tuple[int, int]) -> np.ndarray:
