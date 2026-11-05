@@ -42,7 +42,7 @@ STRENGTH = 0.012  # от най-дългата страна на модела: �
 MOST = 0.025  # от най-дългата страна: повече от това не се мести никое място
 FLAT = 0.03  # лента под този дял от целия обхват на дълбочината е шум върху плоска повърхност и се усилва по-малко
 VIEWS = 12
-FEWER_VIEWS = 6  # когато обработката вече е закъсняла (app/ai.py)
+FEWER_VIEWS = 6  # когато времето не стига (app/ai.py)
 WORKERS = 4  # кадри наведнъж: при този размер всяка мрежа заема около 1 GB
 THREADS = 2
 SUBDIVIDE_TO = 700_000  # стени преди нанасянето: достатъчно гъсти за копче от няколко милиметра
@@ -98,11 +98,19 @@ def object_depth(sess, crop: Image.Image, inside: np.ndarray, shifts: tuple[int,
 
 
 def masked_blur(a: np.ndarray, inside: np.ndarray, sigma: float) -> np.ndarray:
-    """Размазване само от точките вътре: фонът не влиза в средното."""
-    w = inside.astype(np.float32)
-    top = ndimage.gaussian_filter(np.where(inside, a, 0).astype(np.float32), sigma, truncate=3.0)
-    bottom = ndimage.gaussian_filter(w, sigma, truncate=3.0)
-    return top / np.maximum(bottom, 1e-3)
+    """Размазване само от точките вътре: фонът не влиза в средното. Широкото размазване се прави при по-малък размер:
+    резултатът така или иначе е гладък, а времето пада с квадрата на намалението."""
+    h, w = a.shape
+    k = max(1, int(sigma / 4))
+    top, bottom = np.where(inside, a, 0).astype(np.float32), inside.astype(np.float32)
+    if k > 1:
+        size = (max(1, w // k), max(1, h // k))
+        top = np.asarray(Image.fromarray(top).resize(size, Image.BOX))
+        bottom = np.asarray(Image.fromarray(bottom).resize(size, Image.BOX))
+    top = ndimage.gaussian_filter(top, sigma / k, truncate=3.0)
+    bottom = ndimage.gaussian_filter(bottom, sigma / k, truncate=3.0)
+    low = top / np.maximum(bottom, 1e-3)
+    return np.asarray(Image.fromarray(low).resize((w, h), Image.BILINEAR)) if k > 1 else low
 
 
 def unit_relief(d: np.ndarray, inside: np.ndarray, width: float) -> np.ndarray | None:
@@ -273,8 +281,9 @@ def main(images: Path, inputs: Path, out: Path):
     lo, hi = np.percentile(moved, [2, 98])
     print(f"detail: {lo:+.2f} .. {hi:+.2f} on a model of {size:.0f}, after {time.time() - started:.0f} s", flush=True)
     colors = np.clip(np.round(c), 0, 255).astype(np.uint8)
-    mesh = M.decimate(trimesh.Trimesh(v, f, vertex_colors=colors, process=False), FACES)
-    if not mesh.is_watertight or len(mesh.faces) > 1.2 * FACES:
+    faces = int(z["faces_out"]) if "faces_out" in z.files else FACES
+    mesh = M.decimate(trimesh.Trimesh(v, f, vertex_colors=colors, process=False), faces)
+    if not mesh.is_watertight or len(mesh.faces) > 1.2 * faces:
         raise SystemExit("the detailed surface did not stay closed")
     mesh.export(out)
     out.with_suffix(".json").write_text(json.dumps({"frames": len(chosen), "low": round(float(lo), 3), "high": round(float(hi), 3),
