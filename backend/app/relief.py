@@ -42,6 +42,7 @@ EDGE = 0.025  # от размера на предмета в кадъра: пр�
 STRENGTH = 0.012  # от най-дългата страна на модела: колко се издига издаденото (при дистанционно от 15 см около 1,3 мм)
 MOST = 0.025  # от най-дългата страна: повече от това не се мести никое място
 PEAK = 1.2  # от разликата: нищо не стърчи повече (пръст или сянка при ръба даваха парцали по страните)
+SOFT = 0.002  # от размера на предмета в кадъра: колко се заглаждат стените на детайла
 QUIET = 0.15  # от издаденото: по-малките разлики са вълни от мрежата, а не детайл на предмета
 FLAT = 0.03  # лента под този дял от целия обхват на дълбочината е шум върху плоска повърхност и се усилва по-малко
 VIEWS = 12
@@ -157,8 +158,10 @@ def unit_relief(d: np.ndarray, inside: np.ndarray, width: float) -> np.ndarray |
     unit = max(float(hi - mid), 0.5 * spread)
     gain = min(1.0, spread / (FLAT * whole)) / unit
     fade = np.clip(ndimage.distance_transform_edt(inside) / max(1.0, EDGE * width), 0, 1)
+    fade = fade * fade * (3 - 2 * fade)  # плавно: иначе детайлът свършва с видима линия успоредно на очертанието
     level = np.clip((band - mid) * gain, -PEAK, PEAK)
     level = level * level**2 / (level**2 + QUIET**2)  # плавно, защото рязък праг оставя плоски петна с видими граници
+    level = ndimage.gaussian_filter(level.astype(np.float32), max(1.0, SOFT * width))  # отстрани копчетата не са зъбци
     return np.where(inside, level * fade, 0).astype(np.float32)
 
 

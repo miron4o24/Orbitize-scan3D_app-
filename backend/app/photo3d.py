@@ -52,6 +52,9 @@ PICTURE_SIDE = 32
 UPSIDE_DOWN = 0.08
 ROUND = 0.15  # под тази издълженост (0: кръг, 1: линия) предметът няма посока на дължината
 MIN_TURN = 1.0  # градуса: по-малък наклон не се поправя, за да не се размазва кадърът излишно
+OUTLINE_BLUR = 0.004  # от размера на предмета в кадъра
+RIM_SMOOTH = 6
+ROUND_EDGE = 0.03  # от най-дългата страна: най-големият радиус на заобляне на ръбовете
 COMPARE_SIDE = 96
 RIM = 0.005  # от размера: толкова навътре от очертанието започват цветовете (при ръба има малко от фона зад предмета)
 
@@ -179,6 +182,17 @@ def closed_mesh(q: np.ndarray, front: np.ndarray, back: np.ndarray) -> tuple[np.
     u, v = rim[:, 0], rim[:, 1]
     walls = np.vstack([np.c_[v, u, u + n], np.c_[v, u + n, v + n]])
     vertices = np.vstack([front[used], back[used]])
+    # Ръбът по клетките на решетката е на стъпала: точките му се местят плавно към съседите си по ръба.
+    on_rim = np.unique(np.r_[u, v])
+    for _ in range(RIM_SMOOTH):
+        for shift in (0, n):
+            near, count = np.zeros_like(vertices), np.zeros(len(vertices))
+            np.add.at(near, u + shift, vertices[v + shift])
+            np.add.at(near, v + shift, vertices[u + shift])
+            np.add.at(count, u + shift, 1)
+            np.add.at(count, v + shift, 1)
+            ids = on_rim + shift
+            vertices[ids] = 0.5 * vertices[ids] + 0.5 * near[ids] / np.maximum(count[ids, None], 1)
     return vertices, np.vstack([top, bottom, walls]), np.flatnonzero(used.ravel())
 
 
@@ -210,10 +224,22 @@ def object_picture(frame: Path, m: np.ndarray) -> tuple[Image.Image, np.ndarray,
     """Кадърът, маската му при неговия размер (едно парче) и кутията на предмета."""
     with Image.open(frame) as im:
         photo = im.convert("RGB")
-    alpha = Image.fromarray(m).resize(photo.size, Image.BICUBIC)
-    inside = RL.one_piece(np.asarray(alpha) > 127)
+    alpha = np.asarray(Image.fromarray(m).resize(photo.size, Image.BICUBIC), np.float32)
+    # Маската е с четвърт от размера на кадъра: без това очертанието излиза на стъпала.
+    inside = RL.one_piece(ndimage.gaussian_filter(alpha, OUTLINE_BLUR * max(1.0, float((alpha > 127).sum()) ** 0.5)) > 127)
     ys, xs = np.nonzero(inside)
     return photo, inside, (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1)
+
+
+def rounded_edges(front: np.ndarray, back: np.ndarray, on: np.ndarray, cell: float, most: float) -> tuple[np.ndarray, np.ndarray]:
+    """Двата слоя, събрани към средата си край очертанието по четвърт кръг: истинските предмети имат заоблени ръбове, а
+    иначе лицето свършва с остра устна и отвесна стена. Самото очертание не се мести. cell: размер на клетка от решетката,
+    most: най-големият радиус на заоблянето."""
+    half = (back - front) / 2
+    radius = max(1e-9, min(most, float(np.median(half[on]))) if on.any() else most)
+    u = np.clip(ndimage.distance_transform_edt(on) * cell / radius, 0, 1)
+    lift = 1 - np.sqrt(np.maximum(1 - (1 - u) ** 2, 0))
+    return front + lift * half, back - lift * half
 
 
 def lengthwise(inside: np.ndarray) -> float | None:
@@ -343,6 +369,7 @@ def build(frame: Path, m: np.ndarray, place: tuple[int, int, int], vol: np.ndarr
         opposite = f2.name
         print(f"the other side from {f2.name} ({how}), {time.time() - started:.0f} s", flush=True)
     back_t = np.maximum(back_t, front_t + MIN_THICK * longest)
+    front_t, back_t = rounded_edges(front_t, back_t, on, longest / width, ROUND_EDGE * longest)
 
     # Мрежата.
     s, t = grid(n)
