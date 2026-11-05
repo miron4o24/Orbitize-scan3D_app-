@@ -38,6 +38,7 @@ from . import photo3d
 from . import pipeline as P
 from . import relief as RL
 from . import segment as S
+from . import sideview as SV
 from . import single3d
 from . import texture as TX
 
@@ -526,7 +527,7 @@ def single(job: Path, work: Path, flat_base: bool, set_state: Callable[[str], No
     if not found:
         found = frames(job, sh)
     elif tune.get("one_frame") and len(found) >= MIN_FRAMES:  # тестова задача: дебелината се мери както след видео
-        keep_thinnest(job, work, P.object_masks(work, photos, sh))
+        keep_thinnest(job, work, photos, P.object_masks(work, photos, sh), sh)
     set_state("reconstructing")
     model, info = by_single(job, work, found, sh, float(tune.get("relief") or 1.0))
     set_state("cleaning")
@@ -552,7 +553,7 @@ def from_video(job: Path, work: Path, photos: Path, n_photos: int, flat_base: bo
     върху него (app/outline.py). None, когато твърде малко кадри могат да се разположат."""
     tune = tune or {}
     all_masks = P.object_masks(work, photos, sh)
-    keep_thinnest(job, work, all_masks)
+    keep_thinnest(job, work, photos, all_masks, sh)
     forced = tune.get("solve")
     in_hand = forced == "object" if forced else P.camera_stayed_still(job, photos, all_masks)
     best, placed, stray = None, 0, []
@@ -577,12 +578,18 @@ THINNEST = "thinnest.json"
 TOO_THICK = 1.6  # пъти по-дебела форма от очертанията показва, че кадрите не са видели предмета отстрани (дистанционно: 3,4 пъти)
 
 
-def keep_thinnest(job: Path, work: Path, masks: dict[str, np.ndarray]) -> None:
+def keep_thinnest(job: Path, work: Path, photos: Path, masks: dict[str, np.ndarray], sh: Callable[[str, list], None]) -> None:
     """Колко тънък е предметът по очертанията на всички кадри (segment.thinnest), за проверката на формата и за модела от един
-    кадър, който иначе вижда само 12 от тях."""
+    кадър, който иначе вижда само 12 от тях; при плосък предмет и страничният му профил от кадрите отстрани (app/sideview.py)."""
     thin = S.thinnest(masks)
     (work / THINNEST).write_text(json.dumps(thin))
     P.note(job, f"thickness from the outlines: {thin if thin is None else round(thin, 3)} of the length")
+    if thin is None or thin > photo3d.FLAT_BODY or not (work / "photo_masks.npz").exists():
+        return
+    try:
+        sh("finding the object", [sys.executable, SV.__file__, photos, work / "photo_masks.npz", str(thin), work / SV.FILE])
+    except P.Failed as e:  # моделът пак става, с височините на AI
+        P.note(job, f"side view: failed ({e})")
 
 
 def read_thinnest(work: Path) -> float | None:

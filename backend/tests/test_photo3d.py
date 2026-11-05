@@ -373,3 +373,146 @@ def test_a_band_across_the_end_goes_and_a_button_there_stays():
     assert out[80, 115] > 0.9
     assert out[500, 115] == 0
 
+
+def side_on_picture(raised, length=1000, thick=70, finger=None):
+    """A dark bar seen from the side on a light, noisy background, with parts standing out on its right. raised: [(from, to, height in pixels)]."""
+    from PIL import Image
+
+    rng = np.random.default_rng(1)
+    h, w = length + 200, 500
+    a = rng.normal(170, 9, (h, w, 3)).clip(0, 255)
+    left = w // 2 - thick // 2
+    a[100 : 100 + length, left : left + thick] = 30
+    for start, stop, height in raised:
+        a[100 + start : 100 + stop, left + thick : left + thick + height] = 30
+    if finger is not None:  # a finger across the strip: another colour, its long sides run across
+        a[100 + finger : 100 + finger + 60, left + thick :] = (205, 150, 130)
+    on = np.zeros((h, w), bool)
+    on[100 : 100 + length, left : left + thick] = True
+    small = np.asarray(Image.fromarray(on.astype(np.uint8) * 255).resize((w // 4, h // 4), Image.NEAREST))
+    return Image.fromarray(a.astype(np.uint8)), small
+
+
+def test_side_view_measures_what_stands_out_and_ignores_a_finger(tmp_path):
+    from app import sideview as SV
+
+    parts = [(480, 540, 16), (200, 260, 5)]  # 3 mm and 1 mm at 192 mm long
+    names = []
+    masks = {}
+    for k, finger in enumerate((300, 700, 800)):
+        picture, small = side_on_picture(parts, finger=finger)
+        name = f"img_{k:04d}.jpg"
+        picture.save(tmp_path / name, quality=97)
+        names.append(name)
+        masks[name] = small
+    got = SV.measure(tmp_path, masks, {n: 0.07 for n in names}, 0.07)
+    assert got is not None
+    busy, quiet = got["busy"], got["quiet"]
+    at = lambda a, b: busy[int(a * SV.POINTS) : int(b * SV.POINTS)]  # noqa: E731
+    assert abs(float(at(0.49, 0.53).max()) - 0.016) < 0.003  # the 3 mm part
+    assert abs(float(at(0.21, 0.25).max()) - 0.005) < 0.002  # the 1 mm part
+    assert float(np.median(at(0.31, 0.36))) < 0.001  # nothing where a finger crosses in one frame
+    assert float(np.median(quiet)) < 0.001  # the other face is flat
+
+
+def test_side_view_needs_enough_frames(tmp_path):
+    from app import sideview as SV
+
+    picture, small = side_on_picture([(480, 540, 16)])
+    picture.save(tmp_path / "img_0000.jpg", quality=97)
+    assert SV.measure(tmp_path, {"img_0000.jpg": small}, {"img_0000.jpg": 0.07}, 0.07) is None
+    # A frame that looks at the wide face is not used for this.
+    assert SV.side_on_frames({"a": 0.07, "b": 0.08, "c": 0.23, "d": 0.0}, 0.07) == ["a", "b"]
+
+
+def test_measured_heights_raise_the_real_buttons_and_flatten_the_rest():
+    from app import photo3d as P3
+    from app import relief as RL
+
+    rel = np.zeros((1000, 230), np.float32)
+    on = np.ones_like(rel, bool)
+    rel[480:540, 40:100] = 0.0065 / RL.STRENGTH  # the 3 mm button, for which the AI gave 1.2 mm
+    rel[200:240, 40:100] = 0.0040 / RL.STRENGTH  # a 1 mm button, for which it gave 0.8 mm
+    rel[800:860, 40:100] = 0.0030 / RL.STRENGTH  # something on the plain end that the side view does not show
+    rel[600:640, 40:100] = -0.002 / RL.STRENGTH  # a groove
+    measured = np.full(400, 0.001, np.float32)
+    measured[192:216] = 0.0156
+    measured[80:96] = 0.0052
+    out = P3.with_side_heights(rel, on, measured) * RL.STRENGTH
+    assert abs(float(out[510, 70]) - 0.0156) < 0.002
+    assert abs(float(out[220, 70]) - 0.0052) < 0.001
+    assert float(out[830, 70]) < 0.0003
+    assert -0.0021 < float(out[620, 70]) <= 0  # a groove never gets deeper
+    # The other face can only get flatter.
+    calm = P3.with_side_heights(rel, on, measured, 1.0) * RL.STRENGTH
+    assert float(calm[510, 70]) <= 0.0066
+
+
+def test_side_profile_finds_its_place_and_direction_on_the_detail():
+    from app import photo3d as P3
+    from app import sideview as SV
+
+    rows = np.zeros(1000, np.float32)
+    rows[480:520] = 0.0065
+    rows[200:240] = 0.004
+    rows[700:760] = 0.004
+    profile = np.zeros(SV.POINTS, np.float32)
+    for start, stop, height in ((480, 520, 0.0156), (200, 240, 0.005), (700, 760, 0.005)):
+        profile[start * SV.POINTS // 1000 : stop * SV.POINTS // 1000] = height
+    fit, upside, shift, _ = P3.fit_side(rows, np.roll(profile[::-1], 8))
+    assert fit > 0.8
+    assert upside
+    placed = SV.placed(np.roll(profile[::-1], 8)[::-1], shift)
+    assert abs(int(np.argmax(placed)) / SV.POINTS - 0.5) < 0.03
+
+
+def test_rim_goes_on_the_true_straight_line_and_the_mesh_stays_closed():
+    import trimesh
+
+    from app import photo3d as P3
+
+    n = 900
+    on = np.asarray(bar_mask(180, height=700, tilt=0.03, size=n)) > 127
+    q = on[:-1, :-1] & on[1:, :-1] & on[:-1, 1:] & on[1:, 1:]
+    s, t = P3.grid(n)
+    s2, t2, exact = P3.rim_on_lines(s, t, on, q, 40.0)
+    moved = np.hypot(s2 - s, t2 - t) * (n - 1)
+    assert moved.max() < 2.0  # less than a cell or two
+    assert moved[np.nonzero(ndimage_inner(q))].max() == 0  # the inside stays
+    front = np.dstack([s2 * n, t2 * n, np.zeros((n, n))])
+    back = np.dstack([s2 * n, t2 * n, np.full((n, n), 90.0)])
+    plain = P3.closed_mesh(q, np.dstack([s * n, t * n, np.zeros((n, n))]), np.dstack([s * n, t * n, np.full((n, n), 90.0)]))
+    snapped = P3.closed_mesh(q, front, back)
+    assert trimesh.Trimesh(snapped[0], snapped[1], process=False).is_watertight
+
+    def ripple(vertices):
+        # The left side: how far its points stray from one line.
+        v = vertices[(np.abs(vertices[:, 2]) < 1e-6) & (vertices[:, 1] > 200) & (vertices[:, 1] < 700) & (vertices[:, 0] < 450)]
+        low = np.array([v[np.abs(v[:, 1] - y) < 1.0][:, 0].min() for y in np.arange(210, 690, 4.0)])
+        return float(np.std(low - np.polyval(np.polyfit(np.arange(210, 690, 4.0), low, 1), np.arange(210, 690, 4.0))))
+
+    assert ripple(snapped[0]) < 0.6 * ripple(plain[0])
+
+
+def ndimage_inner(q):
+    from scipy import ndimage
+
+    return ndimage.binary_erosion(np.pad(q, ((0, 1), (0, 1))), iterations=3)
+
+
+def test_rounded_edge_has_one_height_along_a_straight_rim():
+    from app import photo3d as P3
+
+    n = 900
+    on = np.asarray(bar_mask(180, height=700, tilt=0.03, size=n)) > 127
+    q = on[:-1, :-1] & on[1:, :-1] & on[:-1, 1:] & on[1:, 1:]
+    s, t = P3.grid(n)
+    _, _, exact = P3.rim_on_lines(s, t, on, q, 40.0)
+    front, back = np.zeros((n, n), np.float32), np.full((n, n), 90.0, np.float32)
+    rough = P3.rounded_edges(front, back, on, 1.0, 30.0, wall=True)[0]
+    clean = P3.rounded_edges(front, back, on, 1.0, 30.0, wall=True, exact=exact)[0]
+    rim = P3.rim_cells(q)
+    rim[:300] = False
+    rim[600:] = False  # the long sides only
+    assert np.ptp(clean[rim]) < 0.5 * np.ptp(rough[rim])
+    assert np.std(clean[rim]) < 0.01  # the wall starts at one height, so it shows no stripes
