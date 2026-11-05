@@ -590,7 +590,7 @@ def read_thinnest(work: Path) -> float | None:
     return json.loads(file.read_text()) if file.exists() else None
 
 
-def shape_too_thick(views: M.Views, masks: list[np.ndarray], cloud: M.Cloud, agree: float, thin: float | None) -> float | None:
+def shape_too_thick(job: Path, views: M.Views, masks: list[np.ndarray], cloud: M.Cloud, agree: float, thin: float | None) -> float | None:
     """Дебелината на формата от разположените кадри, ако е много над измерената от всички очертания, иначе None. Плоски предмети:
     кадрите на дистанционно с еднообразен черен гръб се разполагат само около лицето и формата излиза клин, 47 вместо 13 мм."""
     if thin is None or thin > photo3d.FLAT_BODY:
@@ -600,6 +600,7 @@ def shape_too_thick(views: M.Views, masks: list[np.ndarray], cloud: M.Cloud, agr
         return None
     frac, axes, _ = found
     got = S.points_ratio(M.voxels_inside(frac, axes, agree)[1])
+    P.note(job, f"AI model: shape thickness {got:.3f} of the length, outlines {thin:.3f}")
     return got if got > TOO_THICK * thin else None
 
 
@@ -690,7 +691,7 @@ def model_from_solved(job: Path, work: Path, photos: Path, flat_base: bool, set_
         views, masks = M.subset(views, keep), [m for m, k in zip(masks, keep) if k]
     images = [dense / "images" / n for n in views.names]
     agree = tune.get("agree") or (OL.AGREE_SHARP if sharpened else M.HULL_AGREE)
-    wedge = shape_too_thick(views, masks, cloud, agree, read_thinnest(work))
+    wedge = shape_too_thick(job, views, masks, cloud, agree, read_thinnest(work))
     if wedge is not None:
         P.note(job, f"AI model: the shape is {wedge:.3f} thick for its length and the outlines show {read_thinnest(work):.3f}: "
                "the frames did not see it from the side; making it from one frame")  # fmt: skip
