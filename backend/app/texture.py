@@ -49,6 +49,14 @@ WHITE_POWER = 6.0
 WHITE_STRENGTH = 0.75
 WHITE_LIMITS = (0.65, 1.5)
 WHITE_MIN_BACKGROUND = 0.3  # дял от кадъра: при по-малко фон светлината не може да се отдели от цвета на предмета
+# Светлината върху самия предмет (app/photo3d.py). Бяло дистанционно в стая с топла лампа и червен шкаф излизаше кафяво (медиана 107, 93,
+# 79), а светлите му места са неутрални (168, 172, 171): смесена светлина, при която един множител за целия кадър не стига.
+NEUTRAL = 0.08  # наситеност на светлите места на предмета (без отблясъците), под която материалът е бял, сив или черен
+NEUTRAL_BAND = (70, 97)  # перцентили на яркостта върху предмета: светлите места без отблясъците
+NEUTRAL_SIDE = 480  # кадрите се преценяват при този размер
+LIGHT_BANDS = 8  # отливът на светлината се мери отделно за толкова нива на яркост
+EXPOSE_TO = 235.0  # най-светлото в кадъра (99-и перцентил) става толкова: тъмно видео изглежда като на нормална светлина
+MOST_EXPOSURE = 2.0  # линейно; само се изсветлява
 
 
 def texture_files(job: Path) -> list[Path]:
@@ -271,6 +279,72 @@ def white_gain(photos: Path, names: list[str], masks: dict[str, np.ndarray]) -> 
     if not found:
         return np.ones(3)
     return np.clip(np.median(found, axis=0) ** -WHITE_STRENGTH, *WHITE_LIMITS)
+
+
+def bright_saturation(rgb: np.ndarray, inside: np.ndarray) -> float | None:
+    """Наситеността на светлите места на предмета (NEUTRAL_BAND), в линейна светлина; None за твърде малък предмет."""
+    from scipy.ndimage import binary_erosion
+
+    inner = binary_erosion(inside, iterations=max(2, int(0.02 * np.sqrt(max(1, inside.sum())))))
+    if inner.sum() < 200:
+        return None
+    px = (rgb[inner].astype(np.float32) / 255) ** 2.2
+    level = px.mean(1)
+    lo, hi = np.percentile(level, NEUTRAL_BAND)
+    band = px[(level >= lo) & (level <= hi)].mean(0)
+    return float((band.max() - band.min()) / max(float(band.max()), 1e-6))
+
+
+def neutral_object(frames: list[tuple[Path, np.ndarray]]) -> bool:
+    """Дали предметът е бял, сив или черен: в поне два кадъра светлите му места са почти без цвят. Цветът, който остава в другите
+    кадри, е от светлината (бялото дистанционно: 0,03 и 0,06; фигура с дрехи: най-малко 0,10; дрелка: 0,12)."""
+    found = []
+    for path, m in frames:
+        with Image.open(path) as im:
+            small = im.convert("RGB")
+            small.thumbnail((NEUTRAL_SIDE, NEUTRAL_SIDE))
+        inside = np.asarray(Image.fromarray(m).resize(small.size, Image.BILINEAR)) > 127
+        s = bright_saturation(np.asarray(small), inside)
+        if s is not None:
+            found.append(s)
+    return len(found) >= 4 and sorted(found)[1] < NEUTRAL
+
+
+def light_fix(rgb: np.ndarray, inside: np.ndarray, neutral: bool, gain: np.ndarray | None = None) -> Callable[[np.ndarray], np.ndarray]:
+    """Поправката на цветовете от кадъра rgb (uint8, H x W x 3) с предмета `inside`, като функция върху uint8 RGB. Изсветляване, докато
+    най-светлото в кадъра стане EXPOSE_TO (най-много MOST_EXPOSURE). Неутрален предмет: отливът на светлината се маха отделно за всяко
+    ниво на яркост, защото сенките му са огрети от друга светлина; иначе остават множителите gain на white_gain."""
+    from scipy.ndimage import binary_erosion
+
+    levels = (np.arange(256, dtype=np.float32) / 255) ** 2.2
+    lin = lambda a: levels[a]  # noqa: E731
+    whole = lin(rgb[:: 4, :: 4]).mean(-1)
+    expose = float(np.clip(levels[int(EXPOSE_TO)] / max(float(np.percentile(whole, 99)), 1e-6), 1.0, MOST_EXPOSURE))
+    inner = binary_erosion(inside, iterations=max(2, int(0.02 * np.sqrt(max(1, inside.sum())))))
+    colours = gain if gain is not None else np.ones(3)
+    if not neutral or inner.sum() < 200:
+        return lambda a: (np.clip(lin(a) * (colours * expose), 0, 1) ** (1 / 2.2) * 255 + 0.5).astype(np.uint8)
+    px = lin(rgb[inner])
+    level = px.mean(1)
+    edges = np.percentile(level, np.linspace(0, 100, LIGHT_BANDS + 1))
+    centres, casts = [], []
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        sel = (level >= lo) & (level <= hi)
+        if sel.sum() < 20:
+            continue
+        centres.append(float(np.median(level[sel])))
+        casts.append(np.median(px[sel] / np.maximum(px[sel].mean(1, keepdims=True), 1e-6), 0))
+    if len(centres) < 2:
+        return lambda a: (np.clip(lin(a) * expose, 0, 1) ** (1 / 2.2) * 255 + 0.5).astype(np.uint8)
+    centres, casts = np.array(centres), np.array(casts)
+
+    def fix(a: np.ndarray) -> np.ndarray:
+        x = lin(a)
+        here = x.mean(-1)
+        cast = np.stack([np.interp(here, centres, casts[:, c]) for c in range(3)], -1)
+        return (np.clip(x / np.maximum(cast, 1e-3) * expose, 0, 1) ** (1 / 2.2) * 255 + 0.5).astype(np.uint8)
+
+    return fix
 
 
 def balanced(a: np.ndarray, gain: np.ndarray) -> np.ndarray:

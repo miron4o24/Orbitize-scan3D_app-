@@ -49,6 +49,7 @@ export default function Capture() {
   const [message, setMessage] = useState<string | null>(null);
   const [dim, setDim] = useState(false); // стаята е твърде тъмна според сензора за светлина (ако телефонът има такъв)
   const [checking, setChecking] = useState(false); // проверка на току-що заснетото видео
+  const [torch, setTorch] = useState(false); // светкавицата на телефона, включена през целия запис (за тъмна стая)
 
   // Променливи копия на състоянието за извикванията от сензора с 20 Hz.
   const recordingRef = useRef(false);
@@ -193,6 +194,7 @@ export default function Capture() {
         // Стабилизацията изрязва и изкривява всеки кадър различно, което разваля модела на обектива с постоянни
         // параметри, който напасва COLMAP.
         videoStabilizationMode="off"
+        enableTorch={torch}
         onCameraReady={() => setReady(true)}
       />
       <View style={[StyleSheet.absoluteFill, styles.middle]} pointerEvents="none">
@@ -230,7 +232,7 @@ export default function Capture() {
           {dim && !checking && (
             <View style={styles.darkPill}>
               <Ionicons name="moon-outline" size={15} color={dark.warning} />
-              <Text style={styles.darkText}>Твърде тъмно: добавете светлина</Text>
+              <Text style={styles.darkText}>{torch ? 'Твърде тъмно: добавете светлина' : 'Твърде тъмно: включете светкавицата'}</Text>
             </View>
           )}
           {checking && (
@@ -241,6 +243,16 @@ export default function Capture() {
         </View>
         <View style={styles.bottom}>
           <View style={styles.side}>
+            <Pressable
+              style={[styles.close, torch && styles.torchOn]}
+              onPress={() => setTorch((on) => !on)}
+              accessibilityRole="switch"
+              accessibilityState={{ checked: torch }}
+              accessibilityLabel="Светкавица"
+              hitSlop={8}
+            >
+              <Ionicons name={torch ? 'flash' : 'flash-off'} size={20} color={torch ? TORCH_ICON : WHITE} />
+            </Pressable>
             {recording && <Text style={styles.time}>● {fmt(seconds)}</Text>}
           </View>
           <Pressable
@@ -287,6 +299,8 @@ const usePermissionStyles = makeStyles((c) => ({
 const dark = palettes.dark;
 const WHITE = '#ffffff';
 const GLASS = 'rgba(9,9,11,0.72)';
+const TORCH = '#ffd54f'; // включената светкавица
+const TORCH_ICON = '#1a1a1a';
 
 const styles = StyleSheet.create({
   fill: { flex: 1, backgroundColor: '#000' },
@@ -345,7 +359,8 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: dark.line,
   },
-  side: { width: 96, alignItems: 'center' },
+  side: { width: 96, alignItems: 'center', gap: 6 },
+  torchOn: { backgroundColor: TORCH, borderColor: TORCH },
   time: { color: WHITE, fontSize: 17, fontFamily: font.monoMedium },
   pace: {
     fontSize: 13,

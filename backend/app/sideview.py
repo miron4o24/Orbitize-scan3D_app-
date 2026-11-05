@@ -27,6 +27,22 @@ STEADY = 0.0078  # от дължината: еднаква височина на
 SHIFT = 0.02  # от дължината: колко могат да се разминават кадрите след поправката на перспективата
 SCALE = 0.02
 PERSPECTIVE = 0.5  # колко от промяната в дебелината е истински наклон; останалото е малко по-широк изглед към стената (дистанционно: 1,28 измерено, 1,13 по мястото на копчетата)
+# Напречното сечение от кадрите, в които предметът е обърнат с края към камерата (бяло дистанционно: плоско лице и заоблен гръб, издут с
+# 20% от ширината), и дебелината по дължината от кадрите отстрани (скосеният му горен край).
+SECTION_POINTS = 64  # места през ширината
+SECTION_EDGE = 0.04  # от ширината: най-крайните колони са пиксел-два и не се мерят
+UP = 4  # маските са с четвърт от размера на кадъра: увеличават се, за да е гладко очертанието
+FULL = 80  # перцентил на дългата страна на очертанията: цялата дължина на предмета в кадъра
+FACE_SIZE = 0.75  # кадър с толкова от цялата дължина и
+FACE_ON = 2.5  # толкова пъти по-голямо съотношение от най-тънкото показва лицето
+END_SIZE = (0.5, 1.6)  # кадър по оста: дългата страна на очертанието спрямо ширината на предмета в кадрите отпред
+END_RATIO = (0.6, 1.6)  # и съотношението му спрямо дебелина / ширина
+SECTION_AGREE = 0.06  # от ширината: средна разлика от общото сечение, над която кадърът е друг изглед (наклонен, с ръка)
+MIN_SECTIONS = 2
+TAPER_MIDDLE = (0.2, 0.8)  # от дължината: тук се мери правата на перспективата в профила на дебелината
+SIDE_LOOSE = 1.5  # за профила на дебелината стига и кадър почти отстрани: той се дели на средата си (бяло дистанционно: 0,10 при най-тънко 0,078)
+TAPER_AGREE = 0.1  # средна разлика от общия профил, над която кадърът е с пръст върху ръба или с непълна маска
+TAPER_NOISE = 0.9  # по-малко изтъняване от това е шум на маските (вълни по стената на модела), а не форма
 
 
 def robust_line(pos: np.ndarray, values: np.ndarray, valid: np.ndarray, floor: float = 0.7) -> tuple[np.ndarray, float]:
@@ -193,6 +209,138 @@ def measure(folder: Path, masks: dict[str, np.ndarray], ratios: dict[str, float]
     return {"busy": busy, "quiet": quiet, "frames": np.array(len(found))}
 
 
+def axes_of(m: np.ndarray) -> tuple[float, float, float] | None:
+    """(посоката на дължината в радиани, дължината, ширината) на очертанието по собствените му оси, в пиксели на маската."""
+    ys, xs = np.nonzero(m > 127)
+    if len(ys) < 50:
+        return None
+    x, y = xs - xs.mean(), ys - ys.mean()
+    angle = 0.5 * np.arctan2(2 * float((x * y).mean()), float((x * x).mean() - (y * y).mean()))
+    along, across = x * np.cos(angle) + y * np.sin(angle), y * np.cos(angle) - x * np.sin(angle)
+    return float(angle), float(np.ptp(along)) + 1, float(np.ptp(across)) + 1
+
+
+def smooth_outline(m: np.ndarray, turn: float) -> np.ndarray:
+    """Маската, увеличена UP пъти с гладко очертание и завъртяна с turn градуса (обратно на часовника); само най-голямото парче."""
+    big = np.asarray(Image.fromarray(m).resize((m.shape[1] * UP, m.shape[0] * UP), Image.BICUBIC), np.float32)
+    on = Image.fromarray(((ndimage.gaussian_filter(big, 0.7 * UP) > 127) * 255).astype(np.uint8))
+    on = np.asarray(on.rotate(turn, Image.BILINEAR, expand=True)) > 127
+    labels, count = ndimage.label(on)
+    if count > 1:
+        on = labels == 1 + int(np.argmax(ndimage.sum_labels(on, labels, np.arange(1, count + 1))))
+    return on
+
+
+def end_on_frames(masks: dict[str, np.ndarray], ratios: dict[str, float], thin: float) -> list[str]:
+    """Кадрите, в които предметът е с края си към камерата: очертанието е колкото ширината му в кадрите отпред, а съотношението е
+    дебелина / ширина. Само по съотношение не стига: бялото дистанционно е 0,30 по оста и 0,25 отпред."""
+    found = {n: a for n, a in ((n, axes_of(m)) for n, m in masks.items()) if a is not None}
+    if not found:
+        return []
+    full = float(np.percentile([a[1] for a in found.values()], FULL))
+    face = [ratios.get(n, 0.0) for n, a in found.items() if a[1] >= FACE_SIZE * full and ratios.get(n, 0.0) >= FACE_ON * thin]
+    if len(face) < 2:
+        return []
+    aspect = float(np.median(face))  # ширина / дължина
+    wide, ratio = aspect * full, thin / aspect
+    return sorted(n for n, a in found.items()
+                  if END_SIZE[0] * wide <= a[1] <= END_SIZE[1] * wide and END_RATIO[0] * ratio <= ratios.get(n, 0.0) <= END_RATIO[1] * ratio)  # fmt: skip
+
+
+def section_of(m: np.ndarray) -> tuple[np.ndarray, np.ndarray, float] | None:
+    """Сечението от един кадър по оста: (колко навътре от най-външната си точка е по-плоският контур, същото за другия, в дялове от
+    ширината при SECTION_POINTS места през нея; дебелината спрямо ширината). Огледално осреднено, защото ляво и дясно не се различават."""
+    axes = axes_of(m)
+    if axes is None:
+        return None
+    on = smooth_outline(m, float(np.degrees(axes[0])))  # дължината на очертанието (ширината на предмета) хоризонтално
+    cols = np.flatnonzero(on.any(0))
+    width = cols[-1] - cols[0] + 1
+    if width < 40:
+        return None
+    u = np.linspace(SECTION_EDGE, 1 - SECTION_EDGE, SECTION_POINTS)
+    part = on[:, np.round(cols[0] + u * (width - 1)).astype(np.int64)]
+    if not part.any(0).all():
+        return None
+    top = part.argmax(0).astype(np.float64)
+    bottom = (len(part) - 1 - part[::-1].argmax(0)).astype(np.float64)
+    first, second = (top - top.min()) / width, (bottom.max() - bottom) / width
+    if first.mean() > second.mean():
+        first, second = second, first
+    return 0.5 * (first + first[::-1]), 0.5 * (second + second[::-1]), float(bottom.max() - top.min() + 1) / width
+
+
+def cross_section(masks: dict[str, np.ndarray], ratios: dict[str, float], thin: float) -> dict | None:
+    """{"section_flat", "section_dome", "section_thick", "section_frames"}: общото сечение на кадрите по оста или None."""
+    found = [s for s in (section_of(masks[n]) for n in end_on_frames(masks, ratios, thin)) if s is not None]
+    if len(found) < MIN_SECTIONS:
+        return None
+    flat, dome = np.stack([f[0] for f in found]), np.stack([f[1] for f in found])
+    keep = np.ones(len(found), bool)
+    for _ in range(2):
+        mid_f, mid_d = np.median(flat[keep], 0), np.median(dome[keep], 0)
+        keep = np.abs(flat - mid_f).mean(1) + np.abs(dome - mid_d).mean(1) < SECTION_AGREE
+        if keep.sum() < MIN_SECTIONS:
+            return None
+    thick = float(np.median([f[2] for f, k in zip(found, keep) if k]))
+    return {"section_flat": np.median(flat[keep], 0).astype(np.float32), "section_dome": np.median(dome[keep], 0).astype(np.float32),
+            "section_thick": np.array(thick, np.float32), "section_frames": np.array(int(keep.sum()))}  # fmt: skip
+
+
+def thickness_along(m: np.ndarray) -> np.ndarray | None:
+    """Дебелината на кадър отстрани по дължината (POINTS места, горе първо), в дялове от дължината."""
+    axes = axes_of(m)
+    if axes is None:
+        return None
+    angle = float(np.degrees(axes[0]))
+    on = smooth_outline(m, angle - 90.0 if angle > 0 else angle + 90.0)  # отвесно, без да се обръща (както upright_view)
+    rows = np.flatnonzero(on.any(1))
+    on = on[rows[0] : rows[-1] + 1]
+    h = len(on)
+    if h < 100:
+        return None
+    seen = on.any(1)
+    left = on.argmax(1)
+    right = on.shape[1] - 1 - on[:, ::-1].argmax(1)
+    thick = np.where(seen, right - left + 1, 0) / h
+    return np.interp((np.arange(POINTS) + 0.5) / POINTS, (np.arange(h) + 0.5) / h, thick).astype(np.float32)
+
+
+def relative_thickness(t: np.ndarray) -> np.ndarray | None:
+    """Профилът на дебелината, разделен на правата през средата му: перспективата (по-близкият край изглежда по-дебел) се маха и
+    остават промените към краищата."""
+    grid = (np.arange(len(t)) + 0.5) / len(t)
+    mid = (grid >= TAPER_MIDDLE[0]) & (grid <= TAPER_MIDDLE[1])
+    if t[mid].min() <= 0:
+        return None
+    line = np.polyval(np.polyfit(grid[mid], t[mid], 1), grid)
+    return np.clip(t / np.maximum(line, 1e-6), 0.0, 1.5)
+
+
+def side_thickness(masks: dict[str, np.ndarray], ratios: dict[str, float], thin: float) -> dict | None:
+    """{"side_thickness", "side_frames"}: дебелината по дължината спрямо тази в средата (най-много 1: краищата и скосяванията), от
+    кадрите отстрани с почти цялата дължина. Остават само съгласните помежду си: палец върху ръба или непълна маска дават друг профил."""
+    found = {n: a for n, a in ((n, axes_of(m)) for n, m in masks.items()) if a is not None}
+    if not found:
+        return None
+    full = float(np.percentile([a[1] for a in found.values()], FULL))
+    names = [n for n, a in found.items() if 0 < ratios.get(n, 0.0) <= SIDE_LOOSE * thin and a[1] >= FACE_SIZE * full]
+    rel = [r for r in (relative_thickness(t) for t in (thickness_along(masks[n]) for n in names) if t is not None) if r is not None]
+    if len(rel) < 2:
+        return None
+    rel = np.stack([ndimage.median_filter(r, size=max(3, POINTS // 50), mode="nearest") for r in rel])
+    keep = np.ones(len(rel), bool)
+    for _ in range(2):
+        keep = np.abs(rel - np.median(rel[keep], 0)).mean(1) < TAPER_AGREE
+        if keep.sum() < 2:
+            return None
+    profile = np.clip(np.median(rel[keep], 0), 0.0, 1.0)
+    grid = (np.arange(POINTS) + 0.5) / POINTS
+    profile[(grid >= TAPER_MIDDLE[0]) & (grid <= TAPER_MIDDLE[1])] = 1.0  # средата е правата, спрямо която се мери
+    profile[profile >= TAPER_NOISE] = 1.0
+    return {"side_thickness": profile.astype(np.float32), "side_frames": np.array(int(keep.sum()))}
+
+
 def main(folder: Path, masks_file: Path, thin: float, out: Path) -> None:
     """Собствен процес, за да не смята линейна алгебра в нишка на сървъра (OpenBLAS пада на Windows при две едновременно)."""
     if __package__:
@@ -203,12 +351,29 @@ def main(folder: Path, masks_file: Path, thin: float, out: Path) -> None:
 
     with np.load(masks_file) as z:
         masks = {n: z[n] for n in z.files}
-    got = measure(folder, masks, {n: S.outline_ratio(m) for n, m in masks.items()}, thin)
-    if got is None:
+    ratios = {n: S.outline_ratio(m) for n, m in masks.items()}
+    got = {}
+    heights = measure(folder, masks, ratios, thin)
+    if heights is None:
         print("side view: too few frames from the side", flush=True)
-        return
-    np.savez(out, **got)
-    print(f"side view: {int(got['frames'])} frames, highest part {float(got['busy'].max()):.4f} of the length", flush=True)
+    else:
+        got |= heights
+        print(f"side view: {int(heights['frames'])} frames, highest part {float(heights['busy'].max()):.4f} of the length", flush=True)
+    section = cross_section(masks, ratios, thin)
+    if section is None:
+        print("cross-section: too few frames along the axis", flush=True)
+    else:
+        got |= section
+        dome = section["section_dome"]
+        print(f"cross-section: {int(section['section_frames'])} frames, thickness {float(section['section_thick']):.3f} of the width, "
+              f"rounded side {float(dome[[0, -1]].mean() - dome.min()):.3f} of the width deep", flush=True)  # fmt: skip
+    along = side_thickness(masks, ratios, thin)
+    if along is not None:
+        got |= along
+        t = along["side_thickness"]
+        print(f"thickness along the length: {int(along['side_frames'])} frames, ends {float(t[:8].mean()):.2f} and {float(t[-8:].mean()):.2f} of the middle", flush=True)
+    if got:
+        np.savez(out, **got)
 
 
 if __name__ == "__main__":
