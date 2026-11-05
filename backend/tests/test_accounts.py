@@ -30,6 +30,7 @@ def client(tmp_path, monkeypatch):
     db.reset()
     (tmp_path / "jobs").mkdir()
     monkeypatch.setattr(jobs, "DATA", tmp_path / "jobs")
+    monkeypatch.setattr(main, "CLASSIC_SCAN", True)  # потокът на задачите се проверява с подправения pipeline.run
     monkeypatch.setattr(accounts, "AVATARS", tmp_path / "avatars")
 
     def fake_verify(token, audiences):
