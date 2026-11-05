@@ -46,6 +46,10 @@ MIRROR_IOU = 0.65  # другата страна: очертанието на к
 FOREGROUND = 0.85  # дял от квадрата, запълнен от предмета (single3d.FOREGROUND)
 FLAT_BODY = 0.2  # от дължината: толкова тънък предмет е плосък и тялото му идва от измерената дебелина, не от предположението на TripoSR
 FLAT_EDGE = 0.015  # от дължината: радиусът на ръба на плосък предмет (дистанционно: около 3 мм)
+FLAT_END = 0.08  # от дължината: край, в който лента през цялата ширина е грешка на AI (при дистанционно фалшив ръб от 3 мм)
+FLAT_BACK_QUIET = 0.0016  # от дължината: под това неравностите по гърба на плосък предмет са шум, защото слабият му релеф се усилва
+SAME_VIEWS = 3  # толкова още кадъра от същата страна се сравняват с избрания
+SAME_VIEW_FEATURES = 30  # толкова общи особености трябват, за да се наложат два кадъра точно
 FLAT_DRIFT = 0.06  # от дължината: по-широкото от това в детайла на плосък предмет е грешка на AI (подути ъгли), не форма
 FLAT_RAISED = 0.016  # от дължината: най-издаденото на плосък предмет (дистанционно, по линийка: 3 мм от 192)
 FLAT_RECESS = 0.004  # от дължината: най-дълбокото; без това процеп на капак излиза над 2,4 мм вместо тънка линия
@@ -348,18 +352,53 @@ def features(photo: Image.Image, inside: np.ndarray) -> tuple[np.ndarray, np.nda
 def shared_features(a: tuple[np.ndarray, np.ndarray] | None, b: tuple[np.ndarray, np.ndarray] | None) -> int:
     """Колко особености на двата кадъра са едно и също място: истинска проверка дали показват една страна, защото се търси
     обща перспектива. Върху завъртяно лице остават десетки, а срещу другата страна няма нито една."""
+    return matched_features(a, b)[0]
+
+
+def matched_features(a: tuple[np.ndarray, np.ndarray] | None, b: tuple[np.ndarray, np.ndarray] | None) -> tuple[int, np.ndarray | None]:
+    """(колко са общите особености, перспективата 3 x 3 от точките на `a` към тези на `b`, x и y в мащаба на features)."""
     from skimage.feature import match_descriptors
     from skimage.measure import ransac
     from skimage.transform import ProjectiveTransform
 
     if a is None or b is None or len(a[0]) < 8 or len(b[0]) < 8:
-        return 0
+        return 0, None
     pairs = match_descriptors(a[1], b[1], cross_check=True, max_ratio=0.85)
     if len(pairs) < 8:
-        return 0
-    _, ok = ransac((a[0][pairs[:, 0]][:, ::-1], b[0][pairs[:, 1]][:, ::-1]), ProjectiveTransform, min_samples=4,
-                   residual_threshold=6, max_trials=300, rng=np.random.default_rng(0))  # fmt: skip
-    return 0 if ok is None else int(ok.sum())
+        return 0, None
+    model, ok = ransac((a[0][pairs[:, 0]][:, ::-1], b[0][pairs[:, 1]][:, ::-1]), ProjectiveTransform, min_samples=4,
+                       residual_threshold=6, max_trials=300, rng=np.random.default_rng(0))  # fmt: skip
+    return (0, None) if ok is None or model is None else (int(ok.sum()), model.params)
+
+
+def same_side_relief(rel: np.ndarray, crop: Image.Image, part: np.ndarray, views: list[tuple[Image.Image, np.ndarray]],
+                     relief_of: Callable[[Image.Image, np.ndarray], np.ndarray | None]) -> np.ndarray:  # fmt: skip
+    """Детайлът на избрания кадър, сравнен с другите му изгледи от същата страна: всеки се налага върху него по общите особености и
+    остава медианата. Размазано или лъснало място в един кадър не минава, а истинското копче е във всички. relief_of: AI детайлът
+    на един изглед; views: (изрязан предмет, очертанието му)."""
+    from skimage.transform import ProjectiveTransform, warp
+
+    own = features(crop, part)
+    found = []
+    for view, inside in views:
+        count, model = matched_features(own, features(view, inside))
+        if count >= SAME_VIEW_FEATURES and model is not None:
+            found.append((count, id(view), view, inside, model))
+    found.sort(key=lambda x: x[:2], reverse=True)
+    maps = [rel]
+    for count, _, view, inside, model in found[:SAME_VIEWS]:
+        other = relief_of(view, inside)
+        if other is None:
+            continue
+        here, there = FEATURE_SIDE / max(crop.size), FEATURE_SIDE / max(view.size)
+        # warp иска картата от изхода към входа: тук от пикселите на crop към тези на view.
+        to_view = np.diag([1 / there, 1 / there, 1.0]) @ model @ np.diag([here, here, 1.0])
+        moved = warp(other.astype(np.float64), ProjectiveTransform(to_view), output_shape=rel.shape, order=1, cval=np.nan, preserve_range=True)
+        maps.append(moved.astype(np.float32))
+        print(f"detail compared with another view: {count} features in common", flush=True)
+    if len(maps) == 1:
+        return rel
+    return np.where(part, np.nanmedian(np.stack(maps), axis=0), 0).astype(np.float32)
 
 
 def upright(photo: Image.Image, inside: np.ndarray) -> tuple[Image.Image, np.ndarray, tuple[int, int, int, int]]:
@@ -379,10 +418,27 @@ def centred_place(box: tuple[int, int, int, int]) -> tuple[int, int, int]:
     return x0 - (side - (x1 - x0)) // 2, y0 - (side - (y1 - y0)) // 2, side
 
 
+def without_end_bands(rel: np.ndarray, inside: np.ndarray, width: float) -> np.ndarray:
+    """Лентите през цялата ширина в двата края на изправен плосък предмет, махнати с медианата на всеки ред. Копче заема само част
+    от реда и остава."""
+    sideways = rel.shape[1] > rel.shape[0]
+    a, on = (rel.T, inside.T) if sideways else (rel, inside)
+    out = a.copy()
+    reach = min(max(1, int(FLAT_END * width)), a.shape[0] // 2)
+    for k in range(reach):
+        weight = min(1.0, 2.0 * (reach - k) / reach)  # пълно в първата половина, после плавно до нула
+        for row in (k, a.shape[0] - 1 - k):
+            if on[row].any():
+                out[row] = a[row] - weight * float(np.median(a[row][on[row]]))
+    return out.T if sideways else out
+
+
 def flat_relief(rel: np.ndarray, inside: np.ndarray, width: float) -> np.ndarray:
     """Детайлът на плосък предмет: без широките издутини, които са грешка на AI, и в истинските за такъв предмет граници (в
     единици relief.STRENGTH, като `rel`). Връща се до нула към очертанието."""
     out = rel - RL.masked_blur(rel, inside, FLAT_DRIFT * width)
+    out = without_end_bands(out, inside, width)
+    out = out - RL.rim_of(out, inside, max(1, int(FLAT_END * width)))
     out = np.clip(out, -FLAT_RECESS / RL.STRENGTH, FLAT_RAISED / RL.STRENGTH)
     fade = np.clip(ndimage.distance_transform_edt(inside) / max(1.0, RL.EDGE * width), 0, 1)
     return np.where(inside, out * fade * fade * (3 - 2 * fade), 0).astype(np.float32)
@@ -493,6 +549,14 @@ def build(frame: Path, m: np.ndarray, place: tuple[int, int, int], vol: np.ndarr
     crop, part = photo.crop(box), inside[y0:y1, x0:x1]
     rel = RL.image_relief(sess, crop, part, max(w0, h0), alone=True)
     print(f"AI detail, {time.time() - started:.0f} s", flush=True)
+    if rel is not None and flat and others:
+        views = []
+        for f, mask in others:
+            if f != frame and (mask > 127).sum() >= 50:
+                p, ins, b = turned_like(*object_picture(f, mask)[:2], lengthwise(part))
+                views.append((p.crop(b), ins[b[1] : b[3], b[0] : b[2]]))
+        rel = same_side_relief(rel, crop, part, views, lambda v, i: RL.image_relief(sess, v, i, max(v.size)))
+        print(f"AI detail from the same side, {time.time() - started:.0f} s", flush=True)
     amount = RL.STRENGTH * strength * longest
     if flat:
         middle = np.nanmedian(resized((near + far) / 2, n)[on])
@@ -518,6 +582,8 @@ def build(frame: Path, m: np.ndarray, place: tuple[int, int, int], vol: np.ndarr
         rel2 = RL.image_relief(sess, crop2, part2, max(crop2.size), alone=True)
         if rel2 is not None and flat:
             rel2 = flat_relief(rel2, part2, max(crop2.size))
+            quiet = FLAT_BACK_QUIET / RL.STRENGTH
+            rel2 = np.sign(rel2) * np.maximum(np.abs(rel2) - quiet, 0)
             back_t = back_t - raised_part(rel2, part2) * amount
         if rel2 is not None:
             lay = np.asarray(Image.fromarray(flipped(rel2, how)).resize((w0, h0), Image.BILINEAR))
