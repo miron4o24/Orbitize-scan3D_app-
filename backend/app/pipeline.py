@@ -621,6 +621,7 @@ def drop_stray(work: Path, best: Path, stray: list[str], sh, name: str = "clean"
     return clean
 
 
+GLOBAL_TRIES = 3  # опити на глобалния алгоритъм върху едни и същи съвпадения
 PAIR_NEAR = 5  # (съпоставяне по двойки) всеки кадър със следващите толкова, в реда на заснемане
 PAIR_EVERY = 2  # и всеки толкова-ти кадър с всеки друг такъв (2, не 3: двойно повече връзки между нисък и висок кръг)
 
@@ -735,6 +736,13 @@ def solve_cameras(job: Path, work: Path, photos: Path, n_photos: int, sh: Callab
             sh("camera solving", [COLMAP, "view_graph_calibrator", "--database_path", db])
             sh("camera solving", [COLMAP, "global_mapper", "--database_path", db, "--image_path", photos,
                 "--output_path", sparse / "global"])  # fmt: skip
+            # Едни и същи кадри на дрелка излязоха веднъж 47 разположени и очертания, верни на 89%, а два пъти 45 и 80%, с 21% от
+            # повърхността невидени. Всеки опит е няколко секунди, а оценката отдолу избира най-добрия.
+            for attempt in range(1, GLOBAL_TRIES):
+                again = sparse / f"global{attempt}"
+                again.mkdir()
+                sh("camera solving", [COLMAP, "global_mapper", "--database_path", db, "--image_path", photos,
+                    "--output_path", again, "--random_seed", str(attempt)])  # fmt: skip
         except Failed:
             note(job, "global mapper failed; using the incremental one")
     if not one_piece:

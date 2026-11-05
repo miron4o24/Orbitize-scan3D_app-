@@ -22,10 +22,12 @@ from scipy import ndimage
 
 if __package__:
     from . import relief as RL
+    from . import sideview as SV
     from . import texture as TX
 else:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from app import relief as RL
+    from app import sideview as SV
     from app import texture as TX
 
 INFO = "two_sided.json"
@@ -50,6 +52,13 @@ FLAT_END = 0.08  # от дължината: край, в който лента �
 FLAT_BACK_QUIET = 0.0016  # от дължината: под това неравностите по гърба на плосък предмет са шум, защото слабият му релеф се усилва
 SAME_VIEWS = 3  # толкова още кадъра от същата страна се сравняват с избрания
 SAME_VIEW_FEATURES = 30  # толкова общи особености трябват, за да се наложат два кадъра точно
+SIDE_FIT = 0.3  # толкова трябва да съвпадат страничният профил и редовете на AI детайла, за да е ясно кое къде е
+SIDE_SLIDE = 0.03  # от дължината: разминаване на двете след поправката на перспективата
+SIDE_STRETCH = 0.02
+SIDE_QUIET = (0.0016, 0.0032)  # от дължината: под първото измереното е шум (0,3 мм при 192 мм), над второто е истинско
+SIDE_FLOOR = 0.0013  # от дължината: ред с по-малко AI височина от това не се усилва още: там няма какво да се повдигне
+SIDE_GAIN = 6.0  # толкова най-много се усилва AI височината
+SIDE_BAND = 0.008  # от дължината: измерената височина важи и за толкова встрани (1,5 мм при 192 мм)
 FLAT_DRIFT = 0.06  # от дължината: по-широкото от това в детайла на плосък предмет е грешка на AI (подути ъгли), не форма
 FLAT_RAISED = 0.016  # от дължината: най-издаденото на плосък предмет (дистанционно, по линийка: 3 мм от 192)
 FLAT_RECESS = 0.004  # от дължината: най-дълбокото; без това процеп на капак излиза над 2,4 мм вместо тънка линия
@@ -288,7 +297,7 @@ def object_picture(frame: Path, m: np.ndarray) -> tuple[Image.Image, np.ndarray,
 
 
 def rounded_edges(front: np.ndarray, back: np.ndarray, on: np.ndarray, cell: float, most: float,
-                  wall: bool = False) -> tuple[np.ndarray, np.ndarray]:  # fmt: skip
+                  wall: bool = False, exact: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:  # fmt: skip
     """Двата слоя, събрани към средата си край очертанието по четвърт кръг: истинските предмети имат заоблени ръбове, а
     иначе лицето свършва с остра устна и отвесна стена. Самото очертание не се мести. cell: размер на клетка от решетката,
     most: най-големият радиус на заоблянето. wall: слоевете спират на радиуса от лицето си, а между тях остава права стена, както
@@ -299,6 +308,8 @@ def rounded_edges(front: np.ndarray, back: np.ndarray, on: np.ndarray, cell: flo
     # разстоянието със знак: при него правият ръб си остава прав, защото отвън не влизат нули, и се махат и дългите стъпала.
     signed = ndimage.distance_transform_edt(on) - ndimage.distance_transform_edt(~on)
     far = ndimage.gaussian_filter(signed.astype(np.float32), ROUND_SMOOTH * on.shape[0])
+    if exact is not None:  # разстоянието до истинските прави на очертанието, където го има (rim_on_lines)
+        far = np.where(np.isfinite(exact), exact, far)
     u = np.clip(far * cell / radius, 0, 1)
     lift = 1 - np.sqrt(np.maximum(1 - (1 - u) ** 2, 0))
     if wall:
@@ -444,6 +455,136 @@ def flat_relief(rel: np.ndarray, inside: np.ndarray, width: float) -> np.ndarray
     return np.where(inside, out * fade * fade * (3 - 2 * fade), 0).astype(np.float32)
 
 
+def along_length(a: np.ndarray) -> np.ndarray:
+    """Масивът с редове през дължината на изправения предмет."""
+    return a.T if a.shape[1] > a.shape[0] else a
+
+
+def row_heights(rel: np.ndarray, inside: np.ndarray) -> np.ndarray:
+    """На всеки ред през дължината: колко стърчи детайлът, в дялове от дължината. Редовете са по дългата страна на масива."""
+    a, on = along_length(rel), along_length(inside)
+    out = np.zeros(a.shape[0], np.float32)
+    for row in np.flatnonzero(on.any(1)):
+        out[row] = np.percentile(a[row][on[row]], 97)
+    return np.maximum(out, 0) * RL.STRENGTH
+
+
+def fit_side(rows: np.ndarray, profile: np.ndarray) -> tuple[float, bool, float, float]:
+    """(съвпадение, обърнат ли е, изместване, разтягане): как страничният профил ляга върху редовете на AI детайла."""
+    grid_ = (np.arange(SV.POINTS) + 0.5) / SV.POINTS
+    here = ndimage.gaussian_filter1d(np.interp(grid_, (np.arange(len(rows)) + 0.5) / len(rows), rows), 1.5)
+    best = (-2.0, False, 0.0, 1.0)
+    for flip in (False, True):
+        fit, shift, scale = SV.best_fit(profile[::-1] if flip else profile, here, SIDE_SLIDE, SIDE_STRETCH)
+        if fit > best[0]:
+            best = (fit, flip, shift, scale)
+    return best
+
+
+def with_side_heights(rel: np.ndarray, inside: np.ndarray, measured: np.ndarray, most: float = SIDE_GAIN) -> np.ndarray:
+    """Детайлът с измерените височини: всеки ред се мащабира така, че да стърчи колкото страничният профил на това място (дялове от
+    дължината, по дължината на масива). AI казва къде е копчето, а страничният изглед колко е високо. Вдлъбнатите места само намаляват."""
+    a = along_length(rel)
+    n = a.shape[0]
+    want = np.interp((np.arange(n) + 0.5) / n, (np.arange(len(measured)) + 0.5) / len(measured), measured)
+    t = np.clip((want - SIDE_QUIET[0]) / (SIDE_QUIET[1] - SIDE_QUIET[0]), 0, 1)
+    want = want * t * t * (3 - 2 * t)
+    band = max(1, int(SIDE_BAND * n))
+    want = ndimage.grey_dilation(want, size=2 * band + 1)
+    have = ndimage.grey_dilation(row_heights(rel, inside), size=2 * band + 1)
+    gain = ndimage.gaussian_filter1d(np.clip(want / np.maximum(have, SIDE_FLOOR), 0, most), band)[:, None]
+    out = np.where(a > 0, a * gain, a * np.minimum(gain, 1)).astype(np.float32)
+    return out.T if rel.shape[1] > rel.shape[0] else out
+
+
+def straight_runs(on: np.ndarray) -> tuple[np.ndarray, np.ndarray, list[tuple[np.ndarray, np.ndarray]]] | None:
+    """Точките на очертанието (ред, колона), на кой прав участък е всяка (-1: никой) и правите участъци (точка, посока). None без контур."""
+    from skimage import measure
+
+    contours = measure.find_contours(np.pad(on, 1).astype(np.float32), 0.5)
+    if not contours:
+        return None
+    outline = max(contours, key=len)
+    if len(outline) < 50 or not np.array_equal(outline[0], outline[-1]):
+        return None
+    ys, xs = np.nonzero(on)
+    longest = float(max(np.ptp(ys), np.ptp(xs)) + 1)
+    corners = measure.approximate_polygon(outline, STRAIGHT_TOL * longest)
+    points = outline[:-1] - 1
+    run = np.full(len(points), -1)
+    lines = []
+    at = np.array([np.flatnonzero((outline[:-1] == c).all(1))[0] for c in corners[:-1]])
+    for a, b in zip(at, np.r_[at[1:], at[0]]):
+        span = np.arange(a, b + 1) if a < b else np.r_[np.arange(a, len(points)), np.arange(0, b + 1)]
+        if np.linalg.norm(points[span[-1]] - points[span[0]]) < STRAIGHT_RUN * longest:
+            continue
+        keep = max(1, int(0.03 * len(span)))
+        middle = span[keep:-keep]
+        centre = points[middle].mean(0)
+        rel = points[middle] - centre
+        angle = 0.5 * np.arctan2(2 * float((rel[:, 0] * rel[:, 1]).sum()), float((rel[:, 1] ** 2).sum() - (rel[:, 0] ** 2).sum()))
+        run[middle] = len(lines)
+        lines.append((centre, np.array([np.sin(angle), np.cos(angle)])))
+    return points, run, lines
+
+
+def rim_cells(q: np.ndarray) -> np.ndarray:
+    """Точките на решетката (G, G) по ръба на стените q (G-1, G-1)."""
+    g = q.shape[0] + 1
+    count = np.zeros((g, g), np.int8)
+    count[:-1, :-1] += q
+    count[1:, :-1] += q
+    count[:-1, 1:] += q
+    count[1:, 1:] += q
+    return (count > 0) & (count < 4)
+
+
+def rim_on_lines(s: np.ndarray, t: np.ndarray, on: np.ndarray, q: np.ndarray, reach: float = 0.0) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Точките на решетката s, t с ръба върху истинските прави на очертанието: решетката минава по прав ръб на стъпала, а те оставаха
+    като резки по стената и като зъби по края на предмета. Движат се само точките на ръба и с по-малко от клетка. Трето: разстоянието
+    до правата в клетки, на reach клетки навътре (другаде nan), за заоблянето на ръба: четвърт кръг при самия ръб е почти отвесен, така
+    че разликите от една клетка, идващи от стъпалата, ставаха разлики в дебелината от милиметър."""
+    from scipy.spatial import cKDTree
+
+    exact = np.full(s.shape, np.nan, np.float32)
+    found = straight_runs(on)
+    if found is None or not found[2]:
+        return s, t, exact
+    points, run, lines = found
+    rim = rim_cells(q)
+    tree = cKDTree(points)
+    rows, cols = np.nonzero(rim)
+    if not len(rows):
+        return s, t, exact
+    here = np.c_[rows, cols].astype(np.float64)
+    which = run[tree.query(here)[1]]
+    new_s, new_t = s.copy(), t.copy()
+    step = 1.0 / (s.shape[0] - 1)
+    for k, (centre, along) in enumerate(lines):
+        chosen = np.flatnonzero(which == k)
+        if not len(chosen):
+            continue
+        # Двете точки на едно стъпало падат почти на едно място и стената помежду им става черта: разстоянията се изравняват.
+        place = (here[chosen] - centre) @ along
+        order = np.argsort(place)
+        even = np.empty_like(place)
+        even[order] = ndimage.gaussian_filter1d(place[order], 2.0, mode="nearest")
+        moved = centre + np.outer(even, along)
+        new_t[rows[chosen], cols[chosen]] = moved[:, 0] * step
+        new_s[rows[chosen], cols[chosen]] = moved[:, 1] * step
+    if reach > 0:
+        depth = ndimage.distance_transform_edt(on)
+        ys, xs = np.nonzero(on & (depth <= reach))
+        near = np.c_[ys, xs].astype(np.float64)
+        owner = run[tree.query(near)[1]]
+        for k, (centre, along) in enumerate(lines):
+            chosen = owner == k
+            rel = near[chosen] - centre
+            exact[ys[chosen], xs[chosen]] = np.abs(rel[:, 0] * along[1] - rel[:, 1] * along[0])
+        exact[rows, cols] = 0.0  # целият ръб е на една височина, иначе там, където правата свършва, остава стъпало
+    return new_s, new_t, exact
+
+
 def raised_part(rel: np.ndarray, inside: np.ndarray) -> float:
     """Колко се издава детайлът над лицето: измерената дебелина вече го включва, затова тялото се намалява с толкова."""
     return max(0.0, float(np.percentile(rel[inside], 98)))
@@ -558,6 +699,15 @@ def build(frame: Path, m: np.ndarray, place: tuple[int, int, int], vol: np.ndarr
         rel = same_side_relief(rel, crop, part, views, lambda v, i: RL.image_relief(sess, v, i, max(v.size)))
         print(f"AI detail from the same side, {time.time() - started:.0f} s", flush=True)
     amount = RL.STRENGTH * strength * longest
+    side_file, heights = work / SV.FILE, None
+    if flat and rel is not None and side_file.exists():
+        with np.load(side_file) as z:
+            busy, quiet = z["busy"], z["quiet"]
+        fit, upside, shift, scale = fit_side(row_heights(flat_relief(rel, part, max(w0, h0)), part), busy)
+        print(f"side view against the detail: fit {fit:.2f}, turned {upside}, moved {shift:+.3f}, stretched {scale:.3f}", flush=True)
+        if fit >= SIDE_FIT:
+            put = lambda p: SV.placed(p[::-1] if upside else p, shift, scale)  # noqa: E731
+            heights = put(busy), put(quiet)
     if flat:
         middle = np.nanmedian(resized((near + far) / 2, n)[on])
         front_body, back_body = flat_layers(on, thin, float(middle if np.isfinite(middle) else distance), cam.focal)
@@ -567,7 +717,11 @@ def build(frame: Path, m: np.ndarray, place: tuple[int, int, int], vol: np.ndarr
     front_t = front_body
     if rel is not None and flat:
         rel = flat_relief(rel, part, max(w0, h0))
-        front_t = front_t + raised_part(rel, part) * amount
+        if heights is not None:  # измереното тяло е без копчетата: те стърчат над него, както в кадъра отстрани
+            rel = with_side_heights(rel, part, heights[0])
+            print(f"detail with the measured heights: highest {float(row_heights(rel, part).max()):.4f} of the length", flush=True)
+        else:
+            front_t = front_t + raised_part(rel, part) * amount
     if rel is not None:
         front_t = front_t - to_square(rel, n) * amount
     back_t = back_body
@@ -584,7 +738,10 @@ def build(frame: Path, m: np.ndarray, place: tuple[int, int, int], vol: np.ndarr
             rel2 = flat_relief(rel2, part2, max(crop2.size))
             quiet = FLAT_BACK_QUIET / RL.STRENGTH
             rel2 = np.sign(rel2) * np.maximum(np.abs(rel2) - quiet, 0)
-            back_t = back_t - raised_part(rel2, part2) * amount
+            if heights is not None:  # другото лице: страничният изглед показва колко е равно
+                rel2 = flipped(with_side_heights(flipped(rel2, how), flipped(part2, how), heights[1], 1.0), how)
+            else:
+                back_t = back_t - raised_part(rel2, part2) * amount
         if rel2 is not None:
             lay = np.asarray(Image.fromarray(flipped(rel2, how)).resize((w0, h0), Image.BILINEAR))
             back_t = back_t + to_square(lay, n) * amount
@@ -593,17 +750,20 @@ def build(frame: Path, m: np.ndarray, place: tuple[int, int, int], vol: np.ndarr
         opposite = f2.name
         print(f"the other side from {f2.name} ({how}), {time.time() - started:.0f} s", flush=True)
     back_t = np.maximum(back_t, front_t + MIN_THICK * longest)
-    front_t, back_t = rounded_edges(front_t, back_t, on, longest / width, (FLAT_EDGE if flat else ROUND_EDGE) * longest, wall=flat)
 
     # Мрежата.
     s, t = grid(n)
-    rays = cam.rays(s, t)
-    front = cam.center + rays * front_t[..., None]
-    back = cam.center + rays * back_t[..., None]
     q = no_pinches(on[:-1, :-1] & on[1:, :-1] & on[:-1, 1:] & on[1:, 1:])
     labels, count = ndimage.label(q)
     if count > 1:
         q = labels == 1 + int(np.argmax(ndimage.sum_labels(q, labels, np.arange(1, count + 1))))
+    exact = None
+    if flat:
+        s, t, exact = rim_on_lines(s, t, on, q, 2 * FLAT_EDGE * width / 0.85)
+    front_t, back_t = rounded_edges(front_t, back_t, on, longest / width, (FLAT_EDGE if flat else ROUND_EDGE) * longest, wall=flat, exact=exact)
+    rays = cam.rays(s, t)
+    front = cam.center + rays * front_t[..., None]
+    back = cam.center + rays * back_t[..., None]
     vertices, faces, used = closed_mesh(q, front, back)
 
     # Цветовете: отпред снимката, отзад другият кадър или цветовете на TripoSR, приближени до снимката.
