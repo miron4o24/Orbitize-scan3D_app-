@@ -663,12 +663,14 @@ def opposite_frame(frame: Path, others: list[tuple[Path, np.ndarray]], m: np.nda
             alike = max(correlation(fine, fine_picture(g2)), correlation(fine, fine_picture(op(g2))))
             print(f"{f.name} {flip}: outline {fit:.2f}, picture {like:.2f}, fine picture {alike:.2f}", flush=True)
             if fit >= MIRROR_IOU:
-                fitting.append((fit - PICTURE_WEIGHT * max(alike, 0.0), like, f.name, f, mask, flip))
-    allowed = [x for x in fitting if textured or x[1] <= OTHER_PICTURE]
+                fitting.append((fit, fit - PICTURE_WEIGHT * max(alike, 0.0), like, f.name, f, mask, flip))
+    allowed = [x for x in fitting if textured or x[2] <= OTHER_PICTURE]
     if not allowed:
         return None
-    best = max(allowed, key=lambda x: (x[0], x[2]))
-    return best[3], best[4], best[5]
+    # С особености по лицето другата страна вече е доказана: печели най-доброто очертание (ръка върху гърба го разваля; бялото
+    # дистанционно: гръб с пръст 0,89, чист 0,95, а по фината картина печелеше този с пръста). Без тях помага и картината.
+    best = max(allowed, key=lambda x: (x[0] if textured else x[1], x[3]))
+    return best[4], best[5], best[6]
 
 
 def face_normals(sess, crop: Image.Image, inside: np.ndarray) -> np.ndarray | None:
@@ -895,6 +897,7 @@ def build(frame: Path, m: np.ndarray, place: tuple[int, int, int], vol: np.ndarr
         place = centred_place(box)
     # Другите кадри, изправени като този: за същата страна (детайл, пръсти) и за другата.
     views, view_frames = [], []
+    all_views, all_frames = [], []
     colour_photo = photo
     if flat and others:
         angle = lengthwise(inside[box[1] : box[3], box[0] : box[2]])
@@ -910,6 +913,7 @@ def build(frame: Path, m: np.ndarray, place: tuple[int, int, int], vol: np.ndarr
             rest = [(frame, m)] + [(f, mask) for f, mask in others if f != f2]
             return build(f2, m2, place, vol, radius, level, distance, fov, colour_at, work, out, rest, strength, thin, switched=True)
         place = centred_place(box)
+        all_views, all_frames = list(views), list(view_frames)  # и за гърба
         views = [v for k, v in enumerate(views) if k not in held]  # ръка в изгледа би влязла и в детайла
     x0, y0, x1, y1 = box
     left, top, side = place
@@ -973,11 +977,25 @@ def build(frame: Path, m: np.ndarray, place: tuple[int, int, int], vol: np.ndarr
     if found is not None:
         f2, m2, how = found
         p2, ins2, b2 = turned_like(*object_picture(f2, m2)[:2], lengthwise(part))
+        colour2 = p2
+        if flat and all_views:
+            # Ръка върху гърба (бялото дистанционно: пръст в кадъра на гърба): същото като отпред, с другите кадри на тази страна.
+            rest = [k for k, (f, _) in enumerate(all_frames) if f != f2]
+            colour2, ins2, b2, better2, _ = without_fingers(p2, ins2, b2, [all_views[k] for k in rest])
+            if better2 is not None:
+                f3, m3 = all_frames[rest[better2]]
+                again = opposite_frame(frame, [(f3, m3)], m)
+                if again is not None:
+                    f2, m2, how = again
+                    print(f"back frame: {f2.name}, where the hand does not cover it", flush=True)
+                    p2, ins2, b2 = turned_like(*object_picture(f2, m2)[:2], lengthwise(part))
+                    rest = [k for k, (f, _) in enumerate(all_frames) if f != f2]
+                    colour2, ins2, b2, _, _ = without_fingers(p2, ins2, b2, [all_views[k] for k in rest])
         crop2, part2 = p2.crop(b2), ins2[b2[1] : b2[3], b2[0] : b2[2]]
         normals2 = face_normals(sess, crop2, part2) if flat else None
         rel2 = (RL.relief_from_normals(normals2, part2, max(crop2.size)) if normals2 is not None
                 else RL.image_relief(sess, crop2, part2, max(crop2.size), alone=True))  # fmt: skip
-        back_side = (f2, how, p2, ins2, crop2, part2, rel2, normals2)
+        back_side = (f2, how, colour2, ins2, crop2, part2, rel2, normals2, b2)
 
     shaped = False
     if flat:
@@ -1010,7 +1028,7 @@ def build(frame: Path, m: np.ndarray, place: tuple[int, int, int], vol: np.ndarr
 
     back_chart, opposite = None, None
     if back_side is not None:
-        f2, how, p2, ins2, crop2, part2, rel2, _ = back_side
+        f2, how, _, _, crop2, part2, rel2, _, _ = back_side
         if rel2 is not None and flat:
             rel2 = flat_relief(rel2, part2, max(crop2.size))
             quiet = FLAT_BACK_QUIET / RL.STRENGTH
@@ -1053,9 +1071,9 @@ def build(frame: Path, m: np.ndarray, place: tuple[int, int, int], vol: np.ndarr
     rgb = square_rgb(n).astype(np.float32)
     face = filled_colours(fix(np.asarray(colour_photo.crop(box))), part)
     if back_side is not None:
-        _, how, p2, ins2, crop2, part2, _, _ = back_side
-        fix2 = TX.light_fix(np.asarray(p2), ins2, neutral, None if neutral else gain)
-        back_chart = np.asarray(Image.fromarray(flipped(filled_colours(fix2(np.asarray(crop2)), part2), how)).resize((w0, h0), Image.LANCZOS))
+        _, how, colour2, ins2, _, part2, _, _, b2 = back_side  # colour2: кадърът на гърба без ръката
+        fix2 = TX.light_fix(np.asarray(colour2), ins2, neutral, None if neutral else gain)
+        back_chart = np.asarray(Image.fromarray(flipped(filled_colours(fix2(np.asarray(colour2.crop(b2))), part2), how)).resize((w0, h0), Image.LANCZOS))
     if back_chart is None:
         back_points = cam.center + cam.rays(*grid(RAYS)) * resized(back_t, RAYS)[..., None]
         ai = (np.clip(colour_at(back_points.reshape(-1, 3).astype(np.float32)), 0, 1) * 255).reshape(RAYS, RAYS, 3).astype(np.float32)
