@@ -194,3 +194,27 @@ def test_surface_directions_become_real_height():
     rel = R.relief_from_normals(n, inside, 200.0)
     assert rel[100, 100] > 0.5 and abs(rel[40, 40]) < 0.2  # the dome rises, the flat part stays flat
 
+
+def test_straight_sides_become_straight_and_curves_stay():
+    from PIL import Image, ImageDraw
+
+    from app import photo3d as P3
+
+    # A tilted bar whose long sides wobble by 1 pixel, as the real masks do at this size.
+    rng = np.random.default_rng(0)
+    top = 60 + np.arange(0, 500, 10)
+    left = [(140 + 0.1 * (y - 60) + rng.uniform(-1, 1), y) for y in top]
+    right = [(220 + 0.1 * (y - 60) + rng.uniform(-1, 1), y) for y in top[::-1]]
+    a = Image.new("L", (400, 600), 0)
+    ImageDraw.Draw(a).polygon(left + right, fill=255)
+    wobbly = np.asarray(a) > 127
+    out = P3.straightened(wobbly)
+    rows = np.arange(120, 500)
+    edge = np.array([np.flatnonzero(out[y])[0] for y in rows], float)
+    assert np.abs(edge - np.polyval(np.polyfit(rows, edge, 1), rows)).max() < 0.8  # now a straight line
+    assert abs(int(out.sum()) - int(wobbly.sum())) < 0.02 * wobbly.sum()  # about the same size
+    # A circle, however large, has no straight run and stays as it is.
+    yy, xx = np.mgrid[:600, :600]
+    circle = np.hypot(yy - 300, xx - 300) < 280
+    assert np.array_equal(P3.straightened(circle), circle)
+
