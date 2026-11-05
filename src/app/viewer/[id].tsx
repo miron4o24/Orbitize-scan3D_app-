@@ -186,7 +186,7 @@ export default function Viewer() {
     }
   }
 
-  const setRealSize = (text: string) => {
+  const typeLongestMm = (text: string) => {
     setMmInput(text);
     const typed = Number(text.replace(',', '.'));
     if (Number.isFinite(typed) && typed >= 1 && typed <= 2000) setScan(updateScan(id, { longestMm: typed, sizeSet: true }));
@@ -490,7 +490,7 @@ export default function Viewer() {
                     <Field
                       style={s.mm}
                       value={mmInput}
-                      onChangeText={setRealSize}
+                      onChangeText={typeLongestMm}
                       keyboardType="decimal-pad"
                       accessibilityLabel="Най-дълга страна в милиметри"
                       selectTextOnFocus
