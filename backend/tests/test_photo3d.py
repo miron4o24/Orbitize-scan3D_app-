@@ -332,3 +332,44 @@ def test_flat_object_is_turned_to_lie_along_the_grid():
     assert np.ptp(edge) <= 2  # the long side stays on nearly one column, so it has no long steps
     left, top, side = P3.centred_place(box)
     assert left <= box[0] and top <= box[1] and left + side >= box[2] and top + side >= box[3]
+
+
+def test_other_views_of_the_same_side_cancel_a_mistake_in_one_frame():
+    from PIL import Image
+
+    from app import photo3d as P3
+
+    rng = np.random.default_rng(3)
+    noise = rng.uniform(0, 1, (120, 60))
+    face = Image.fromarray((noise * 255).astype(np.uint8)).resize((300, 600), Image.NEAREST)
+    on = np.ones((600, 300), bool)
+    truth = np.zeros((600, 300), np.float32)
+    truth[280:320, 100:200] = 1.0  # a button that the chosen frame has lost to motion blur
+    chosen = truth.copy()
+    chosen[280:320, 100:200] = 0.2
+    views = []
+    for k in range(3):
+        angle = (k - 1) * 3.0
+        view = face.rotate(angle, Image.BICUBIC, fillcolor=128)
+        seen = np.asarray(Image.fromarray(truth).rotate(angle, Image.BILINEAR))
+        views.append((view, on, seen))
+    found = {id(v): s for v, _, s in views}
+    out = P3.same_side_relief(chosen, face, on, [(v, i) for v, i, _ in views], lambda v, i: found[id(v)])
+    assert out[300, 150] > 0.8  # the button is back
+    assert abs(out[100, 150]) < 0.05  # flat stays flat
+    # With no other view the frame's own detail stays as it is.
+    assert P3.same_side_relief(chosen, face, on, [], lambda v, i: None) is chosen
+
+
+def test_a_band_across_the_end_goes_and_a_button_there_stays():
+    from app import photo3d as P3
+
+    rel = np.zeros((1000, 230), np.float32)
+    on = np.ones_like(rel, bool)
+    rel[20:50, :] = 1.3  # a false ledge across the whole width
+    rel[60:100, 90:140] = 1.0  # the power button
+    out = P3.without_end_bands(rel, on, 1000)
+    assert abs(out[35, 115]) < 0.05
+    assert out[80, 115] > 0.9
+    assert out[500, 115] == 0
+
