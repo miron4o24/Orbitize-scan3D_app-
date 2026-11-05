@@ -771,7 +771,7 @@ def solve_cameras(job: Path, work: Path, photos: Path, n_photos: int, sh: Callab
             for name in names[::mask_every]:
                 shutil.copy(photos / name, masked / name)
         all_masks = object_masks(work, masked, sh)
-    models, seen = [], set()
+    models, seen, sizes = [], set(), []
 
     def judge() -> None:
         for d in sorted(p for p in sparse.rglob("*") if (p / "images.bin").exists()):
@@ -785,13 +785,16 @@ def solve_cameras(job: Path, work: Path, photos: Path, n_photos: int, sh: Callab
                 ok[has] = M.consistent_frames(M.subset(views, has), [all_masks[n] for n in views.names if n in all_masks],
                                               S.MASK_SCALE)  # fmt: skip
             models.append((d, int(ok.sum()), [n for n, good in zip(views.names, ok) if not good]))
+            sizes.append(len(views))
             note(job, f"camera solving: {d.parent.name} model {d.name}: {len(views)} frames, {ok.sum()} of "
                  f"{int(has.sum())} with the object cut out consistent with its outline")  # fmt: skip
 
     judge()
     masked = sum(1 for n in names if n in all_masks)
     best_count = max((m[1] for m in models), default=0)
-    if paired and masked and best_count < RETRY_PLACED * masked:
+    # Само ако кадрите наистина не са разположени: всички 48 разположени, но несъгласувани, значи телефон, стоял на място, а тогава
+    # повече съвпадения не помагат (бяло дистанционно в ръка: 90 s напразно).
+    if paired and masked and best_count < RETRY_PLACED * masked and max(sizes, default=0) < RETRY_PLACED * n_photos:
         note(job, f"camera solving: only {best_count} of {masked} frames placed; matching every frame with every other and solving again")
         try:
             sh("photo matching", [COLMAP, "exhaustive_matcher", "--database_path", db, f"--{match}.use_gpu", "0",
