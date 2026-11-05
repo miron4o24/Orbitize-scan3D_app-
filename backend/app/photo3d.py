@@ -43,8 +43,12 @@ MIN_IOU = 0.5  # очертание на формата, разминаващо 
 AZIMUTHS = (0.0, 90.0, 180.0, 270.0)
 SAME_WAY = 0.1  # друга посока се избира само ако очертанието ѝ пасва с толкова повече (симетричен предмет не я променя)
 MIRROR_IOU = 0.65  # другата страна: очертанието на кадъра, обърнато огледално, пасва поне толкова (перспективата му пречи)
+FOREGROUND = 0.85  # дял от квадрата, запълнен от предмета (single3d.FOREGROUND)
 FLAT_BODY = 0.2  # от дължината: толкова тънък предмет е плосък и тялото му идва от измерената дебелина, не от предположението на TripoSR
 FLAT_EDGE = 0.015  # от дължината: радиусът на ръба на плосък предмет (дистанционно: около 3 мм)
+FLAT_DRIFT = 0.06  # от дължината: по-широкото от това в детайла на плосък предмет е грешка на AI (подути ъгли), не форма
+FLAT_RAISED = 0.016  # от дължината: най-издаденото на плосък предмет (дистанционно, по линийка: 3 мм от 192)
+FLAT_RECESS = 0.004  # от дължината: най-дълбокото; без това процеп на капак излиза над 2,4 мм вместо тънка линия
 FEATURE_SIDE = 640  # дългата страна на изрязания предмет за сравняване на особености
 SAME_FEATURES = 8  # толкова общи особености и кадърът показва същата страна (дистанционно: истински гръб 0, завъртяно лице 10 до 180)
 OTHER_PICTURE = 0.6  # над това кадърът показва същата страна дори без особености; грубо сравнение: истинският гръб на дистанционно 0,40
@@ -56,7 +60,7 @@ ROUND = 0.15  # под тази издълженост (0: кръг, 1: лини
 MIN_TURN = 1.0  # градуса: по-малък наклон не се поправя, за да не се размазва кадърът излишно
 STRAIGHT_TOL = 0.006  # от дължината на предмета: толкова отклонение още се смята за права
 STRAIGHT_RUN = 0.2  # от дължината на предмета: само толкова дълъг участък се изправя
-ROUND_SMOOTH = 2.0  # клетки от решетката
+ROUND_SMOOTH = 0.012  # от страната на решетката: заглаждане на разстоянието до очертанието
 OUTLINE_BLUR = 0.004  # от размера на предмета в кадъра
 RIM_SMOOTH = 6
 ROUND_EDGE = 0.03  # от най-дългата страна: най-големият радиус на заобляне на ръбовете
@@ -279,17 +283,22 @@ def object_picture(frame: Path, m: np.ndarray) -> tuple[Image.Image, np.ndarray,
     return photo, inside, (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1)
 
 
-def rounded_edges(front: np.ndarray, back: np.ndarray, on: np.ndarray, cell: float, most: float) -> tuple[np.ndarray, np.ndarray]:
+def rounded_edges(front: np.ndarray, back: np.ndarray, on: np.ndarray, cell: float, most: float,
+                  wall: bool = False) -> tuple[np.ndarray, np.ndarray]:  # fmt: skip
     """Двата слоя, събрани към средата си край очертанието по четвърт кръг: истинските предмети имат заоблени ръбове, а
     иначе лицето свършва с остра устна и отвесна стена. Самото очертание не се мести. cell: размер на клетка от решетката,
-    most: най-големият радиус на заоблянето."""
+    most: най-големият радиус на заоблянето. wall: слоевете спират на радиуса от лицето си, а между тях остава права стена, както
+    при кутия със заоблени ръбове."""
     half = (back - front) / 2
     radius = max(1e-9, min(most, float(np.median(half[on]))) if on.any() else most)
-    # Разстоянието се заглажда: по наклонен прав ръб решетката прави стъпала, а всяко стъпало оставаше като резка през заобления
-    # ръб на модела.
-    far = ndimage.gaussian_filter(ndimage.distance_transform_edt(on).astype(np.float32), ROUND_SMOOTH)
+    # По леко наклонен прав ръб решетката прави дълги стъпала, а всяко стъпало оставаше като резка през заобления ръб. Заглажда се
+    # разстоянието със знак: при него правият ръб си остава прав, защото отвън не влизат нули, и се махат и дългите стъпала.
+    signed = ndimage.distance_transform_edt(on) - ndimage.distance_transform_edt(~on)
+    far = ndimage.gaussian_filter(signed.astype(np.float32), ROUND_SMOOTH * on.shape[0])
     u = np.clip(far * cell / radius, 0, 1)
     lift = 1 - np.sqrt(np.maximum(1 - (1 - u) ** 2, 0))
+    if wall:
+        return front + lift * radius, back - lift * radius
     return front + lift * half, back - lift * half
 
 
@@ -353,6 +362,37 @@ def shared_features(a: tuple[np.ndarray, np.ndarray] | None, b: tuple[np.ndarray
     return 0 if ok is None else int(ok.sum())
 
 
+def upright(photo: Image.Image, inside: np.ndarray) -> tuple[Image.Image, np.ndarray, tuple[int, int, int, int]]:
+    """Плосък предмет, завъртян така, че дължината му да върви по решетката: по наклонен прав ръб решетката прави дълги стъпала, а те
+    остават като напречни резки по стената на модела. Връща (снимка, очертание, кутия), както object_picture."""
+    angle = lengthwise(inside)
+    if angle is None:
+        ys, xs = np.nonzero(inside)
+        return photo, inside, (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1)
+    return turned_like(photo, inside, -90.0 if abs(angle) > 45.0 else 0.0)
+
+
+def centred_place(box: tuple[int, int, int, int]) -> tuple[int, int, int]:
+    """(left, top, side): квадратът около кутията, който предметът запълва с дял FOREGROUND, както single3d.cut_out."""
+    x0, y0, x1, y1 = box
+    side = int(max(y1 - y0, x1 - x0) / FOREGROUND)
+    return x0 - (side - (x1 - x0)) // 2, y0 - (side - (y1 - y0)) // 2, side
+
+
+def flat_relief(rel: np.ndarray, inside: np.ndarray, width: float) -> np.ndarray:
+    """Детайлът на плосък предмет: без широките издутини, които са грешка на AI, и в истинските за такъв предмет граници (в
+    единици relief.STRENGTH, като `rel`). Връща се до нула към очертанието."""
+    out = rel - RL.masked_blur(rel, inside, FLAT_DRIFT * width)
+    out = np.clip(out, -FLAT_RECESS / RL.STRENGTH, FLAT_RAISED / RL.STRENGTH)
+    fade = np.clip(ndimage.distance_transform_edt(inside) / max(1.0, RL.EDGE * width), 0, 1)
+    return np.where(inside, out * fade * fade * (3 - 2 * fade), 0).astype(np.float32)
+
+
+def raised_part(rel: np.ndarray, inside: np.ndarray) -> float:
+    """Колко се издава детайлът над лицето: измерената дебелина вече го включва, затова тялото се намалява с толкова."""
+    return max(0.0, float(np.percentile(rel[inside], 98)))
+
+
 def flat_layers(on: np.ndarray, thin: float, depth: float, focal: float) -> tuple[np.ndarray, np.ndarray]:
     """Двата слоя на плосък предмет: успоредни равнини на измерената дебелина thin (от дължината му), перпендикулярни на
     камерата, с дълбочина около depth. Така страничният профил е прав и дебелината е истинската. on: (n, n) предметът; focal: в
@@ -410,6 +450,10 @@ def build(frame: Path, m: np.ndarray, place: tuple[int, int, int], vol: np.ndarr
         from app import mesh as M
     started = time.time()
     photo, inside, box = object_picture(frame, m)
+    flat = thin is not None and thin <= FLAT_BODY
+    if flat:
+        photo, inside, box = upright(photo, inside)
+        place = centred_place(box)
     x0, y0, x1, y1 = box
     left, top, side = place
     w0, h0 = x1 - x0, y1 - y0
@@ -427,7 +471,6 @@ def build(frame: Path, m: np.ndarray, place: tuple[int, int, int], vol: np.ndarr
 
     square = np.asarray(Image.fromarray(inside.astype(np.uint8) * 255).crop((left, top, left + side, top + side)), np.float32)
     small_mask = lambda n: np.asarray(Image.fromarray(square).resize((n, n), Image.BILINEAR)) > 127  # noqa: E731
-    flat = thin is not None and thin <= FLAT_BODY
     azimuth, fits = best_azimuth(vol, radius, level, distance, fov, small_mask(96))
     print(f"shape against the photo's outline, by direction: { {k: round(v, 2) for k, v in fits.items()} }, using {azimuth}", flush=True)
     if fits[azimuth] < MIN_IOU and not flat:  # плоският предмет взима от TripoSR само цветовете на гърба, ако няма кадър
@@ -458,6 +501,9 @@ def build(frame: Path, m: np.ndarray, place: tuple[int, int, int], vol: np.ndarr
     else:
         front_body, back_body = RL.masked_blur(resized(near, n), on, SHAPE_BLUR * width), RL.masked_blur(resized(far, n), on, BACK_BLUR * width)
     front_t = front_body
+    if rel is not None and flat:
+        rel = flat_relief(rel, part, max(w0, h0))
+        front_t = front_t + raised_part(rel, part) * amount
     if rel is not None:
         front_t = front_t - to_square(rel, n) * amount
     back_t = back_body
@@ -470,6 +516,9 @@ def build(frame: Path, m: np.ndarray, place: tuple[int, int, int], vol: np.ndarr
         p2, ins2, b2 = turned_like(*object_picture(f2, m2)[:2], lengthwise(part))
         crop2, part2 = p2.crop(b2), ins2[b2[1] : b2[3], b2[0] : b2[2]]
         rel2 = RL.image_relief(sess, crop2, part2, max(crop2.size), alone=True)
+        if rel2 is not None and flat:
+            rel2 = flat_relief(rel2, part2, max(crop2.size))
+            back_t = back_t - raised_part(rel2, part2) * amount
         if rel2 is not None:
             lay = np.asarray(Image.fromarray(flipped(rel2, how)).resize((w0, h0), Image.BILINEAR))
             back_t = back_t + to_square(lay, n) * amount
@@ -478,7 +527,7 @@ def build(frame: Path, m: np.ndarray, place: tuple[int, int, int], vol: np.ndarr
         opposite = f2.name
         print(f"the other side from {f2.name} ({how}), {time.time() - started:.0f} s", flush=True)
     back_t = np.maximum(back_t, front_t + MIN_THICK * longest)
-    front_t, back_t = rounded_edges(front_t, back_t, on, longest / width, (FLAT_EDGE if flat else ROUND_EDGE) * longest)
+    front_t, back_t = rounded_edges(front_t, back_t, on, longest / width, (FLAT_EDGE if flat else ROUND_EDGE) * longest, wall=flat)
 
     # Мрежата.
     s, t = grid(n)
