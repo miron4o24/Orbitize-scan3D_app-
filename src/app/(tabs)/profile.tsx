@@ -203,7 +203,6 @@ function Account({ user }: { user: Profile }) {
     [
       ['stress', 'Тестове за здравина'],
       ['ar', 'Виж в стаята'],
-      ['ai', 'Безплатен AI модел'],
     ] as const
   ).filter(([kind]) => user.limits?.[kind]?.limit != null);
 
@@ -260,7 +259,7 @@ function Account({ user }: { user: Profile }) {
               <Card style={s.list}>
                 <Row
                   label={user.pro ? 'Pro' : 'Безплатен'}
-                  description={user.pro ? undefined : 'С Pro: AI модели и без ограничения'}
+                  description={user.pro ? undefined : 'С Pro: промени с AI и без ограничения'}
                   onPress={() => router.push('/pro')}
                   last={limits.length === 0}
                 />
@@ -287,7 +286,7 @@ function Account({ user }: { user: Profile }) {
           <Appear index={3}>
             <Section label="Собственик">
               <Card style={s.list}>
-                <Row label="Pro" description="Кой може да прави AI модели" onPress={() => router.push('/owner')} last />
+                <Row label="Pro" description="Кой има Pro" onPress={() => router.push('/owner')} last />
               </Card>
             </Section>
           </Appear>

@@ -690,8 +690,9 @@ def smooth(mesh: trimesh.Trimesh, passes: int) -> trimesh.Trimesh:
 
 
 def make_printable(mesh: trimesh.Trimesh, floor: float, flat_base: bool, longest_mm: float = 100.0,
-                   smoothing: int = LIGHT) -> trimesh.Trimesh:  # fmt: skip
-    """smoothing: проходи на smooth(); 0 за проектиран модел (CAD от app/ai.py), чиито стени вече са плоски."""
+                   smoothing: int = LIGHT, max_faces: int = MAX_FACES) -> trimesh.Trimesh:  # fmt: skip
+    """smoothing: проходи на smooth(); 0 за проектиран модел (CAD от app/ai.py), чиито стени вече са плоски, и за модел
+    от снимка, чийто детайл е нарочен. max_faces: повече стени за модел с фин релеф."""
     parts = mesh.split(only_watertight=False)
     if not len(parts):
         raise MeshError("От кадрите не се получи модел. Опитайте да заснемете отново, по-бавно и с повече светлина.")
@@ -727,8 +728,8 @@ def make_printable(mesh: trimesh.Trimesh, floor: float, flat_base: bool, longest
     parts = mesh.split(only_watertight=False)
     mesh = trimesh.util.concatenate([p for p in parts if len(p.faces) >= 0.01 * len(mesh.faces)])
     trimesh.repair.fix_normals(mesh)
-    if len(mesh.faces) > MAX_FACES:
-        mesh = decimate(mesh, MAX_FACES)
+    if len(mesh.faces) > max_faces:
+        mesh = decimate(mesh, max_faces)
     mesh = smooth(mesh, smoothing)  # тук основата е най-ниската равнина (срязана плоско, завъртането по-долу е само около z)
 
     # Стъпка по осите (най-малкият правоъгълник около нея), така че отчетените размери и най-дългата страна, по която

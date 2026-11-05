@@ -2,6 +2,7 @@
 равномерно разпределени около предмета, дори когато потребителят върви с неравно темпо или за момент спира."""
 
 import numpy as np
+from scipy import ndimage
 
 # Кадри, оценявани за секунда видео: всеки запазен кадър е най-рязкият от около три около него (при 6 в секунда и 120
 # запазени кадъра те бяха само два и едно сканиране запази кадри с една шеста от медианната рязкост).
@@ -19,6 +20,10 @@ THUMB = 256  # квадратен размер за оценяване; спле
 SMALL = 4  # движението се измерва върху миниатюри THUMB/SMALL, където шумът и размазването почти не се различават
 STILL = 0.1  # неподвижното стоене пак брои този дял от средното движение, така че времето никога не се пренебрегва
 BATCH = 64
+# Дали телефонът е стоял на място, а предметът се е въртял в ръка (pipeline.camera_stayed_still).
+STILL_FRAMES = 8  # кадри от видеото, сравнявани по двойки
+STILL_SIDE = 192  # при този размер
+STILL_SCORE = 0.5  # фон, толкова подобен между кадрите, е същият фон
 
 
 def sharpness(frames: np.ndarray) -> np.ndarray:
@@ -64,3 +69,34 @@ def pick(scores: np.ndarray, n: int, moved: np.ndarray | None = None) -> list[in
         edges = np.searchsorted(progress, np.linspace(0, progress[-1], n + 1)[1:-1], side="right")
         edges = np.concatenate([[0], edges, [len(scores)]])
     return [int(a + np.argmax(scores[a:b])) for a, b in zip(edges[:-1], edges[1:]) if b > a]
+
+
+def background_stays(grey: list[np.ndarray], cover: list[np.ndarray]) -> float:
+    """Колко еднакъв остава фонът през видеото: медианата по двойки кадри на корелацията на финия им детайл извън
+    предмета, след изместване, което поема трептенето на ръката. При обикаляне около предмета фонът е различен (близо
+    до 0). grey: сиви кадри с еднакъв размер; cover: къде е предметът във всеки."""
+    fine = [a - ndimage.gaussian_filter(a, 4.0) for a in grey]
+    scores = []
+    for i in range(len(fine)):
+        for j in range(i + 1, len(fine)):
+            a, b = fine[i], fine[j]
+            cross = np.fft.rfft2(a) * np.conj(np.fft.rfft2(b))
+            peak = np.fft.irfft2(cross / np.maximum(np.abs(cross), 1e-9), s=a.shape)
+            dy, dx = np.unravel_index(np.argmax(peak), peak.shape)
+            dy, dx = int(dy) - (a.shape[0] if dy > a.shape[0] // 2 else 0), int(dx) - (a.shape[1] if dx > a.shape[1] // 2 else 0)
+            ok = ~(cover[i] | np.roll(cover[j], (dy, dx), (0, 1)))
+            # Редовете и колоните, преминали от другия край, не се броят.
+            if dy > 0:
+                ok[:dy] = False
+            elif dy < 0:
+                ok[dy:] = False
+            if dx > 0:
+                ok[:, :dx] = False
+            elif dx < 0:
+                ok[:, dx:] = False
+            if ok.sum() < 0.1 * ok.size:
+                continue
+            x, y = a[ok] - a[ok].mean(), np.roll(b, (dy, dx), (0, 1))[ok]
+            y = y - y.mean()
+            scores.append(float((x * y).sum() / max(np.sqrt((x * x).sum() * (y * y).sum()), 1e-9)))
+    return float(np.median(scores)) if scores else 0.0
