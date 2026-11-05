@@ -42,8 +42,10 @@ EDGE = 0.025  # от размера на предмета в кадъра: пр�
 STRENGTH = 0.012  # от най-дългата страна на модела: колко се издига издаденото (при дистанционно от 15 см около 1,3 мм)
 MOST = 0.025  # от най-дългата страна: повече от това не се мести никое място
 PEAK = 1.2  # от разликата: нищо не стърчи повече (пръст или сянка при ръба даваха парцали по страните)
+EVEN_BLUR = 0.02  # от размера на предмета в кадъра
+EVEN_LEVEL, EVEN_POWER, EVEN_LIMITS = 0.45, 0.8, (0.5, 6.0)
 SOFT = 0.002  # от размера на предмета в кадъра: колко се заглаждат стените на детайла
-QUIET = 0.15  # от издаденото: по-малките разлики са вълни от мрежата, а не детайл на предмета
+QUIET = 0.25  # от издаденото: по-малките разлики са вълни от мрежата, а не детайл на предмета
 FLAT = 0.03  # лента под този дял от целия обхват на дълбочината е шум върху плоска повърхност и се усилва по-малко
 VIEWS = 12
 FEWER_VIEWS = 6  # когато времето не стига (app/ai.py)
@@ -163,6 +165,27 @@ def unit_relief(d: np.ndarray, inside: np.ndarray, width: float) -> np.ndarray |
     level = level * level**2 / (level**2 + QUIET**2)  # плавно, защото рязък праг оставя плоски петна с видими граници
     level = ndimage.gaussian_filter(level.astype(np.float32), max(1.0, SOFT * width))  # отстрани копчетата не са зъбци
     return np.where(inside, level * fade, 0).astype(np.float32)
+
+
+def evened(crop: Image.Image, inside: np.ndarray, width: float) -> Image.Image:
+    """Копие, в което тъмният печат е почти колкото светъл като околното: яркостта е разделена на средната си в малък
+    кръг, само от точките върху предмета, а цветовете остават."""
+    a = np.asarray(crop.convert("RGB"), np.float32) / 255
+    wide = masked_blur(a.mean(-1), inside, EVEN_BLUR * width)
+    k = np.clip((EVEN_LEVEL / np.maximum(wide, 0.03)) ** EVEN_POWER, *EVEN_LIMITS)
+    return Image.fromarray((np.clip(a * k[..., None], 0, 1) * 255).astype(np.uint8))
+
+
+def agreed_relief(sess, crop: Image.Image, inside: np.ndarray, width: float, shifts: tuple[int, ...] = (0,)) -> np.ndarray | None:
+    """Детайлът от един кадър, когато няма други да го проверят: AI дълбочината чете тъмен надпис или лого като релеф.
+    Остава само височината, за която снимката и копието ѝ с изравнена яркост са съгласни: копчетата я имат и в двете, а
+    логото и вълните по равното не."""
+    plain = unit_relief(object_depth(sess, crop, inside, shifts), inside, width)
+    other = unit_relief(object_depth(sess, evened(crop, inside, width), inside), inside, width)
+    if plain is None or other is None:
+        return plain
+    both = np.where(np.sign(plain) == np.sign(other), np.sign(plain) * np.sqrt(np.abs(plain * other)), 0)  # плавно към нула
+    return ndimage.gaussian_filter(both.astype(np.float32), max(1.0, SOFT * width))
 
 
 class Scene:
