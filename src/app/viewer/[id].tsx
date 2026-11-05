@@ -103,6 +103,7 @@ export default function Viewer() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [wireframe, setWireframe] = useState(false);
+  const [plain, setPlain] = useState(false); // моделът без цветовете, само формата
   const [full, setFull] = useState(false); // моделът на целия екран
   const [mmInput, setMmInput] = useState(String(scan?.longestMm ?? 100));
   const [busy, setBusy] = useState<string | null>(null);
@@ -382,7 +383,7 @@ export default function Viewer() {
       <View style={s.preview}>
         {model ? (
           <Animated.View entering={fade} style={s.flex}>
-            {!full && !picking && <ModelView model={model} wireframe={wireframe} background={c.viewer} />}
+            {!full && !picking && <ModelView model={model} wireframe={wireframe} plain={plain} background={c.viewer} />}
           </Animated.View>
         ) : loadError ? (
           <View style={s.center}>
@@ -414,7 +415,17 @@ export default function Viewer() {
         )}
         <SafeAreaView edges={['top']} style={s.floatTop} pointerEvents="box-none">
           <IconButton icon="chevron-back" label="Назад" onPress={() => router.back()} />
-          {model && <IconButton icon="expand-outline" label="Цял екран" onPress={() => setFull(true)} />}
+          {model && (
+            <View style={s.floatButtons}>
+              <IconButton
+                icon="color-palette-outline"
+                label={plain ? 'Покажи цветовете' : 'Покажи без цветове'}
+                active={plain}
+                onPress={() => setPlain((p) => !p)}
+              />
+              <IconButton icon="expand-outline" label="Цял екран" onPress={() => setFull(true)} />
+            </View>
+          )}
         </SafeAreaView>
       </View>
 
@@ -668,6 +679,8 @@ export default function Viewer() {
           title={title}
           wireframe={wireframe}
           onWireframe={() => setWireframe((w) => !w)}
+          plain={plain}
+          onPlain={() => setPlain((p) => !p)}
           onClose={() => setFull(false)}
         />
       )}
@@ -918,6 +931,7 @@ const useStyles = makeStyles((c) => ({
     paddingHorizontal: space.lg,
     paddingTop: space.sm,
   },
+  floatButtons: { flexDirection: 'row', gap: space.sm },
   content: { paddingTop: space.xl, gap: 20 },
   titleRow: { flexDirection: 'row', alignItems: 'flex-start', gap: space.sm },
   pencil: { marginTop: 12 },

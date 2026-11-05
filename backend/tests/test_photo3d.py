@@ -720,3 +720,22 @@ def test_a_finger_in_one_frame_is_taken_from_the_other_views():
     assert np.abs(got[400:440, 170:230] - big[400:440, 170:230]).mean() < 25  # the face under the finger is back
     assert not new[400:440, 125:145].any()  # and the outline is straight again
     assert box[0] >= 148
+
+
+def test_narrow_cracks_are_filled_and_raised_parts_stay():
+    from app import mesh as M
+
+    ball = trimesh.creation.icosphere(subdivisions=6, radius=50.0)
+    v = ball.vertices.copy()
+    n = v / np.linalg.norm(v, axis=1, keepdims=True)
+    crack = (np.abs(v[:, 0]) < 1.5) & (v[:, 2] > 20)  # a thin cut across the top, 2 mm deep
+    bump = np.linalg.norm(v - np.array([0.0, 50.0, 0.0]), axis=1) < 12  # a wide raised part, 2 mm high
+    v[crack] -= 2.0 * n[crack]
+    v[bump] += 2.0 * n[bump]
+    rough = trimesh.Trimesh(v, ball.faces, process=False)
+    out, share = M.filled_pits(rough)
+    r = np.linalg.norm(out.vertices, axis=1)
+    assert 0 < share < 0.05
+    assert np.abs(r[crack] - 50).max() < 1.0  # the crack is mostly gone
+    assert np.median(r[bump]) > 51.5  # the raised part stays
+    assert out.is_watertight and len(out.faces) == len(ball.faces)
