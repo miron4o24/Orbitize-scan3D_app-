@@ -42,9 +42,16 @@ MIN_THICK = 0.012  # от размера: слоевете никога не с�
 MIN_IOU = 0.5  # очертание на формата, разминаващо се повече със снимката: остава само моделът на TripoSR
 AZIMUTHS = (0.0, 90.0, 180.0, 270.0)
 SAME_WAY = 0.1  # друга посока се избира само ако очертанието ѝ пасва с толкова повече (симетричен предмет не я променя)
-MIRROR_IOU = 0.78  # другата страна: очертанието на кадъра, обърнато огледално, пасва поне толкова
-OTHER_PICTURE = 0.35  # и картината му се различава: корелация най-много толкова
+MIRROR_IOU = 0.65  # другата страна: очертанието на кадъра, обърнато огледално, пасва поне толкова (перспективата му пречи)
+# и грубата картина не прилича на снимката: при дистанционно истинският гръб дава корелация 0,03, а същата страна, леко
+# завъртяна, от 0,29 нагоре.
+OTHER_PICTURE = 0.15
+PICTURE_SIDE = 32
+# Предмет в ръка се върти около дългата си ос: обръщане отгоре надолу се приема само ако пасва ясно по-добре, защото
+# симетрично очертание (дистанционно) пасва и на двете, а гърбът тогава излиза с главата надолу.
+UPSIDE_DOWN = 0.08
 COMPARE_SIDE = 96
+RIM = 0.005  # от размера: толкова навътре от очертанието започват цветовете (при ръба има малко от фона зад предмета)
 
 
 @dataclass
@@ -175,7 +182,7 @@ def closed_mesh(q: np.ndarray, front: np.ndarray, back: np.ndarray) -> tuple[np.
 
 def filled_colours(rgb: np.ndarray, inside: np.ndarray) -> np.ndarray:
     """Навсякъде извън предмета: цветът на най-близкото място върху него, за да не прониква фон по ръбовете на текстурата."""
-    inner = ndimage.binary_erosion(inside, iterations=2)
+    inner = ndimage.binary_erosion(inside, iterations=max(2, int(RIM * max(inside.shape))))
     if inner.sum() < 100:
         inner = inside
     iy, ix = ndimage.distance_transform_edt(~inner, return_distances=False, return_indices=True)
@@ -188,11 +195,13 @@ def shape_of(on: np.ndarray) -> np.ndarray:
     return np.asarray(Image.fromarray(crop).resize((COMPARE_SIDE, COMPARE_SIDE), Image.BILINEAR)) > 127
 
 
-def correlation(a: np.ndarray, b: np.ndarray, where: np.ndarray) -> float:
-    if where.sum() < 50:
-        return 1.0
-    x, y = a[where] - a[where].mean(), b[where] - b[where].mean()
+def correlation(a: np.ndarray, b: np.ndarray) -> float:
+    x, y = a - a.mean(), b - b.mean()
     return float((x * y).sum() / max(np.sqrt((x * x).sum() * (y * y).sum()), 1e-9))
+
+
+def coarse_picture(photo: Image.Image, box: tuple[int, int, int, int]) -> np.ndarray:
+    return np.asarray(photo.crop(box).convert("L").resize((PICTURE_SIDE, PICTURE_SIDE), Image.BOX), np.float32)
 
 
 def object_picture(frame: Path, m: np.ndarray) -> tuple[Image.Image, np.ndarray, tuple[int, int, int, int]]:
@@ -207,21 +216,23 @@ def object_picture(frame: Path, m: np.ndarray) -> tuple[Image.Image, np.ndarray,
 
 def opposite_frame(frame: Path, others: list[tuple[Path, np.ndarray]], m: np.ndarray):
     """Кадър, показващ другата страна: очертанието му, обърнато огледално, съвпада с това на избрания кадър, а картината
-    вътре се различава (иначе е същата страна). Връща (кадър, маска, "lr" или "ud") или None."""
+    вътре не прилича на снимката нито обърната, нито както е (иначе е същата страна). Връща (кадър, маска, "lr" или "ud")
+    или None."""
     photo, inside, box = object_picture(frame, m)
     shape = shape_of(inside[box[1] : box[3], box[0] : box[2]])
-    grey = np.asarray(photo.crop(box).convert("L").resize((COMPARE_SIDE, COMPARE_SIDE)), np.float32)
+    grey = coarse_picture(photo, box)
     best, best_fit = None, MIRROR_IOU
     for f, mask in others:
         if f == frame or (mask > 127).sum() < 50:
             continue
         p, ins, b = object_picture(f, mask)
         s2 = shape_of(ins[b[1] : b[3], b[0] : b[2]])
-        g2 = np.asarray(p.crop(b).convert("L").resize((COMPARE_SIDE, COMPARE_SIDE)), np.float32)
-        for flip, op in (("lr", np.fliplr), ("ud", np.flipud)):
-            fit = float((shape & op(s2)).sum() / max(1, (shape | op(s2)).sum()))
-            same = correlation(grey, op(g2), shape & op(s2))
-            if fit >= best_fit and same <= OTHER_PICTURE:
+        g2 = coarse_picture(p, b)
+        for flip, op, handicap in (("lr", np.fliplr, 0.0), ("ud", np.flipud, UPSIDE_DOWN)):
+            fit = float((shape & op(s2)).sum() / max(1, (shape | op(s2)).sum())) - handicap
+            like = max(correlation(grey, g2), correlation(grey, op(g2)))  # и обърната, и както е
+            print(f"{f.name} {flip}: outline {fit:.2f}, picture {like:.2f}", flush=True)
+            if fit >= best_fit and like <= OTHER_PICTURE:
                 best, best_fit = (f, mask, flip), fit
     return best
 

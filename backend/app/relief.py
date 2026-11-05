@@ -40,6 +40,7 @@ BAND = 0.08
 EDGE = 0.015  # от размера на предмета в кадъра: при очертанието AI дълбочината е ненадеждна, затова там детайлът намалява
 STRENGTH = 0.012  # от най-дългата страна на модела: разликата между ниските и високите места (2-ри и 98-и процентил)
 MOST = 0.025  # от най-дългата страна: повече от това не се мести никое място
+PEAK = 1.2  # от разликата: нищо не стърчи повече (пръст или сянка при ръба даваха парцали по страните)
 FLAT = 0.03  # лента под този дял от целия обхват на дълбочината е шум върху плоска повърхност и се усилва по-малко
 VIEWS = 12
 FEWER_VIEWS = 6  # когато времето не стига (app/ai.py)
@@ -126,7 +127,7 @@ def unit_relief(d: np.ndarray, inside: np.ndarray, width: float) -> np.ndarray |
         return None
     gain = min(1.0, spread / (FLAT * whole)) / spread
     fade = np.clip(ndimage.distance_transform_edt(inside) / max(1.0, EDGE * width), 0, 1)
-    return np.where(inside, (band - mid) * gain * fade, 0).astype(np.float32)
+    return np.where(inside, np.clip((band - mid) * gain, -PEAK, PEAK) * fade, 0).astype(np.float32)
 
 
 class Scene:
