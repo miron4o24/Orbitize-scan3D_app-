@@ -154,3 +154,24 @@ def test_tilted_back_frame_is_straightened_to_lie_like_the_photo():
     # Кръгъл предмет няма посока на дължината и не се върти.
     yy, xx = np.mgrid[:200, :200]
     assert P3.lengthwise(np.hypot(yy - 100, xx - 100) < 60) is None
+
+
+def test_failed_room_solve_still_tries_the_object_alone(monkeypatch, tmp_path):
+    from app import ai
+
+    tried = []
+
+    def solve(*args, object_only=False, **kw):
+        tried.append(object_only)
+        if not object_only:
+            raise ai.P.Failed("no initial pair")
+        return "model", 30, [], {"a.jpg": None}, None
+
+    monkeypatch.setattr(ai.P, "object_masks", lambda *a: {"a.jpg": None})
+    monkeypatch.setattr(ai.P, "camera_stayed_still", lambda *a: False)
+    monkeypatch.setattr(ai.P, "solve_cameras", solve)
+    monkeypatch.setattr(ai.P, "note", lambda *a: None)
+    monkeypatch.setattr(ai, "model_from_solved", lambda *a: a)
+    got = ai.from_video(tmp_path, tmp_path, tmp_path, 30, True, None, None, {})
+    assert tried == [False, True]
+    assert got[6:8] == ("model", 30) and got[-1] is True  # камерите от втория опит, предметът е бил в ръка

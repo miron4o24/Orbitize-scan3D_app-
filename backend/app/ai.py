@@ -556,10 +556,15 @@ def from_video(job: Path, work: Path, photos: Path, n_photos: int, flat_base: bo
     # Телефон, стоял на място, не може да разположи предмета по стаята. Телефон, който е обикалял, би трябвало да може,
     # но предмет върху еднообразна маса може да се разположи само по собствените си особености.
     for object_only in [in_hand] if in_hand or forced else [False, True]:
-        best, placed, stray, all_masks, _ = P.solve_cameras(job, work, photos, n_photos, sh, paired=True,
-                                                            mask_every=MASK_EVERY, features=tune.get("features"),
-                                                            known_masks=all_masks, object_only=object_only)  # fmt: skip
         in_hand = object_only
+        try:
+            best, placed, stray, all_masks, _ = P.solve_cameras(job, work, photos, n_photos, sh, paired=True,
+                                                                mask_every=MASK_EVERY, features=tune.get("features"),
+                                                                known_masks=all_masks, object_only=object_only)  # fmt: skip
+        except P.Failed as e:  # COLMAP завършва с грешка, когато не може да започне: следващият опит още може да успее
+            P.note(job, f"camera solving: failed ({e}), object only: {object_only}")
+            best, placed, stray = None, 0, []
+            continue
         if best is not None and placed >= MIN_PLACED:
             break
     return model_from_solved(job, work, photos, flat_base, set_state, sh, best, placed, stray, all_masks, tune, in_hand)
