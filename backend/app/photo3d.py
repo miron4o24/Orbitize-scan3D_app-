@@ -345,7 +345,7 @@ def build(frame: Path, m: np.ndarray, place: tuple[int, int, int], vol: np.ndarr
 
     sess = RL.session(threads=max(2, (os.cpu_count() or 4) // 2))
     crop, part = photo.crop(box), inside[y0:y1, x0:x1]
-    rel = RL.unit_relief(RL.object_depth(sess, crop, part, shifts=(0, RL.PATCH // 2)), part, max(w0, h0))
+    rel = RL.agreed_relief(sess, crop, part, max(w0, h0), shifts=(0, RL.PATCH // 2))
     print(f"AI detail, {time.time() - started:.0f} s", flush=True)
     amount = RL.STRENGTH * strength * longest
     front_t = RL.masked_blur(resized(near, n), on, SHAPE_BLUR * width)
@@ -360,7 +360,7 @@ def build(frame: Path, m: np.ndarray, place: tuple[int, int, int], vol: np.ndarr
         f2, m2, how = found
         p2, ins2, b2 = turned_like(*object_picture(f2, m2)[:2], lengthwise(part))
         crop2, part2 = p2.crop(b2), ins2[b2[1] : b2[3], b2[0] : b2[2]]
-        rel2 = RL.unit_relief(RL.object_depth(sess, crop2, part2, shifts=(0, RL.PATCH // 2)), part2, max(crop2.size))
+        rel2 = RL.agreed_relief(sess, crop2, part2, max(crop2.size), shifts=(0, RL.PATCH // 2))
         if rel2 is not None:
             lay = np.asarray(Image.fromarray(flipped(rel2, how)).resize((w0, h0), Image.BILINEAR))
             back_t = back_t + to_square(lay, n) * amount
