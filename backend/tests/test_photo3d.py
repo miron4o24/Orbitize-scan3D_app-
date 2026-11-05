@@ -284,3 +284,51 @@ def test_same_side_has_shared_features_and_the_other_side_has_none():
     assert P3.features(Image.fromarray(plain), on) is None
     assert P3.shared_features(a, None) == 0
 
+
+def test_flat_relief_keeps_buttons_and_drops_swellings_and_deep_cuts():
+    from app import photo3d as P3
+    from app import relief as RL
+
+    n = 400
+    yy, xx = np.mgrid[:n, :n]
+    inside = np.ones((n, n), bool)
+    swelling = 2.0 * np.exp(-((yy - 60.0) ** 2 + (xx - 60.0) ** 2) / (2 * 60.0**2))
+    rel = swelling.copy()
+    rel[200:230, 200:230] += 1.0  # a button
+    rel[300:304, 40:360] -= 10.0  # a seam, far too deep
+    out = P3.flat_relief(rel, inside, n)
+    assert out[215, 215] - out[215, 170] > 0.6  # the button stays
+    assert np.ptp(out[40:80, 40:80]) < 0.5 * np.ptp(swelling[40:80, 40:80])  # the swelling goes
+    assert out.min() >= -P3.FLAT_RECESS / RL.STRENGTH - 1e-6  # the cut is limited
+
+
+def test_flat_edge_leaves_a_straight_wall_and_no_ladder():
+    from app import photo3d as P3
+
+    n = 900
+    on = np.asarray(bar_mask(180, height=700, tilt=0.03, size=n)) > 127
+    front, back = np.full((n, n), 1.0), np.full((n, n), 1.2)
+    f, b = P3.rounded_edges(front, back, on, 1 / 700, 0.015, wall=True)
+    assert abs(f[450, 450] - 1.0) < 1e-6 and abs(b[450, 450] - 1.2) < 1e-6
+    assert (b - f)[on].min() >= 0.2 - 2 * 0.015 - 1e-6  # the wall keeps the thickness up to the corner radius
+    # Along a line parallel to the true straight edge, the height is the same all the way: no rungs.
+    rows = np.arange(150.0, 750.0)
+    line = 450 - 90 + 0.03 * (rows - 450) + 4
+    along = ndimage.map_coordinates((b - f).astype(np.float32), [rows, line], order=1)
+    assert np.ptp(along) < 0.0005
+
+
+def test_flat_object_is_turned_to_lie_along_the_grid():
+    from PIL import Image
+
+    from app import photo3d as P3
+
+    on = np.asarray(bar_mask(180, height=700, tilt=0.04, size=900)) > 127
+    photo = Image.fromarray(np.where(on, 200, 30).astype(np.uint8)).convert("RGB")
+    _, turned, box = P3.upright(photo, on)
+    assert abs(abs(P3.lengthwise(turned)) - 90) < 0.5
+    rows = np.arange(box[1] + 60, box[3] - 60)
+    edge = np.array([np.flatnonzero(turned[y])[0] for y in rows])
+    assert np.ptp(edge) <= 2  # the long side stays on nearly one column, so it has no long steps
+    left, top, side = P3.centred_place(box)
+    assert left <= box[0] and top <= box[1] and left + side >= box[2] and top + side >= box[3]
