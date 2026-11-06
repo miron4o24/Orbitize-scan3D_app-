@@ -25,8 +25,6 @@ FOREGROUND = 0.85  # дял от квадрата, запълнен от пре�
 RESOLUTION = 320  # мрежа за marching cubes: по-фина от 256 на TripoSR за детайл при печат
 THRESHOLD = 25.0  # нивото на плътност на повърхността при TripoSR
 CHUNK = 32768
-KIND_FILE = "kind.json"  # app/kind.py: какъв е предметът на снимката (app/ai.py by_single)
-CAM_DISTANCE, CAM_FOV = 1.9, 40.0  # изгледът, от който TripoSR приема, че е входът (tsr.system.TSR.render)
 
 
 def ready() -> bool:
@@ -88,9 +86,8 @@ def best_frame(frames: list[Path], masks: dict) -> tuple[Path, np.ndarray]:
     return best
 
 
-def cut_out(frame: Path, m: np.ndarray) -> tuple[Image.Image, tuple[int, int, int]]:
-    """Предметът върху сив фон, центриран в квадрат, който запълва с дял FOREGROUND (входът на TripoSR), и къде е този
-    квадрат в кадъра: (left, top, side)."""
+def cut_out(frame: Path, m: np.ndarray) -> Image.Image:
+    """Предметът върху сив фон, центриран в квадрат, който запълва с дял FOREGROUND (входът на TripoSR)."""
     with Image.open(frame) as im:
         rgb = np.asarray(im.convert("RGB"), np.float32) / 255
     alpha = np.asarray(Image.fromarray(m).resize((rgb.shape[1], rgb.shape[0]), Image.BILINEAR), np.float32) / 255
@@ -102,11 +99,10 @@ def cut_out(frame: Path, m: np.ndarray) -> tuple[Image.Image, tuple[int, int, in
     out = np.full((side, side, 3), 0.5, np.float32)
     oy, ox = (side - (y1 - y0)) // 2, (side - (x1 - x0)) // 2
     out[oy : oy + y1 - y0, ox : ox + x1 - x0] = img[y0:y1, x0:x1]
-    picture = Image.fromarray((out * 255).astype(np.uint8)).resize((512, 512), Image.LANCZOS)
-    return picture, (int(x0) - ox, int(y0) - oy, side)
+    return Image.fromarray((out * 255).astype(np.uint8)).resize((512, 512), Image.LANCZOS)
 
 
-def main(frames_dir: Path, masks_file: Path, out: Path, strength: float = 1.0, thin: float | None = None):
+def main(frames_dir: Path, masks_file: Path, out: Path):
     # Кодът на TripoSR импортира rembg и torchmcubes, които не се използват тук: заместители (app/triposr_shims).
     sys.path[:0] = [str(CODE), str(HERE / "triposr_shims")]
     os.environ.setdefault("HF_HOME", str(TOOLS / "hf"))  # config.json на кодировчика на изображения, изтеглен веднъж
@@ -119,7 +115,7 @@ def main(frames_dir: Path, masks_file: Path, out: Path, strength: float = 1.0, t
     with np.load(masks_file) as z:
         masks = {k: z[k] for k in z.files}
     frame, m = best_frame(frames, masks)
-    image, place = cut_out(frame, m)
+    image = cut_out(frame, m)
     image.save(out.with_suffix(".input.png"))
     print(f"frame {frame.name}", flush=True)
 
@@ -139,31 +135,6 @@ def main(frames_dir: Path, masks_file: Path, out: Path, strength: float = 1.0, t
         vol = density.reshape(RESOLUTION, RESOLUTION, RESOLUTION).numpy()
         del grid, density
         print(f"shape in {time.time() - t:.0f} s", flush=True)
-        # Моделът от снимката: истинското ѝ очертание, детайл и цветове върху голямата форма на TripoSR
-        # (app/photo3d.py). Ако това не стане, остава само моделът на TripoSR.
-        sys.path.insert(0, str(HERE.parent))
-        from app import photo3d
-
-        def colour_at(points: np.ndarray) -> np.ndarray:
-            return model.renderer.query_triplane(model.decoder, torch.from_numpy(points).float(), code)["color"].numpy()
-
-        others = [(f, masks[f.name]) for f in frames if f.name in masks and f != frame]
-        # Какъв е предметът (app/kind.py, само при една снимка): плосък получава обичайната за вида дебелина, кръгъл се завърта.
-        kind_file = out.parent / KIND_FILE
-        kind = json.loads(kind_file.read_text(encoding="utf-8")) if kind_file.exists() else {}
-        if kind.get("group") == "flat" and thin is None and kind.get("thin"):
-            thin = float(kind["thin"])
-            print(f"flat object ({kind.get('prompt')}): usual thickness {thin:.3f} of the length", flush=True)
-        round_body = kind.get("group") == "round"
-        try:
-            info = photo3d.build(frame, m, place, vol, r, THRESHOLD, CAM_DISTANCE, CAM_FOV, colour_at, out.parent, out, others,
-                                 strength, thin, round_body=round_body)  # fmt: skip
-        except Exception as e:  # каквото и да е: моделът на TripoSR пак си заслужава
-            print(f"two sided model failed: {e!r}", flush=True)
-            info = None
-        if info is not None:
-            out.with_suffix(".json").write_text(json.dumps(info))
-            return
         verts, faces, _, _ = measure.marching_cubes(vol, level=THRESHOLD)
         verts = verts / (RESOLUTION - 1) * 2 * r - r  # индекс в мрежата -> координатите на TripoSR (Z нагоре)
         color = model.renderer.query_triplane(model.decoder, torch.from_numpy(verts).float(), code)["color"]
@@ -179,5 +150,4 @@ def main(frames_dir: Path, masks_file: Path, out: Path, strength: float = 1.0, t
 
 
 if __name__ == "__main__":
-    main(Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3]), float(sys.argv[4]) if len(sys.argv) > 4 else 1.0,
-         float(sys.argv[5]) if len(sys.argv) > 5 else None)  # fmt: skip
+    main(Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3]))

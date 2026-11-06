@@ -12,23 +12,19 @@ import { makeStyles, useColors } from '@/theme';
 // Сървърът проверява собственика при всяко извикване. Ключовете на AI услугите са на приложението и се задават на
 // сървъра, не тук.
 
-// Последният пълен списък: при повторно отваряне се показва веднага, докато пристигне новият.
-let lastUsers: OwnerUser[] | null = null;
-
 export default function Owner() {
   const session = useSession();
   const c = useColors();
   const s = useStyles();
   const owner = session?.kind === 'account' && !!session.user.owner;
   const [query, setQuery] = useState('');
-  const [users, setUsers] = useState<OwnerUser[] | null>(lastUsers);
+  const [users, setUsers] = useState<OwnerUser[] | null>(null);
   const [switching, setSwitching] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const search = useCallback((q: string) => {
     ownerUsers(q).then(
       (list) => {
-        if (!q) lastUsers = list;
         setUsers(list);
         setError(null);
       },
@@ -39,7 +35,6 @@ export default function Owner() {
   // Кратка пауза след въвеждането, преди да се попита сървърът.
   useEffect(() => {
     if (!owner) return;
-    if (!query) return search(''); // пълният списък веднага, без паузата за въвеждане
     const t = setTimeout(() => search(query), 350);
     return () => clearTimeout(t);
   }, [owner, query, search]);
@@ -66,7 +61,7 @@ export default function Owner() {
 
   return (
     <Screen>
-      <Header kicker="Собственик" title="Pro" sub="Кой има Pro" />
+      <Header kicker="Собственик" title="Pro" sub="Кой може да прави AI модели" />
       {error && <ErrorText>{error}</ErrorText>}
 
       <Appear index={1}>
@@ -102,7 +97,7 @@ export default function Owner() {
               ))}
             </Card>
           )}
-          <Small>Pro дава промени с AI и неограничени тестове за здравина и AR. Промяната важи веднага.</Small>
+          <Small>Pro профилите виждат „AI модел“ на началния екран. Промяната важи веднага.</Small>
         </Section>
       </Appear>
     </Screen>

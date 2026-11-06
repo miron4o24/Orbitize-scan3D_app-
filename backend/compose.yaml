@@ -11,7 +11,7 @@ services:
     volumes:
       - orbitize-data:/data
     restart: unless-stopped
-    # Пази машината, ако голямо сканиране иска повече памет от наличната; тогава задачата се проваля със съобщение за памет.
+    # Keep the host alive if a big scan needs more RAM than available; the job then fails with an OOM message.
     mem_limit: ${MEM_LIMIT:-4g}
 
 volumes:

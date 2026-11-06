@@ -13,6 +13,7 @@ import { font, makeStyles, radius, space, useColors } from '@/theme';
 // Какво дава Pro и как се получава. Цената идва от магазина, затова винаги е реалната.
 
 const BENEFITS: { icon: IconName; title: string }[] = [
+  { icon: 'sparkles', title: 'AI модели без ограничение' },
   { icon: 'color-wand-outline', title: 'Промени с AI и табелка с име' },
   { icon: 'barbell-outline', title: 'Тестове за здравина без ограничение' },
   { icon: 'cube-outline', title: 'Виж в стаята без ограничение' },

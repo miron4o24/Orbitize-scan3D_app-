@@ -12,10 +12,10 @@ import { ScanCard, ScanCardSkeleton } from '@/components/ScanCard';
 import { Stage, type Journey } from '@/components/Stage';
 import { ScanChoice } from '@/components/ScanChoice';
 import { ArrowLink, IconButton, Kicker, ScrollBar, Section, useScrollY } from '@/components/ui';
-import { errorText } from '@/lib/api';
+import { errorText, type Method } from '@/lib/api';
 import { refreshProfile } from '@/lib/auth';
 import { importVideo } from '@/lib/importVideo';
-import { PRO_INFO } from '@/lib/prefs';
+import { aiAvailable, aiTrial, PRO_INFO, SCAN_INFO } from '@/lib/prefs';
 import { openEntry, useLibrary } from '@/lib/library';
 import { checkProgress, useProgress } from '@/lib/progress';
 import { useSession } from '@/lib/session';
@@ -25,7 +25,7 @@ import { makeStyles, space, text, useColors } from '@/theme';
 // минава през трите стъпки.
 
 const JOURNEY: Journey = [
-  { title: 'Заснемете предмета', icon: 'phone-portrait-outline' },
+  { title: 'Обиколете предмета', icon: 'phone-portrait-outline' },
   { title: 'Моделът се изгражда сам', icon: 'sparkles-outline' },
   { title: 'Отпечатайте го в реален размер', icon: 'print-outline' },
 ];
@@ -43,6 +43,9 @@ export default function Home() {
   const firstTime = !loading && !hasScans;
   const progress = useProgress();
 
+  const canAi = !!user && aiAvailable(); // прочита се отново при всяка промяна на сесията (профила)
+  const aiTitle = `${PRO_INFO.single.label} · ${PRO_INFO.single.time}`;
+  const scanTitle = `${SCAN_INFO.label} · ${SCAN_INFO.time}`;
 
   useFocusEffect(
     useCallback(() => {
@@ -51,17 +54,30 @@ export default function Home() {
     }, []),
   );
 
-  async function upload() {
+  async function pickVideo(method: Method = 'scan') {
     if (importing) return;
     setImporting(true);
     try {
-      await importVideo();
+      await importVideo(method);
     } catch (e) {
       Alert.alert('Видеото не може да се използва', errorText(e));
     } finally {
       setImporting(false);
     }
   }
+
+  const scan = () => router.push('/capture');
+  const filmAi = () => router.push({ pathname: '/capture', params: { ai: '1' } });
+
+  // Видео, заснето по-рано: при наличие на двата начина потребителят казва кой.
+  const upload = () => {
+    if (!canAi) return pickVideo();
+    Alert.alert('Какъв модел?', undefined, [
+      { text: 'Отказ', style: 'cancel' },
+      { text: scanTitle, onPress: () => pickVideo('scan') },
+      { text: aiTitle, onPress: () => pickVideo('single') },
+    ]);
+  };
 
   return (
     <SafeAreaView style={s.fill} edges={['top']}>
@@ -94,15 +110,14 @@ export default function Home() {
               delay={60}
             />
             <Appear index={5} style={s.cta}>
-              <ScanChoice
-                highlight
-                title={PRO_INFO.part.label}
-                time={PRO_INFO.part.time}
-                sub="Снимки и мерки: копие 1:1 за печат"
-                icon="construct-outline"
-                onPress={() => router.push('/part')}
-              />
-              <ScanChoice title={PRO_INFO.single.label} time={PRO_INFO.single.time} sub="От видео: фигури и всичко друго" icon="videocam-outline" onPress={() => router.push('/capture')} />
+              {canAi ? (
+                <>
+                  <ScanChoice highlight title={PRO_INFO.single.label} time={PRO_INFO.single.time} sub={aiTrial() ? 'Един безплатен опит' : 'Най-бързият начин'} icon="sparkles" onPress={filmAi} />
+                  <ScanChoice title={SCAN_INFO.label} time={SCAN_INFO.time} sub="Може да е малко по-добър от AI модела" icon="videocam-outline" onPress={scan} />
+                </>
+              ) : (
+                <ScanChoice highlight title="Започни сканиране" time={SCAN_INFO.time} icon="videocam" onPress={scan} />
+              )}
               <ArrowLink label={importing ? 'Отваряне…' : 'Качи готово видео'} onPress={upload} style={s.ctaLink} />
               {!!user && !user.pro && <ArrowLink label="Виж Orbitize Pro" onPress={() => router.push('/pro')} style={s.ctaLink} />}
             </Appear>

@@ -9,21 +9,17 @@ import threading
 import time
 import zipfile
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Annotated, Literal
 
 import trimesh
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
-from PIL import Image, ImageOps
 from pydantic import BaseModel, Field
 
 from . import accounts as A
 from . import ai as AI
 from . import ar as AR
 from . import billing
-from . import cadfit as CF
 from . import community
-from . import db
 from . import edit as ED
 from . import jobs
 from . import mesh as M
@@ -42,7 +38,6 @@ if len(API_TOKEN) < 8:
     raise RuntimeError("Set API_TOKEN (at least 8 characters).")
 
 MIN_PHOTOS, MAX_PHOTOS = 8, 120
-PART_MIN_PHOTOS = 6  # точна част: шестте страни, посочени от потребителя, и колкото още иска (app/cadfit.py run_part)
 MAX_PHOTO_BYTES = 15 * 1024 * 1024
 MAX_VIDEO_BYTES = int(os.environ.get("MAX_VIDEO_MB", "600")) * 1024 * 1024
 MAX_CHUNK_BYTES = 16 * 1024 * 1024
@@ -82,32 +77,7 @@ def existing(job_id: str, p: Principal) -> dict:
 
 @app.get("/health")
 def health():
-    info = {"ok": True} | A.health_info()
-    try:
-        info["memory"] = jobs.memory()
-    except Exception:  # само сведение: никога не бива да спира проверката
-        pass
-    return info
-
-
-@app.post("/admin/restart", dependencies=[Depends(admin_only)])
-def admin_restart():
-    """Рестарт отдалеч, когато сървърът е задръстен (пълна памет): спира инструментите на текущите задачи и самия сървър;
-    scripts/run-server.ps1 го стартира отново след 10 секунди. Текущите задачи остават неуспешни и могат да се пуснат пак."""
-    with worker.lock:
-        procs = list(worker.procs.values())
-    for proc in procs:
-        try:
-            if os.name == "nt":  # с дъщерните му процеси
-                import subprocess
-
-                subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=30)
-            else:
-                proc.kill()
-        except Exception:
-            pass
-    threading.Timer(1.0, os._exit, args=(3,)).start()
-    return {"restarting": True, "stopped_tools": len(procs)}
+    return {"ok": True} | A.health_info()
 
 
 @app.post("/jobs")
@@ -173,17 +143,6 @@ def get_frames(job_id: str, p: Principal = Depends(principal)):
     )
 
 
-def as_jpeg(path: Path) -> bool:
-    """Снимка в друг формат (PNG, WebP от телефона), презаписана като JPEG; False, ако не е изображение."""
-    try:
-        with Image.open(path) as im:
-            im = ImageOps.exif_transpose(im).convert("RGB")
-        im.save(path, "JPEG", quality=95)
-        return True
-    except (OSError, ValueError):
-        return False
-
-
 @app.put("/jobs/{job_id}/photos/{name}")
 async def upload_photo(job_id: str, name: str, request: Request, p: Principal = Depends(principal)):
     if existing(job_id, p)["state"] not in ("uploading", "failed"):
@@ -207,7 +166,7 @@ async def upload_photo(job_id: str, name: str, request: Request, p: Principal = 
             f.write(chunk)
     with open(tmp, "rb") as f:
         is_jpeg = f.read(3) == b"\xff\xd8\xff"
-    if not is_jpeg and not as_jpeg(tmp):
+    if not is_jpeg:
         tmp.unlink()  # след затваряне: Windows не може да изтрие отворен файл
         raise HTTPException(400, "Файлът не е снимка (JPEG).")
     os.replace(tmp, photos / name)
@@ -269,46 +228,15 @@ class Tune(BaseModel):
     no_geo: bool = False  # гъсто съпоставяне без втория, проверяващ проход
     passes: int | None = Field(None, ge=1, le=3)  # проходите за гласуване при сливането
     features: int | None = Field(None, ge=2000, le=8192)  # най-много особености на кадър за решаващия алгоритъм
-    frames: int | None = Field(None, ge=16, le=48)  # колко кадъра от видеото
-    no_relief: bool = False  # без фините детайли от AI дълбочината (app/relief.py)
-    relief: float | None = Field(None, gt=0, le=4)  # колко силни да са те (1: обичайното)
-    relief_views: int | None = Field(None, ge=2, le=24)  # от колко кадъра
-    solve: Literal["room", "object"] | None = None  # по какво да се разположат кадрите, вместо да се реши от видеото
-    one_frame: bool = False  # направо моделът от един кадър (app/photo3d.py)
-    rounds: int | None = Field(None, ge=1, le=3)  # проходите на MobileSAM
-    iters: int | None = Field(None, ge=1, le=6)  # итерациите на гъстото съпоставяне
-    relief_faces: int | None = Field(None, ge=100_000, le=600_000)  # стените след детайла
-    full: bool = False  # без ограничението за време: за сравнение с пълното качество
-
-
-# Старото сканиране за около 35 минути е спряно за всички потребители; кодът му остава (app/pipeline.py run, Git етикет
-# standard-scan-35min), а CLASSIC_SCAN=1 в средата на сървъра го пуска отново.
-CLASSIC_SCAN = os.environ.get("CLASSIC_SCAN") == "1"
-
-
-@app.get("/admin/tune", dependencies=[Depends(admin_only)])
-def get_tune():
-    """Настройките по подразбиране на AI модела: променят се отдалечено, без ново инсталиране."""
-    return json.loads(db.get_setting("ai_tune") or "{}")
-
-
-@app.put("/admin/tune", dependencies=[Depends(admin_only)])
-def set_tune(t: Tune):
-    saved = t.model_dump(exclude_defaults=True)
-    db.set_setting("ai_tune", json.dumps(saved))
-    return saved
 
 
 class StartParams(BaseModel):
     flat_base: bool = True
     video_bytes: int | None = None  # размерът на файла в приложението, за да не се обработва никога наполовина качено видео
     quality: Literal["detailed", "quick"] = "detailed"  # quick: по-малко и по-малки кадри (pipeline.run)
-    # single: AI моделът, за всички профили. claude, photo: AI моделите на Pro, изискващи платени ключове (app/ai.py).
-    # scan, quick или express от по-старо приложение стават single, освен ако CLASSIC_SCAN е включен (start_job).
-    # part: точна част (инженерен режим, app/cadfit.py run_part): снимки + мерките на потребителя -> CAD модел 1:1.
-    method: Literal["scan", "express", "single", "claude", "photo", "part"] = "scan"
-    size_mm: list[Annotated[float, Field(ge=0, le=2000)]] | None = Field(None, max_length=3)  # дължина, ширина, височина (0: не е мерено)
-    notes: str = Field("", max_length=300)  # бележки на потребителя за частта ("отвор 5 мм")
+    # scan: сканирането за около 35 минути (за всички). Pro: single, AI моделът (claude, photo: AI моделите, изискващи
+    # платени ключове; app/ai.py). quick или express от по-старо приложение е scan (start_job).
+    method: Literal["scan", "express", "single", "claude", "photo"] = "scan"
     tune: Tune | None = None
     extend: str | None = Field(None, pattern=r"^[0-9a-f]{32}$")  # това видео добавя липсваща страна към този модел
 
@@ -331,24 +259,26 @@ def start_job(job_id: str, params: StartParams, p: Principal = Depends(principal
         params.tune = None
     if params.method == "express":
         params.method = "scan"
-    if params.method == "scan" and not CLASSIC_SCAN:  # и от по-стари приложения
-        params.method = "single"
     pro = params.method != "scan"
+    trial = False
     if pro:
-        if params.method not in ("single", "part") and not A.is_pro(p):
-            raise HTTPException(403, "Това е само за Pro профили.")
+        if not A.is_pro(p):
+            if params.method != "single":
+                raise HTTPException(403, "Това е само за Pro профили.")
+            PL.check(p, "ai", job_id)  # единственият AI модел на безплатен профил; 402, когато е използван
+            trial = True
         if not AI.available()[params.method]:
             raise HTTPException(503, "Тази AI услуга още не е включена.")
-    if not status["video_bytes"] and n < (1 if params.method in (*AI.METHODS, "part") else MIN_PHOTOS):
+    if not status["video_bytes"] and n < (1 if params.method in AI.METHODS else MIN_PHOTOS):
         raise HTTPException(400, f"Нужно е видео или поне {MIN_PHOTOS} снимки.")
-    if params.method == "part" and n < PART_MIN_PHOTOS:
-        raise HTTPException(400, f"Направете поне {PART_MIN_PHOTOS} снимки на частта от различни страни.")
     if (worker.ai_q if pro else worker.q).qsize() >= MAX_QUEUED:
         raise HTTPException(503, "Твърде много сканирания чакат в момента. Опитайте по-късно.")
     if params.extend:
         if not status["video_bytes"] or params.extend == job_id:
             raise HTTPException(400, "За допълнение е нужно ново видео.")
         add_frames_of(existing(params.extend, p), params.extend, job_id)
+    if trial:
+        PL.record(p, "ai", job_id)
     worker.submit(job_id, params.model_dump(exclude={"extend"}))
     return jobs.public(job_id)
 
@@ -407,35 +337,6 @@ def edit_job(job_id: str, params: EditParams, p: Principal = Depends(principal))
     return jobs.public(new)
 
 
-class CadParams(BaseModel):
-    title: str = Field("", max_length=100)  # името на новия модел
-
-
-@app.post("/jobs/{job_id}/cad")
-def cad_job(job_id: str, params: CadParams, p: Principal = Depends(principal)):
-    """Pro: чист CAD модел, проектиран от Gemini и проверен спрямо това сканиране (app/cadfit.py); сканирането остава.
-    Връща новата задача, която приложението следи като сканиране."""
-    if existing(job_id, p)["state"] != "done":
-        raise HTTPException(409, "Моделът още не е готов.")
-    if not A.is_pro(p):
-        raise HTTPException(403, "CAD моделите са само за Pro профили.")
-    if not AI.key("gemini"):
-        raise HTTPException(503, "Услугата за CAD модели още не е включена.")
-    if jobs.count() >= MAX_JOBS or worker.ai_q.qsize() >= MAX_QUEUED:
-        raise HTTPException(503, "Услугата е натоварена в момента. Опитайте след малко.")
-    new = jobs.create(owner=p.user_id)
-    try:
-        if p.user_id:
-            A.add_scan(new, p.user_id, params.title.strip())
-        CF.copy_source(jobs.job_dir(job_id), jobs.job_dir(new))
-    except Exception:
-        shutil.rmtree(jobs.job_dir(new), ignore_errors=True)
-        A.forget_scan(new)
-        raise
-    worker.submit(new, {"method": "cad", "source": job_id})
-    return jobs.public(new)
-
-
 class NameplateParams(BaseModel):
     text: str = Field(min_length=1, max_length=40)
     shape: Literal["round", "square"] = "square"
@@ -480,8 +381,7 @@ def delete_job(job_id: str, p: Principal = Depends(principal)):
 
 @app.get("/jobs/{job_id}/result.{fmt}")
 def result(job_id: str, fmt: str, longest_mm: float | None = Query(None, gt=0, le=2000), texture: bool = False,
-           smooth: int = Query(0, ge=0, le=M.MAX_SMOOTH), view: bool = False,
-           p: Principal = Depends(principal)):  # fmt: skip
+           smooth: int = Query(0, ge=0, le=M.MAX_SMOOTH), p: Principal = Depends(principal)):  # fmt: skip
     """texture: GLB с текстура от снимки, ако задачата има такава. Само при заявка: компилации отпреди това се
     провалят при изображения в GLB (React Native няма декодер на изображения за three.js). smooth: допълнителни
     заглаждания за печат (app/mesh.py smooth); не и за GLB с текстура, чиято повърхност е собствена."""
@@ -490,9 +390,6 @@ def result(job_id: str, fmt: str, longest_mm: float | None = Query(None, gt=0, l
     if existing(job_id, p)["state"] != "done":
         raise HTTPException(409, "Моделът още не е готов.")
     job = jobs.job_dir(job_id)
-    light = AR.view_file(job) if view and fmt == "glb" and texture and not longest_mm else None  # за преглед, не за печат
-    if light:
-        return Response(light.read_bytes(), media_type=M.MEDIA_TYPES[fmt])
     mesh = trimesh.load(job / "model.ply", force="mesh")
     textured = TX.load(job) if fmt == "glb" and texture else None
     if textured is None:

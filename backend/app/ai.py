@@ -34,18 +34,13 @@ from scipy.spatial import cKDTree
 from . import db
 from . import mesh as M
 from . import outline as OL
-from . import photo3d
 from . import pipeline as P
-from . import relief as RL
 from . import segment as S
-from . import sideview as SV
-from . import kind as KD
-from . import online3d
 from . import single3d
 from . import texture as TX
 
 METHODS = ("single", "claude", "photo")
-SERVICES = {"anthropic": "ANTHROPIC_API_KEY", "meshy": "MESHY_API_KEY", "huggingface": "HF_TOKEN", "gemini": "GEMINI_API_KEY"}
+SERVICES = {"anthropic": "ANTHROPIC_API_KEY", "meshy": "MESHY_API_KEY"}
 NEEDS = {"claude": "anthropic", "photo": "meshy"}
 
 MODEL = os.environ.get("AI_CLAUDE_MODEL", "claude-opus-5-5")
@@ -84,7 +79,7 @@ def available() -> dict:
     """Какво може да използва Pro на този сървър; express: сканирането за около 5 минути (app/pipeline.py), edit:
     текстови промени (app/edit.py; простите заявки работят без езиковия му модел), и двете винаги са налични."""
     paid = {method: bool(key(service)) for method, service in NEEDS.items()}
-    return {"express": True, "edit": True, "single": single3d.ready(), "cad": bool(key("gemini")), "part": bool(key("gemini"))} | paid
+    return {"express": True, "edit": True, "single": single3d.ready()} | paid
 
 
 # --- Кадри ----------------------------------------------------------------------------------------------------------
@@ -496,8 +491,7 @@ MIN_FRAMES = 10  # извлечени са по-малко кадри: TripoSR �
 # изрязването на всичките 48 го направи 24, а дрелка, чиито два кръга излязоха на две части (най-добрата част: 19
 # правилно разположени), отиде при модела от един кадър, петно със залепена дръжка на куфар (задача f4e8, 2026-11-01).
 MIN_PLACED = 12
-SINGLE_CANDIDATES = 12  # (само един кадър) кадри, в които се търси предметът: най-добрият се моделира, а друг може да покаже гърба му
-SINGLE_SIDE = 2560  # снимките влизат с толкова: надписите отпред идват направо от тях
+SINGLE_CANDIDATES = 8  # (само един кадър) кадри, в които се търси предметът; моделира се най-добрият
 
 
 def single(job: Path, work: Path, flat_base: bool, set_state: Callable[[str], None],
@@ -505,26 +499,14 @@ def single(job: Path, work: Path, flat_base: bool, set_state: Callable[[str], No
     """AI моделът от цялото видео; TripoSR от един кадър, когато кадрите не могат да се разположат в 3D (много кратко
     или размазано видео, едноцветен предмет върху едноцветна маса)."""
     photos, video = job / "photos", job / P.VIDEO
-    tune = {**(tune or {}), "started": time.time()}
-    frames_wanted = tune.get("frames") or AI_FRAMES
     if video.exists():
         try:
-            P.extract_frames(video, photos, work, sh, P.frames_to_take(job, frames_wanted))
+            P.extract_frames(video, photos, work, sh, P.frames_to_take(job, AI_FRAMES))
         except P.Failed as e:  # твърде кратко за решаващия алгоритъм за камерите; TripoSR иска един кадър
             P.note(job, f"AI model: {e}")
         P.merge_more_frames(job, photos)
-    elif tune.get("frames"):
-        photos = fewer_frames(work, photos, frames_wanted)  # тестова задача с вече избрани кадри
     found = sorted(photos.glob("*.jp*g"))
-    if found and online_ready() and not tune.get("offline"):
-        try:
-            return by_online(job, work, found, flat_base, set_state, sh)
-        except Exception as e:  # лимитът за деня, опашка, недостъпна услуга: моделът се прави тук, както преди
-            if type(e).__name__ == "Cancelled":
-                raise
-            P.note(job, f"online AI: not used ({e!r}); making the model on this server")
-            TX.clear(job)
-    if len(found) >= MIN_FRAMES and not tune.get("one_frame"):
+    if len(found) >= MIN_FRAMES:
         try:
             report = from_video(job, work, photos, len(found), flat_base, set_state, sh, tune)
             if report is not None:
@@ -536,122 +518,11 @@ def single(job: Path, work: Path, flat_base: bool, set_state: Callable[[str], No
             TX.clear(job)  # текстура, направена за този модел, ако се е стигнало дотам
     if not found:
         found = frames(job, sh)
-    elif tune.get("one_frame") and len(found) >= MIN_FRAMES:  # тестова задача: дебелината се мери както след видео
-        keep_thinnest(job, work, photos, P.object_masks(work, photos, sh), sh)
     set_state("reconstructing")
-    model, info = by_single(job, work, found, sh, float(tune.get("relief") or 1.0))
+    model, info = by_single(job, work, found, sh)
     set_state("cleaning")
-    two_sided = (work / photo3d.INFO).exists()
-    # Фигура, снимана отгоре, е наклонена спрямо пода на TripoSR: плоска основа би отрязала ъгъл от нея.
-    out = M.make_printable(model, float(model.bounds[0, 2]), flat_base and not two_sided,
-                           smoothing=0 if two_sided else M.LIGHT, max_faces=photo3d.FACES if two_sided else M.MAX_FACES)  # fmt: skip
-    if two_sided:
-        try:
-            P.note(job, f"one frame model: texture {photo3d.texture_model(job, work, out)}")
-        except (OSError, ValueError, KeyError) as e:
-            TX.clear(job)
-            P.note(job, f"one frame model: no texture ({e}); the vertex colours")
+    out = M.make_printable(model, float(model.bounds[0, 2]), flat_base)
     return P.finish(job, out) | {"photos_used": 1, "photos_total": len(found), "ai": "single"} | info
-
-
-# --- Безплатният онлайн AI модел (app/online3d.py: TRELLIS на видеокартите на Hugging Face) -----------------------------
-
-ONLINE_VIEWS = 4  # кадри от видеото, предметът от четирите страни: TRELLIS вижда и гърба, вместо да го досеща
-ONLINE_SIDE = 1024  # снимките се изпращат с толкова (TRELLIS работи с 518)
-ONLINE_PAUSE = "online_ai_until"  # настройка: до кога дневният безплатен лимит е свършил (не се опитва до тогава)
-
-
-def online_ready() -> bool:
-    # Изключено, освен ако изрично не е включено (HF_3D_USE=1): пробата с фигурата на Фродо (2026-11-06) даде друга фигура
-    # (по-малка глава, по-дълго тяло, измислено лице от снимка отстрани). TRELLIS рисува "такъв предмет", не копира този.
-    if os.environ.get("HF_3D_USE") != "1" or not key("huggingface"):
-        return False
-    try:
-        return time.time() >= float(db.get_setting(ONLINE_PAUSE) or 0)
-    except (TypeError, ValueError):
-        return True
-
-
-def by_online(job: Path, work: Path, found: list[Path], flat_base: bool, set_state: Callable[[str], None],
-              sh: Callable[[str, list], None]) -> dict:  # fmt: skip
-    """Моделът от TRELLIS онлайн: изрязаните кадри отиват при него, връща се модел с текстура, който се мащабира за печат,
-    а текстурата му се пази като на сканиран модел (app/texture.py), за да я показва приложението."""
-    set_state("reconstructing")
-    pick = work / "online"
-    pick.mkdir(parents=True, exist_ok=True)
-    chosen = spread(found, ONLINE_VIEWS) if len(found) > 1 else found[:1]
-    for f in chosen:
-        with Image.open(f) as im:
-            im = ImageOps.exif_transpose(im).convert("RGB")
-        im.thumbnail((ONLINE_SIDE, ONLINE_SIDE), Image.LANCZOS)
-        im.save(pick / f.name, "JPEG", quality=95)
-    masks = work / "online_masks.npz"
-    sh("finding the object", [sys.executable, S.__file__, pick, masks])
-    pictures = []
-    with np.load(masks) as z:
-        for f in sorted(pick.glob("*.jpg")):
-            if f.name not in z.files:
-                continue
-            with Image.open(f) as im:
-                rgb = im.convert("RGB")
-            alpha = Image.fromarray(z[f.name]).resize(rgb.size, Image.BILINEAR)
-            if (np.asarray(alpha) > 127).mean() < 0.01:  # предметът не е намерен в този кадър
-                continue
-            rgb.putalpha(alpha.point(lambda a: 255 if a > 127 else 0))  # изрязан фон: TRELLIS ползва прозрачността като очертание
-            pictures.append(pick / (f.stem + ".png"))
-            rgb.save(pictures[-1])
-    if not pictures:
-        raise P.Failed("no object in the pictures")
-    out_glb = work / "online.glb"
-    os.environ["HF_TOKEN"] = key("huggingface") or ""  # само за процеса на online3d (наследява средата); не се записва
-    try:
-        sh("ai modelling", [sys.executable, online3d.__file__, out_glb, *pictures])
-    except P.Failed:
-        info = json.loads(out_glb.with_suffix(".json").read_text()) if out_glb.with_suffix(".json").exists() else {}
-        if info.get("wait") is not None:  # дневният лимит: до тогава моделите се правят на сървъра без опит онлайн
-            db.set_setting(ONLINE_PAUSE, str(time.time() + float(info["wait"])))
-        raise P.Failed(f"online AI: {info.get('error', 'failed')}")
-    info = json.loads(out_glb.with_suffix(".json").read_text())
-    P.note(job, f"online AI: {info}")
-    set_state("cleaning")
-    model, texture = online_model(out_glb)
-    out = M.make_printable(model.copy(), float(model.bounds[0, 2]), flat_base, smoothing=0)
-    if texture is not None:
-        to_print = out.metadata["to_print"]
-        vertices, uv, faces, image = texture
-        TX.clear(job)
-        textured = trimesh.Trimesh(trimesh.transform_points(vertices, to_print), faces, process=False)
-        np.savez_compressed(job / TX.NPZ, count=1, vertices_0=textured.vertices.astype(np.float32),
-                            normals_0=textured.vertex_normals.astype(np.float32), uv_0=uv.astype(np.float32),
-                            faces_0=faces.astype(np.uint32))  # fmt: skip
-        image.convert("RGB").save(job / "texture_0.jpg", quality=92)
-    return P.finish(job, out) | {"photos_used": len(pictures), "photos_total": len(found), "ai": "single", "object": "",
-                                 "suitable": True, "real_mm": None, "online": True}  # fmt: skip
-
-
-def online_model(glb: Path) -> tuple[trimesh.Trimesh, tuple | None]:
-    """Мрежата от GLB на TRELLIS със Z нагоре и (точки, uv, стени, изображение) на текстурата ѝ, ако има."""
-    scene = trimesh.load(glb, file_type="glb", force="scene")
-    up = trimesh.transformations.rotation_matrix(np.pi / 2, [1, 0, 0])  # glTF с Y нагоре -> Z нагоре
-    pieces = []
-    for node in scene.graph.nodes_geometry:
-        transform, name = scene.graph[node]
-        g = scene.geometry[name]
-        if isinstance(g, trimesh.Trimesh) and len(g.faces):
-            g = g.copy()
-            g.apply_transform(up @ transform)
-            pieces.append(g)
-    if not pieces:
-        raise P.Failed("online AI returned an empty model")
-    biggest = max(pieces, key=lambda g: len(g.faces))
-    texture = None
-    uv = getattr(biggest.visual, "uv", None)
-    material = getattr(biggest.visual, "material", None)
-    image = getattr(material, "baseColorTexture", None) or getattr(material, "image", None)
-    if uv is not None and image is not None and len(uv) == len(biggest.vertices):
-        texture = (np.asarray(biggest.vertices), np.asarray(uv), np.asarray(biggest.faces), image)
-    shape = trimesh.Trimesh(biggest.vertices, biggest.faces, process=True)  # слети шевовете на текстурата: едно тяло
-    return shape, texture
 
 
 def from_video(job: Path, work: Path, photos: Path, n_photos: int, flat_base: bool,
@@ -661,103 +532,31 @@ def from_video(job: Path, work: Path, photos: Path, n_photos: int, flat_base: bo
     очертания; измерената между кадрите дълбочина (OpenMVS) с AI дълбочина (app/depth.py), слети върху нея
     (app/fuse.py): релефът, който очертанията не показват (ръб на основа, ръце, гънки, коса); текстурата от снимки
     върху него (app/outline.py). None, когато твърде малко кадри могат да се разположат."""
-    tune = tune or {}
-    all_masks = P.object_masks(work, photos, sh)
-    keep_thinnest(job, work, photos, all_masks, sh)
-    forced = tune.get("solve")
-    in_hand = forced == "object" if forced else P.camera_stayed_still(job, photos, all_masks)
-    best, placed, stray = None, 0, []
-    # Телефон, стоял на място, не може да разположи предмета по стаята. Телефон, който е обикалял, би трябвало да може,
-    # но предмет върху еднообразна маса може да се разположи само по собствените си особености.
-    for object_only in [in_hand] if in_hand or forced else [False, True]:
-        in_hand = object_only
-        try:
-            best, placed, stray, all_masks, _ = P.solve_cameras(job, work, photos, n_photos, sh, paired=True,
-                                                                mask_every=MASK_EVERY, features=tune.get("features"),
-                                                                known_masks=all_masks, object_only=object_only)  # fmt: skip
-        except P.Failed as e:  # COLMAP завършва с грешка, когато не може да започне: следващият опит още може да успее
-            P.note(job, f"camera solving: failed ({e}), object only: {object_only}")
-            best, placed, stray = None, 0, []
-            continue
-        if best is not None and placed >= MIN_PLACED:
-            break
-    return model_from_solved(job, work, photos, flat_base, set_state, sh, best, placed, stray, all_masks, tune, in_hand)
-
-
-THINNEST = "thinnest.json"
-TOO_THICK = 1.6  # пъти по-дебела форма от очертанията показва, че кадрите не са видели предмета отстрани (дистанционно: 3,4 пъти)
-
-
-def keep_thinnest(job: Path, work: Path, photos: Path, masks: dict[str, np.ndarray], sh: Callable[[str, list], None]) -> None:
-    """Колко тънък е предметът по очертанията на всички кадри (segment.thinnest), за проверката на формата и за модела от един
-    кадър, който иначе вижда само 12 от тях; при плосък предмет и страничният му профил от кадрите отстрани (app/sideview.py)."""
-    thin = S.thinnest(masks)
-    (work / THINNEST).write_text(json.dumps(thin))
-    P.note(job, f"thickness from the outlines: {thin if thin is None else round(thin, 3)} of the length")
-    if thin is None or thin > photo3d.FLAT_BODY or not (work / "photo_masks.npz").exists():
-        return
-    try:
-        sh("finding the object", [sys.executable, SV.__file__, photos, work / "photo_masks.npz", str(thin), work / SV.FILE])
-    except P.Failed as e:  # моделът пак става, с височините на AI
-        P.note(job, f"side view: failed ({e})")
-
-
-def read_thinnest(work: Path) -> float | None:
-    file = work / THINNEST
-    return json.loads(file.read_text()) if file.exists() else None
-
-
-def shape_too_thick(job: Path, views: M.Views, masks: list[np.ndarray], cloud: M.Cloud, agree: float, thin: float | None) -> float | None:
-    """Дебелината на формата от разположените кадри, ако е много над измерената от всички очертания, иначе None. Плоски предмети:
-    кадрите на дистанционно с еднообразен черен гръб се разполагат само около лицето и формата излиза клин, 47 вместо 13 мм."""
-    if thin is None or thin > photo3d.FLAT_BODY:
-        return None
-    found = M.hull_volume(views, masks, S.MASK_SCALE, cloud, agree=agree)
-    if found is None:
-        return None
-    frac, axes, _ = found
-    got = S.points_ratio(M.voxels_inside(frac, axes, agree)[1])
-    P.note(job, f"AI model: shape thickness {got:.3f} of the length, outlines {thin:.3f}")
-    return got if got > TOO_THICK * thin else None
+    best, placed, stray, all_masks, _ = P.solve_cameras(job, work, photos, n_photos, sh, paired=True,
+                                                        mask_every=MASK_EVERY, features=(tune or {}).get("features"))  # fmt: skip
+    return model_from_solved(job, work, photos, flat_base, set_state, sh, best, placed, stray, all_masks, tune)
 
 
 ROUNDS = 2  # проходи на MobileSAM, всеки с подсказки от формата на очертанията от предишния
-# Обещаното време. Когато не стига, отпада това, което се усеща най-малко: вторият проход на MobileSAM, проверяващият
-# проход на гъстото съпоставяне и част от кадрите на детайла. Времената са от дрелка с 47 кадъра на сървъра.
-# До 8 минути (с 15 секунди резерв): при 5 минути дрелката и камерата губеха проходи, които личат по модела.
-TARGET_S = 465
-DENSE_S = 3.0  # секунди гъсто съпоставяне на кадър
-AFTER_DENSE_S = 230  # от края на гъстото съпоставяне до края на задачата (фигура с 42 кадъра: 240 s, а с 150 излезе 527 s вместо 480)
-SECOND_ROUND_S = 15
-DETAIL_S = 60  # детайлът от всички кадри и текстурата след него
-
-
-def seconds_left(tune: dict) -> float:
-    """Колко остава до обещаното време; безкрайно за тестова задача, която сравнява пълното качество (tune "full")."""
-    if tune.get("full") or "started" not in tune:
-        return float("inf")
-    return TARGET_S - (time.time() - tune["started"])
 
 
 def model_from_solved(job: Path, work: Path, photos: Path, flat_base: bool, set_state: Callable[[str], None],
                       sh: Callable[[str, list], None], best: Path | None, placed: int, stray: list[str],
-                      all_masks: dict[str, np.ndarray], tune: dict | None = None, in_hand: bool = False) -> dict | None:  # fmt: skip
+                      all_masks: dict[str, np.ndarray], tune: dict | None = None) -> dict | None:  # fmt: skip
     """from_video след камерите: разположени кадри (`placed` от тях съгласувани с очертанията на търсача на предмета,
     `stray` несъгласувани) и маските на търсача. Те решават само откъде да се започне. При дрелка върху куфар той
     включваше куфара, дръжката му, стол или кутия отзад или пропускаше дръжката или патронника в 26 от 48 кадъра с
     напълно верни камери (едно цяло, задача 988c): съдени по тези маски, 26-те отпадаха, а формата се правеше от 22
     кадъра, някои от тях все още грешни, с издълбана до стъбло дръжка. Затова формата от съгласуваните кадри дава
     подсказки на MobileSAM за всеки разположен кадър (outlines_from_3d, ROUNDS пъти) и отпадат само кадри, чиито
-    уточнени очертания все още се разминават с другите. in_hand: предметът е държан в ръка: няма маса, а сензорът за
-    гравитация на телефона не казва нищо за него."""
+    уточнени очертания все още се разминават с другите."""
     if best is None or placed < MIN_PLACED:
         P.note(job, f"AI model: only {placed} of the {len(all_masks)} frames with the object cut out placed in 3D; "
                "making it from one frame")  # fmt: skip
         return None
     tune = {k: v for k, v in (tune or {}).items() if v}  # Tune от app/main.py: настройките на тестова задача
-    shown = {k: v for k, v in tune.items() if k != "started"}
-    if shown:
-        P.note(job, f"AI model: test settings {shown}")
+    if tune:
+        P.note(job, f"AI model: test settings {tune}")
     # Същите 14 минути, по-остър печат: при дрелка логото и етикетът излязоха по-ясни, с по-малко невидени стени (11%
     # -> 7%).
     if not tune.get("no_refine"):
@@ -780,13 +579,12 @@ def model_from_solved(job: Path, work: Path, photos: Path, flat_base: bool, set_
         masks = [turned[0][n] for n in views.names]
     agreed = np.array([n in all_masks and n not in stray for n in views.names])
 
-    up = None if in_hand else P.gravity_up(job, views)
+    up = P.gravity_up(job, views)
     pts, cols = P.read_points_bin(dense / "sparse" / "points3D.bin")
     first = M.subset(views, agreed)
     first_masks = [m for m, a in zip(masks, agreed) if a]
     try:
-        cloud = M.clean_cloud(pts, None, np.c_[cols / 255.0, np.ones(len(cols))], first, first_masks, S.MASK_SCALE, up,
-                              find_table=not in_hand)  # fmt: skip
+        cloud = M.clean_cloud(pts, None, np.c_[cols / 255.0, np.ones(len(cols))], first, first_masks, S.MASK_SCALE, up)
         P.note(job, f"AI model: {len(views)} frames placed, {placed} agreeing with the object finder's outlines, "
                f"{len(cloud.points)} of the solver's points on the object")  # fmt: skip
     except M.MeshError:  # твърде малко точки върху едноцветен предмет: само очертанията го разполагат
@@ -795,9 +593,7 @@ def model_from_solved(job: Path, work: Path, photos: Path, flat_base: bool, set_
             raise P.Failed("the frames' outlines give no shape")
         P.note(job, f"AI model: {len(views)} frames placed, {placed} agreeing, few points on the object")
 
-    rest = DENSE_S * len(views) + AFTER_DENSE_S
-    rounds = tune.get("rounds") or (ROUNDS if seconds_left(tune) >= rest + SECOND_ROUND_S else 1)
-    masks, keep, sharpened = outlines_from_3d(job, work, dense, views, masks, agreed, cloud, pts, sh, rounds)
+    masks, keep, sharpened = outlines_from_3d(job, work, dense, views, masks, agreed, cloud, pts, sh)
     if keep.sum() < MIN_PLACED:
         P.note(job, f"AI model: only {keep.sum()} frames agree on the object's outline; making it from one frame")
         return None
@@ -809,30 +605,14 @@ def model_from_solved(job: Path, work: Path, photos: Path, flat_base: bool, set_
         views, masks = M.subset(views, keep), [m for m, k in zip(masks, keep) if k]
     images = [dense / "images" / n for n in views.names]
     agree = tune.get("agree") or (OL.AGREE_SHARP if sharpened else M.HULL_AGREE)
-    wedge = shape_too_thick(job, views, masks, cloud, agree, read_thinnest(work))
-    if wedge is not None:
-        P.note(job, f"AI model: the shape is {wedge:.3f} thick for its length and the outlines show {read_thinnest(work):.3f}: "
-               "the frames did not see it from the side; making it from one frame")  # fmt: skip
-        return None
-    geometric = not tune.get("no_geo") and seconds_left(tune) >= rest
-    P.note(job, f"AI model: {seconds_left(tune):.0f} s left of the promised time, {rounds} rounds of outlines, "
-           f"second pass of dense matching: {geometric}")  # fmt: skip
 
     surface, cloud = OL.measured(job, work, dense, views, masks, cloud, up, agree, set_state, sh, side=side,
                                  voxel=tune.get("voxel", OL.VOXEL), fixed="agree" in tune,
-                                 table=not in_hand and not tune.get("no_table"), flap=tune.get("flap"), wide=tune.get("wide_dense", False),
-                                 geometric=geometric, passes=tune.get("passes"), iters=tune.get("iters"))  # fmt: skip
+                                 table=not tune.get("no_table"), flap=tune.get("flap"), wide=tune.get("wide_dense", False),
+                                 geometric=not tune.get("no_geo"), passes=tune.get("passes"))  # fmt: skip
     set_state("cleaning")
     M.paint(surface, views, images, cloud.to_up)
-    out = M.make_printable(surface, M.floor_z(cloud), flat_base and not in_hand)
-    out = with_detail(job, work, dense / "images", views, masks, out, cloud, sh, tune)
-    if not tune.get("no_pits"):  # пукнатини, дупки и прегъвки, каквито истинският предмет няма (app/mesh.py)
-        out, share = M.closed_cracks(out)
-        P.note(job, f"AI model: cracks and holes the rolling ball cannot reach filled at {share:.1%} of the points")
-        out, share = M.filled_pits(out)
-        P.note(job, f"AI model: small pits filled at {share:.1%} of the points")
-        out, before, left = M.smoothed_folds(out)
-        P.note(job, f"AI model: folded edges smoothed: {before} -> {left}")
+    out = M.make_printable(surface, M.floor_z(cloud), flat_base)
     used = set(views.names)
     posed, texture_masks = texture_frames(work, solved, [n for n in all_masks if n not in used], all_masks, sh)
     P.photo_texture(job, work, photos, posed, out, cloud, sh, texture_masks)
@@ -842,54 +622,15 @@ def model_from_solved(job: Path, work: Path, photos: Path, flat_base: bool, set_
                                  "real_mm": None}  # fmt: skip
 
 
-def with_detail(job: Path, work: Path, images: Path, views: M.Views, masks: list[np.ndarray], out: trimesh.Trimesh,
-                cloud: M.Cloud, sh: Callable[[str, list], None], tune: dict) -> trimesh.Trimesh:  # fmt: skip
-    """Моделът за печат с фините детайли от AI дълбочината (app/relief.py); какъвто е, ако това се провали."""
-    if tune.get("no_relief"):
-        return out
-    to_world = np.eye(4)
-    to_world[:3, :3] = cloud.to_up.T
-    to_world = to_world @ np.linalg.inv(out.metadata["to_print"])
-    inputs, result = work / "relief_inputs.npz", work / "relief.ply"
-    colors = out.visual.vertex_colors if out.visual.kind == "vertex" else np.full((len(out.vertices), 4), 160, np.uint8)
-    np.savez(inputs, names=np.array(views.names), R=views.R, t=views.t, K=views.K, mask_scale=S.MASK_SCALE,
-             vertices=out.vertices, faces=out.faces, colors=colors, to_world=to_world, strength=tune.get("relief") or 1.0,
-             views=tune.get("relief_views") or (RL.VIEWS if seconds_left(tune) >= DETAIL_S else RL.FEWER_VIEWS),
-             faces_out=tune.get("relief_faces") or RL.FACES,
-             **{f"masks_{i}": m for i, m in enumerate(masks)})  # fmt: skip
-    try:
-        sh("adding detail", [sys.executable, RL.__file__, images, inputs, result])
-        info = json.loads(result.with_suffix(".json").read_text())
-        fine = trimesh.load(result, force="mesh")
-    except (P.Failed, OSError, ValueError, KeyError) as e:
-        P.note(job, f"fine detail: failed ({e}); the model without it")
-        return out
-    fine.metadata["to_print"] = out.metadata["to_print"]
-    P.note(job, f"fine detail: {info}")
-    return fine
-
-
-def fewer_frames(work: Path, photos: Path, count: int) -> Path:
-    """Копие с равномерно избрани кадри (само за тестова задача, чиито кадри трябва да останат)."""
-    names = sorted(p.name for p in photos.glob("*.jp*g"))
-    if len(names) <= count:
-        return photos
-    fewer = work / "fewer_frames"
-    fewer.mkdir(exist_ok=True)
-    for i in np.linspace(0, len(names) - 1, count).round().astype(int):
-        shutil.copy(photos / names[i], fewer / names[i])
-    return fewer
-
-
 def outlines_from_3d(job: Path, work: Path, dense: Path, views: M.Views, masks: list[np.ndarray], agreed: np.ndarray,
-                     cloud: M.Cloud, pts: np.ndarray, sh, rounds: int = ROUNDS) -> tuple[list[np.ndarray], np.ndarray, bool]:  # fmt: skip
+                     cloud: M.Cloud, pts: np.ndarray, sh) -> tuple[list[np.ndarray], np.ndarray, bool]:  # fmt: skip
     """Очертанията на предмета във всеки разположен кадър (коригирани `views`, `masks` на търсача): формата от кадрите
     със съгласувани очертания (първоначално `agreed`) дава подсказки на MobileSAM за всички
     (pipeline.sharpened_masks); кадрите с нови очертания, съгласувани с другите (mesh.consistent_frames), дават
     формата за следващия кръг. Връща (маските, кои кадри са съгласувани, дали се използват тези на MobileSAM);
     собствените на търсача, когато MobileSAM не може да се използва."""
     current, trusted, sharpened = list(masks), agreed.copy(), False
-    for round_ in range(rounds):
+    for round_ in range(ROUNDS):
         idx = np.flatnonzero(trusted)
         found = M.hull_volume(M.subset(views, trusted), [current[i] for i in idx], S.MASK_SCALE, cloud)
         if found is None:
@@ -940,34 +681,18 @@ def outline_cloud(views: M.Views, masks: list[np.ndarray], up: np.ndarray | None
     return M.Cloud(pts, np.zeros_like(pts), np.ones((len(pts), 4)), None, to_up)
 
 
-def by_single(job: Path, work: Path, found: list[Path], sh: Callable[[str, list], None],
-              strength: float = 1.0) -> tuple[trimesh.Trimesh, dict]:  # fmt: skip
+def by_single(job: Path, work: Path, found: list[Path], sh: Callable[[str, list], None]) -> tuple[trimesh.Trimesh, dict]:
     pick = work / "single"
     pick.mkdir(parents=True, exist_ok=True)
     for f in spread(found, SINGLE_CANDIDATES):
-        with Image.open(f) as im:  # снимка от телефон: изправена според данните в нея
-            im = ImageOps.exif_transpose(im).convert("RGB")
-        im.thumbnail((SINGLE_SIDE, SINGLE_SIDE), Image.LANCZOS)
-        im.save(pick / f.name, "JPEG", quality=95)
+        shutil.copy(f, pick / f.name)
     masks, out = work / "single_masks.npz", work / "single.ply"
     sh("finding the object", [sys.executable, S.__file__, pick, masks])
-    thin = read_thinnest(work)
-    kind = {}
-    if len(found) == 1 and KD.ready():  # една снимка: какъв е предметът решава как да се направи (видеото си мери формата)
-        try:
-            sh("finding the object", [sys.executable, KD.__file__, next(pick.iterdir()), masks, work / single3d.KIND_FILE])
-            if (work / single3d.KIND_FILE).exists():
-                kind = json.loads((work / single3d.KIND_FILE).read_text(encoding="utf-8"))
-                P.note(job, f"object: {kind.get('prompt')} ({kind.get('name')}), made as {kind.get('group')}: {kind.get('why')}")
-        except P.Failed as e:
-            P.note(job, f"object kind: failed ({e})")
-    sh("ai modelling", [sys.executable, single3d.__file__, pick, masks, out, str(strength), *([] if thin is None else [str(thin)])])
+    sh("ai modelling", [sys.executable, single3d.__file__, pick, masks, out])
     info = json.loads(out.with_suffix(".json").read_text())
-    # Без сливане на върхове: двата слоя се допират по ръба и слетите точки го разпадаха на хиляди парчета.
-    model = trimesh.load(out, force="mesh", process=False)
-    model.metadata.pop("_ply_raw", None)
-    P.note(job, f"single frame AI: {info}")
-    return model, {"object": str(kind.get("name") or ""), "suitable": True, "real_mm": None}  # името става заглавие в приложението
+    model = trimesh.load(out, force="mesh")
+    P.note(job, f"single frame AI: from {info['frame']}, {info['faces']} faces")
+    return model, {"object": "", "suitable": True, "real_mm": None}
 
 
 # --- Задачата -------------------------------------------------------------------------------------------------------
@@ -985,8 +710,7 @@ def run(job: Path, method: str, flat_base: bool, set_state: Callable[[str], None
     TX.clear(job)  # текстура от снимки от сканиране, ако задачата преди е била сканиране
     set_state("reconstructing")
     if method == "single":
-        saved = json.loads(db.get_setting("ai_tune") or "{}")  # настройките по подразбиране (PUT /admin/tune)
-        return single(job, work, flat_base, set_state, sh, saved | (tune or {}))
+        return single(job, work, flat_base, set_state, sh, tune)
     found = frames(job, sh)
     P.note(job, f"ai ({method}): {len(found)} frames")
     if method == "claude":

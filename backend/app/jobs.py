@@ -12,7 +12,7 @@ import time
 import uuid
 from pathlib import Path
 
-from . import ai, cadfit, edit, notify, pipeline, truesize
+from . import ai, edit, notify, pipeline
 from .mesh import MeshError
 
 DATA = Path(os.environ.get("DATA_DIR", "data")).resolve()
@@ -66,34 +66,6 @@ def kill(proc: subprocess.Popen):
         proc.kill()
     else:
         os.killpg(proc.pid, signal.SIGKILL)
-
-
-def memory() -> dict:
-    """Паметта на машината в GB (за /health): свободна, свободна за заделяне (с файла за страниране) и колко държи този
-    сървър. Пълна памет спря сканиранията и отдалечения вход на 2026-11-06, без да личи отвън."""
-    if not WINDOWS:
-        return {}
-    import ctypes
-    from ctypes import wintypes
-
-    class Status(ctypes.Structure):
-        _fields_ = [("length", wintypes.DWORD), ("load", wintypes.DWORD), ("total", ctypes.c_ulonglong),
-                    ("free", ctypes.c_ulonglong), ("page_total", ctypes.c_ulonglong), ("page_free", ctypes.c_ulonglong),
-                    ("virtual_total", ctypes.c_ulonglong), ("virtual_free", ctypes.c_ulonglong), ("extended", ctypes.c_ulonglong)]  # fmt: skip
-
-    class Counters(ctypes.Structure):
-        _fields_ = [("cb", wintypes.DWORD), ("faults", wintypes.DWORD)] + [(n, ctypes.c_size_t) for n in (
-            "peak_ws", "ws", "peak_paged", "paged", "peak_nonpaged", "nonpaged", "private", "peak_private")]  # fmt: skip
-
-    s = Status()
-    s.length = ctypes.sizeof(Status)
-    ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(s))
-    c = Counters()
-    c.cb = ctypes.sizeof(Counters)
-    ctypes.windll.psapi.GetProcessMemoryInfo(ctypes.windll.kernel32.GetCurrentProcess(), ctypes.byref(c), c.cb)
-    gb = 1024**3
-    return {"total_gb": round(s.total / gb, 1), "free_gb": round(s.free / gb, 1), "commit_free_gb": round(s.page_free / gb, 1),
-            "server_gb": round(c.private / gb, 1)}  # fmt: skip
 
 
 def low_priority(low: bool) -> dict:
@@ -232,7 +204,7 @@ def cleanup():
                 (d / "photos").mkdir(exist_ok=True)
 
 
-PRO_METHODS = ("express", "edit", "cad", "part", *ai.METHODS)  # edit: текстова промяна на модел (app/edit.py)
+PRO_METHODS = ("express", "edit", *ai.METHODS)  # edit: текстова промяна на модел (app/edit.py)
 
 
 def is_pro(params: dict | None) -> bool:
@@ -323,15 +295,9 @@ class Worker:
         try:
             if method == "edit":
                 report = edit.run(d, params, set_state, sh)
-            elif method == "cad":  # чист CAD модел от готово сканиране (app/cadfit.py)
-                report = cadfit.run(d, params, set_state, lambda step: self._step(job_id, step))
-            elif method == "part":  # точна част: снимки и мерки (app/cadfit.py)
-                report = cadfit.run_part(d, params, set_state, sh, lambda step: self._step(job_id, step))
             elif method in ai.METHODS:
                 report = ai.run(d, method, bool(params.get("flat_base", True)), set_state, sh,
                                 lambda step: self._step(job_id, step), params.get("tune"))  # fmt: skip
-                if params.get("size_mm"):  # точна част: размерът по трите оси по мерките на потребителя (app/truesize.py)
-                    report = report | truesize.apply(d, params["size_mm"], sh)
             else:
                 report = pipeline.run(d, bool(params.get("flat_base", True)), set_state, sh,
                                       quick=params.get("quality") == "quick", express=method == "express")  # fmt: skip
@@ -341,9 +307,6 @@ class Worker:
                 thumbnail(job_id)  # изображението на модела, създадено сега, а не при първата заявка от списък
             except OSError:
                 pass
-            from . import ar  # файлът за преглед се прави сега, за да се отвори моделът веднага
-
-            ar.view_file(d)
         except Cancelled:
             pass
         except (pipeline.Failed, MeshError) as e:

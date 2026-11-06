@@ -64,7 +64,6 @@ SFM_ENOUGH = 0.85
 # нея (медиана, от размера на предмета; при дрелка 0,2%) и поне половината кадри са влезли в нея; иначе Поасон върху
 # гъстите точки.
 FUSED_OFF = 0.01
-OBJECT_MARGIN = 6  # пиксела на маската: около предмета, за особености по ръба му (object_only в solve_cameras)
 
 
 class Failed(Exception):
@@ -592,19 +591,14 @@ def run(
 def photo_texture(job: Path, work: Path, photos: Path, best: Path, out: trimesh.Trimesh, cloud: M.Cloud, sh,
                   all_masks: dict[str, np.ndarray]):  # fmt: skip
     """Текстурата от снимки на модела за печат (app/texture.py); при неуспех той запазва цветовете на върховете си."""
-    names = read_views(best).names
-    gain = TX.white_gain(photos, names, all_masks)
-    note(job, f"white balance: red, green, blue x {gain.round(2).tolist()}")
     try:
         info = TX.texture_model(job, work, photos, best, out, out.metadata["to_print"], cloud.to_up, sh, COLMAP,
-                                THREADS, names, all_masks, gain)  # fmt: skip
+                                THREADS, read_views(best).names, all_masks)  # fmt: skip
         note(job, f"photo texture: from the sharpest {info['frames']} frames, {info['textures']} pixels, "
              f"{info['unseen']:.1%} of the faces seen by no frame (painted); seams levelled: {info['levelled']}")  # fmt: skip
     except (Failed, OSError, ValueError, KeyError) as e:
         TX.clear(job)
         note(job, f"photo texture: failed ({e}); the model keeps its vertex colours")
-    if out.visual.kind == "vertex":
-        out.visual.vertex_colors = TX.balanced(np.asarray(out.visual.vertex_colors), gain)
 
 
 def drop_stray(work: Path, best: Path, stray: list[str], sh, name: str = "clean") -> Path:
@@ -621,14 +615,7 @@ def drop_stray(work: Path, best: Path, stray: list[str], sh, name: str = "clean"
     return clean
 
 
-# Опити на глобалния алгоритъм върху едни и същи съвпадения. Един: COLMAP на сървъра не познава --random_seed (задача 8b3ac7ca:
-# "unrecognised option"), а без него всеки опит дава същото.
-GLOBAL_TRIES = 1
 PAIR_NEAR = 5  # (съпоставяне по двойки) всеки кадър със следващите толкова, в реда на заснемане
-# Под този дял разположени кадри (от тези с изрязан предмет) двойките се допълват до всеки кадър с всеки и решаването се повтаря.
-# Фигура върху куфар (задача a1e45bc0): 19 от 48 кадъра само отпред и отделно парче от 21 отзад, без общи кадри, а гърбът на модела
-# излезе бучка с цвета на куфара.
-RETRY_PLACED = 0.7
 PAIR_EVERY = 2  # и всеки толкова-ти кадър с всеки друг такъв (2, не 3: двойно повече връзки между нисък и висок кръг)
 
 
@@ -642,68 +629,21 @@ def match_pairs(names: list[str], near: int = PAIR_NEAR, every: int = PAIR_EVERY
     return [(names[i], names[j]) for i, j in sorted(pairs)]
 
 
-def object_masks(work: Path, photos: Path, sh: Callable[[str, list], None]) -> dict[str, np.ndarray]:
-    """Предметът във всеки кадър (AI маски, app/segment.py)."""
-    found = work / "photo_masks.npz"
-    sh("finding the object", [sys.executable, S.__file__, photos, found])
-    with np.load(found) as npz:
-        return {name: npz[name] for name in npz.files}
-
-
-def camera_stayed_still(job: Path, photos: Path, masks: dict[str, np.ndarray]) -> bool:
-    """Дали телефонът е стоял на място, а предметът се е въртял в ръка: тогава фонът остава същият през видеото."""
-    names = sorted(masks)
-    picked = names[:: max(1, len(names) // V.STILL_FRAMES)][: V.STILL_FRAMES]
-    grey, cover = [], []
-    size = None
-    for name in picked:
-        with Image.open(photos / name) as im:
-            small = im.convert("L")
-            small.thumbnail((V.STILL_SIDE, V.STILL_SIDE))
-            size = size or small.size  # кадрите на добавена страна са от друго видео и може да са с друг размер
-            grey.append(np.asarray(small.resize(size), np.float32))
-        cover.append(np.asarray(Image.fromarray(masks[name]).resize(size, Image.BILINEAR)) > 40)
-    score = V.background_stays(grey, cover)
-    still = score >= V.STILL_SCORE
-    note(job, f"camera: the background stays the same by {score:.2f} through the video: "
-         + ("the phone stood still and the object turned" if still else "the phone moved around the object"))  # fmt: skip
-    return still
-
-
-def feature_masks(work: Path, photos: Path, masks: dict[str, np.ndarray]) -> Path:
-    """Маските за feature_extractor на COLMAP (кадърът + .png, черно: без особености): предметът, малко разширен."""
-    folder = work / "feature_masks"
-    folder.mkdir(exist_ok=True)
-    for name, m in masks.items():
-        with Image.open(photos / name) as im:
-            size = im.size
-        wide = ndimage.binary_dilation(m > 127, iterations=OBJECT_MARGIN)
-        Image.fromarray(wide.astype(np.uint8) * 255).resize(size, Image.NEAREST).save(folder / f"{name}.png")
-    return folder
-
-
 def solve_cameras(job: Path, work: Path, photos: Path, n_photos: int, sh: Callable[[str, list], None],
-                  paired: bool = False, mask_every: int = 1, features: int | None = None,
-                  known_masks: dict[str, np.ndarray] | None = None, object_only: bool = False):  # fmt: skip
+                  paired: bool = False, mask_every: int = 1, features: int | None = None):  # fmt: skip
     """Откъде е заснет всеки кадър (COLMAP) и предметът във всеки кадър (AI маски, app/segment.py). paired: съпоставя
     двойките от match_pairs, а не всеки кадър с всеки (повече кадри за същото време). mask_every: изрязва предмета
     само от всеки толкова-ти кадър; останалите само помагат да се разположат и се броят за отклонени. Връща (папката
     на най-добрия модел на камерите или None, колко от кадрите му с маска са съгласувани с очертанията на предмета,
     кадрите, които не са или нямат маска, {име на кадър: маска}, файла на маските). features: най-много на кадър,
-    вместо 8192 на COLMAP. known_masks: вече намерените маски. object_only: особености само върху предмета (нужни са
-    known_masks): когато телефонът стои, а предметът се върти в ръка, фонът казва на алгоритъма, че камерата стои, а
-    предметът в кадрите не пасва на нищо (дистанционно: 48 от 48 разположени, 0 съгласувани с очертанието, 2026-11-05)."""
+    вместо 8192 на COLMAP."""
     sparse, db = work / "sparse", work / "db.db"
-    if known_masks is not None:  # може да е втори опит
-        shutil.rmtree(sparse, ignore_errors=True)
-        db.unlink(missing_ok=True)
     sparse.mkdir(parents=True, exist_ok=True)
     ext, match = colmap_prefixes()
     sh("feature extraction", [COLMAP, "feature_extractor", "--database_path", db, "--image_path", photos,
         "--ImageReader.single_camera", "1", f"--{ext}.use_gpu", "0",
         f"--{ext}.max_image_size", MAX_IMAGE, f"--{ext}.num_threads", THREADS,
-        "--SiftExtraction.peak_threshold", "0.0015" if object_only else "0.002",
-        *(["--ImageReader.mask_path", feature_masks(work, photos, known_masks)] if object_only else []),
+        "--SiftExtraction.peak_threshold", "0.002",
         *(["--SiftExtraction.max_num_features", str(features)] if features else [])])  # fmt: skip
     # По-нисък праг на пика: повече особености по еднообразни повърхности (велурена възглавница: 80 от 80 разположени
     # кадъра вместо 70). Всеки кадър с всеки друг: затваря кръга и свързва ниския кръг с високия. Без насочвано
@@ -723,86 +663,52 @@ def solve_cameras(job: Path, work: Path, photos: Path, n_photos: int, sh: Callab
     # кръговете имат малко общи особености; глобалният (COLMAP 4) разполага повече кадри, но при едноцветна
     # възглавница веднъж върна модел, чиито камери дори не гледаха към предмета. Всеки модел се оценява по кадрите,
     # които наистина сочат към предмета.
-    def solve(tag: str = "") -> None:
-        """Двата алгоритъма върху съвпаденията в базата, в sparse/incremental<tag> и sparse/global<tag>, и съединените им части."""
-        incremental, global_ = f"incremental{tag}", f"global{tag}"
-        (sparse / incremental).mkdir()
-        (sparse / global_).mkdir()
-        # Съседните видео кадри са само на няколко градуса, затова се позволява по-малък ъгъл за първата двойка и се
-        # приемат кадри с по-малко (но проверени) съвпадения, защото размазването струва особености.
-        sh("camera solving", [COLMAP, "mapper", "--database_path", db, "--image_path", photos,
-            "--output_path", sparse / incremental, "--Mapper.num_threads", THREADS,
-            "--Mapper.init_min_tri_angle", "8", "--Mapper.abs_pose_min_num_inliers", "12" if object_only else "20",
-            *(["--Mapper.init_min_num_inliers", "40"] if object_only else [])])  # fmt: skip
-        pieces = [read_views(d) for d in sorted((sparse / incremental).iterdir()) if (d / "images.bin").exists()]
-        one_piece = len(pieces) == 1 and len(pieces[0]) >= ONE_PIECE * n_photos
-        if one_piece:
-            note(job, f"camera solving: one piece with {len(pieces[0])} of {n_photos} frames; global solver not needed")
-            return
-        # Глобалният алгоритъм не помага, когато страните на предмета нямат общи особености, а струва време.
-        if has_global_mapper() and not object_only:
-            try:
-                # Видео кадрите нямат фокусно разстояние; глобалният алгоритъм изисква то първо да се оцени.
-                sh("camera solving", [COLMAP, "view_graph_calibrator", "--database_path", db])
-                sh("camera solving", [COLMAP, "global_mapper", "--database_path", db, "--image_path", photos,
-                    "--output_path", sparse / global_])  # fmt: skip
-                for attempt in range(1, GLOBAL_TRIES):
-                    again = sparse / f"{global_}-{attempt}"
-                    again.mkdir()
-                    sh("camera solving", [COLMAP, "global_mapper", "--database_path", db, "--image_path", photos,
-                        "--output_path", again, "--random_seed", str(attempt)])  # fmt: skip
-            except Failed:
-                note(job, "global mapper failed; using the incremental one")
-        for family in (incremental, global_):
+    (sparse / "incremental").mkdir()
+    (sparse / "global").mkdir()
+    # Съседните видео кадри са само на няколко градуса, затова се позволява по-малък ъгъл за първата двойка и се
+    # приемат кадри с по-малко (но проверени) съвпадения, защото размазването струва особености.
+    sh("camera solving", [COLMAP, "mapper", "--database_path", db, "--image_path", photos,
+        "--output_path", sparse / "incremental", "--Mapper.num_threads", THREADS,
+        "--Mapper.init_min_tri_angle", "8", "--Mapper.abs_pose_min_num_inliers", "20"])  # fmt: skip
+    pieces = [read_views(d) for d in sorted((sparse / "incremental").iterdir()) if (d / "images.bin").exists()]
+    one_piece = len(pieces) == 1 and len(pieces[0]) >= ONE_PIECE * n_photos
+    if one_piece:
+        note(job, f"camera solving: one piece with {len(pieces[0])} of {n_photos} frames; global solver not needed")
+    if has_global_mapper() and not one_piece:
+        try:
+            # Видео кадрите нямат фокусно разстояние; глобалният алгоритъм изисква то първо да се оцени.
+            sh("camera solving", [COLMAP, "view_graph_calibrator", "--database_path", db])
+            sh("camera solving", [COLMAP, "global_mapper", "--database_path", db, "--image_path", photos,
+                "--output_path", sparse / "global"])  # fmt: skip
+        except Failed:
+            note(job, "global mapper failed; using the incremental one")
+    if not one_piece:
+        for family in ("incremental", "global"):
             merge_pieces(job, work, sparse, family, sh)
-
-    solve()
 
     # Всяко решение се оценява по AI маските: при верни положения формата от очертанията от всички кадри съвпада с
     # маската на всеки кадър; несъвпадащите са грешно разположени и отпадат.
     photo_masks = work / "photo_masks.npz"
-    if known_masks is not None:
-        all_masks = known_masks
-    else:
-        masked = photos
-        if mask_every > 1:
-            masked = work / "masked"
-            masked.mkdir(exist_ok=True)
-            for name in names[::mask_every]:
-                shutil.copy(photos / name, masked / name)
-        all_masks = object_masks(work, masked, sh)
-    models, seen, sizes = [], set(), []
-
-    def judge() -> None:
-        for d in sorted(p for p in sparse.rglob("*") if (p / "images.bin").exists()):
-            if d in seen:
-                continue
-            seen.add(d)
-            views = read_views(d)
-            has = np.array([n in all_masks for n in views.names])
-            ok = np.zeros(len(views), bool)
-            if has.sum() >= 3:
-                ok[has] = M.consistent_frames(M.subset(views, has), [all_masks[n] for n in views.names if n in all_masks],
-                                              S.MASK_SCALE)  # fmt: skip
-            models.append((d, int(ok.sum()), [n for n, good in zip(views.names, ok) if not good]))
-            sizes.append(len(views))
-            note(job, f"camera solving: {d.parent.name} model {d.name}: {len(views)} frames, {ok.sum()} of "
-                 f"{int(has.sum())} with the object cut out consistent with its outline")  # fmt: skip
-
-    judge()
-    masked = sum(1 for n in names if n in all_masks)
-    best_count = max((m[1] for m in models), default=0)
-    # Само ако кадрите наистина не са разположени: всички 48 разположени, но несъгласувани, значи телефон, стоял на място, а тогава
-    # повече съвпадения не помагат (бяло дистанционно в ръка: 90 s напразно).
-    if paired and masked and best_count < RETRY_PLACED * masked and max(sizes, default=0) < RETRY_PLACED * n_photos:
-        note(job, f"camera solving: only {best_count} of {masked} frames placed; matching every frame with every other and solving again")
-        try:
-            sh("photo matching", [COLMAP, "exhaustive_matcher", "--database_path", db, f"--{match}.use_gpu", "0",
-                f"--{match}.num_threads", THREADS])  # fmt: skip
-            solve("-all")
-        except Failed as e:  # първото решение остава
-            note(job, f"camera solving: the second try failed ({e})")
-        judge()
+    masked = photos
+    if mask_every > 1:
+        masked = work / "masked"
+        masked.mkdir(exist_ok=True)
+        for name in names[::mask_every]:
+            shutil.copy(photos / name, masked / name)
+    sh("finding the object", [sys.executable, S.__file__, masked, photo_masks])
+    with np.load(photo_masks) as npz:
+        all_masks = {name: npz[name] for name in npz.files}
+    models = []
+    for d in sorted(p for p in sparse.rglob("*") if (p / "images.bin").exists()):
+        views = read_views(d)
+        has = np.array([n in all_masks for n in views.names])
+        ok = np.zeros(len(views), bool)
+        if has.sum() >= 3:
+            ok[has] = M.consistent_frames(M.subset(views, has), [all_masks[n] for n in views.names if n in all_masks],
+                                          S.MASK_SCALE)  # fmt: skip
+        models.append((d, int(ok.sum()), [n for n, good in zip(views.names, ok) if not good]))
+        note(job, f"camera solving: {d.parent.name} model {d.name}: {len(views)} frames, {ok.sum()} of "
+             f"{int(has.sum())} with the object cut out consistent with its outline")  # fmt: skip
     best, placed, stray = max(models, key=lambda m: m[1], default=(None, 0, []))
     return best, placed, stray, all_masks, photo_masks
 

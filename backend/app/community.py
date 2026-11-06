@@ -16,7 +16,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from PIL import Image, ImageOps
 from pydantic import BaseModel, Field
 
-from . import ar as AR
 from . import db, jobs, progress
 from . import mesh as M
 from . import plans as PL
@@ -119,13 +118,10 @@ def post_thumb(job_id: str, p: Principal = Depends(signed_in)):
 
 
 @router.get("/community/{job_id}/model.glb")
-def post_model(job_id: str, view: bool = False, p: Principal = Depends(signed_in)):
+def post_model(job_id: str, p: Principal = Depends(signed_in)):
     """С текстура от снимки, като собствените модели на приложението (чете ги през lib/photoTexture.ts)."""
     one(job_id, p.user_id)
     job = jobs.job_dir(job_id)
-    light = AR.view_file(job) if view else None
-    if light:
-        return Response(light.read_bytes(), media_type=M.MEDIA_TYPES["glb"], headers={"Cache-Control": "private, max-age=300"})
     mesh = trimesh.load(job / "model.ply", force="mesh")
     return Response(M.export(mesh, "glb", None, TX.load(job)), media_type=M.MEDIA_TYPES["glb"],
                     headers={"Cache-Control": "private, max-age=300"})  # fmt: skip

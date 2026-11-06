@@ -211,32 +211,17 @@ def hull_view(points: np.ndarray, spacing: float, dm: DepthMap, box) -> tuple[np
     return shown, ndimage.binary_erosion(shown, iterations=r + edge)
 
 
-def doubled(a: np.ndarray) -> np.ndarray:
-    """Масив с двойно повече клетки по всяка ос: новите са средното на съседите си."""
-    for axis in range(3):
-        a = np.moveaxis(a, axis, 0)
-        out = np.empty((2 * a.shape[0] - 1, *a.shape[1:]), a.dtype)
-        out[::2] = a
-        out[1::2] = 0.5 * (a[:-1] + a[1:])
-        a = np.moveaxis(out, 0, axis)
-    return a
-
-
 def hull_distance(hull: trimesh.Trimesh, lo: np.ndarray, shape, step: float) -> np.ndarray:
-    """Разстояние със знак (световни единици) от клетките на мрежата до обвивката: отрицателно вътре. Смята се при двойно
-    по-едри клетки и се удвоява: обвивката така или иначе е по-груба от тях, а това отнемаше 15 от около 75-те секунди на
-    сливането."""
-    coarse = 2 * step
-    rough = tuple((int(n) + 1) // 2 + 1 for n in shape)
-    vg = hull.voxelized(coarse).fill()
-    inside = np.zeros(rough, bool)
-    off = np.round((vg.transform[:3, 3] - lo) / coarse).astype(int)
-    m = vg.matrix[: rough[0] - off[0], : rough[1] - off[1], : rough[2] - off[2]]
+    """Разстояние със знак (световни единици) от клетките на мрежата до обвивката: отрицателно вътре."""
+    vg = hull.voxelized(step).fill()
+    inside = np.zeros(shape, bool)
+    off = np.round((vg.transform[:3, 3] - lo) / step).astype(int)
+    m = vg.matrix[: shape[0] - off[0], : shape[1] - off[1], : shape[2] - off[2]]
     inside[off[0] : off[0] + m.shape[0], off[1] : off[1] + m.shape[1], off[2] : off[2] + m.shape[2]] = m
     if not inside.any():
         raise SystemExit("the visual hull encloses nothing")
     away, within = PAR.each(lambda a: ndimage.distance_transform_edt(a).astype(np.float32), [~inside, inside])
-    return doubled((away - within) * np.float32(coarse))[: shape[0], : shape[1], : shape[2]]
+    return (away - within) * step
 
 
 def floor_sheet(solid: np.ndarray, top: int, radius: float) -> np.ndarray | None:

@@ -142,14 +142,14 @@ def dense_areas(views: M.Views, masks: list, cloud: M.Cloud) -> list[np.ndarray]
 def measured(job: Path, work: Path, dense: Path, views: M.Views, masks: list, cloud: M.Cloud, up: np.ndarray | None,
              agree: float, set_state: Callable[[str], None], sh: Callable[[str, list], None], side: int = SIDE,
              voxel: float = VOXEL, fixed: bool = False, table: bool = True, flap: float | None = None,
-             wide: bool = False, geometric: bool = True, passes: int | None = None, iters: int | None = None):  # fmt: skip
+             wide: bool = False, geometric: bool = True, passes: int | None = None):  # fmt: skip
     """Повърхността на модела (координати на облака) и облакът, в който е: измерената между кадрите дълбочина
     (OpenMVS, в маските) и AI дълбочината, слети във формата от очертанията; самата форма, когато измерването или
     сливането се провали (dense: коригираните кадри, моделът на COLMAP в dense/sparse). side: размерът на кадрите;
     voxel: мрежата на сливането; fixed: формата точно при `agree`, без избор; table: използва масата на решаващия
     алгоритъм (на `cloud`, намерена сред точките му); flap: fuse.FLAP на сливането; wide: гъсто съпоставяне в
     областта на сканиране вместо около предмета; geometric: вторият му проверяващ проход; passes: fuse.PASSES на
-    сливането; iters: итерациите на гъстото съпоставяне вместо подразбиращите се."""
+    сливането."""
     solvers = cloud.ground_z if table else None
     mask_dir = work / "dense_masks"
     mask_dir.mkdir(exist_ok=True)
@@ -176,11 +176,10 @@ def measured(job: Path, work: Path, dense: Path, views: M.Views, masks: list, cl
             "--view-neighbors-file", neighbors, "--mask-path", mask_dir, "--ignore-mask-label", "0",
             "--resolution-level", "0", "--max-resolution", str(side), "--number-views", "4",
             "--geometric-iters", "1" if geometric else "0", "--estimate-roi", "0", "--crop-to-roi", "0", "--remove-dmaps", "0",
-            *(["--estimation-iters", str(iters)] if iters else []),
             "--max-threads", P.THREADS])  # fmt: skip
         pts, nrm, col = P.load_cloud(dense / "dense.ply")
         upward = cloud.to_up[2] if solvers is not None else up  # z, както го дава масата на решаващия алгоритъм
-        cloud = M.clean_cloud(pts, nrm, col, views, masks, S.MASK_SCALE, upward, find_table=table and areas is None)
+        cloud = M.clean_cloud(pts, nrm, col, views, masks, S.MASK_SCALE, upward)
         if cloud.ground_z is None and solvers is not None:
             cloud = on_table(job, cloud, solvers)
         dense_cloud = True

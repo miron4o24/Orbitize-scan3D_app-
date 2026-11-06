@@ -81,7 +81,6 @@ export default function RootLayout() {
         <Stack.Protected guard={inside}>
           <Stack.Screen name="(tabs)" options={{ headerShown: false, animation: 'fade' }} />
           <Stack.Screen name="capture" options={{ headerShown: false, animation: 'fade_from_bottom' }} />
-          <Stack.Screen name="part" options={{ title: '' }} />
           <Stack.Screen name="processing/[id]" options={{ title: '' }} />
           <Stack.Screen name="viewer/[id]" options={{ headerShown: false }} />
           <Stack.Screen name="community/[id]" options={{ headerShown: false }} />

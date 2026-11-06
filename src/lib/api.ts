@@ -39,7 +39,6 @@ export type Report = {
   ai?: AiMethod; // създаден от AI (Pro), а не сканиран
   object?: string; // какво е видял AI, на български
   real_mm?: number | null; // реалната най-дълга страна: оценка на AI или резултат от текстова промяна
-  size_given?: boolean; // точна част: размерът е по мерките на потребителя (копие 1:1)
   // при размер 100 мм, за оценката на печата (lib/printEstimate.ts); за по-стари сканирания: getGeometry
   volume_mm3?: number;
   area_mm2?: number;
@@ -48,14 +47,12 @@ export type Report = {
 
 export type Geometry = { dimensions_mm: [number, number, number]; volume_mm3: number; area_mm2: number };
 
-// Сървър app/ai.py: single, AI моделът за всички профили (очертанията на предмета, изрязани с AI във всеки кадър, в
-// които се сливат измерената и AI дълбочината, фините детайли от AI дълбочината и снимките като текстура; от една снимка
-// формата е от TripoSR с детайла и цветовете на снимката), express (само старите), claude и photo (платени услуги, изключени, докато
+// Pro (сървър app/ai.py): експресното сканиране за около 5 минути и AI моделите: single (безплатен, на сървъра:
+// очертанията на предмета, изрязани с AI във всеки кадър, в които се сливат измерената и AI дълбочината, със снимките
+// като текстура; TripoSR от един кадър е резервен вариант), claude и photo (платени услуги, изключени, докато
 // сървърът няма ключове за тях). edit: текстова промяна на модел (сървър app/edit.py), направена от екрана за
 // преглед.
-// cad: чист CAD модел от готово сканиране (сървър app/cadfit.py, безплатният Gemini, проверен спрямо сканирането).
-// part: точна част (инженерен режим): снимки + мерки с линийка -> CAD модел в истинския размер (сървър app/cadfit.py run_part).
-export type AiMethod = 'single' | 'claude' | 'photo' | 'cad' | 'part';
+export type AiMethod = 'single' | 'claude' | 'photo';
 export type ProMethod = 'express' | 'edit' | AiMethod;
 export type Method = 'scan' | ProMethod;
 
@@ -156,15 +153,7 @@ export const getJob = (id: string) => call<Job>('GET', `/jobs/${id}`);
 // quality: сървъри отпреди бързите сканирания го пренебрегват и обработват с пълни детайли. method: AI модел (Pro).
 export const startJob = (
   id: string,
-  params: {
-    flat_base: boolean;
-    video_bytes?: number;
-    quality?: 'quick' | 'detailed';
-    method?: Method;
-    extend?: string;
-    size_mm?: number[];
-    notes?: string;
-  },
+  params: { flat_base: boolean; video_bytes?: number; quality?: 'quick' | 'detailed'; method?: Method; extend?: string },
 ) => call<Job>('POST', `/jobs/${id}/start`, params);
 export const cancelJob = (id: string) => call<Job>('DELETE', `/jobs/${id}`);
 
@@ -235,36 +224,17 @@ export async function uploadVideo(jobId: string, file: File, from: number, onPro
 // GLB файлове с текстура от снимките (екранът за преглед я декодира през expo-gl: lib/photoTexture.ts). Сървърът
 // изпраща текстурата само при заявка, защото по-стари версии на приложението се провалят при изображения в GLB.
 // smooth: допълнителни заглаждания (1-3) на файла за печат, които махат вълните от сканирането.
-export const resultUrl = (jobId: string, format: ResultFormat, longestMm?: number, smooth?: number, view?: boolean) => {
-  const query = [
-    longestMm && `longest_mm=${longestMm}`,
-    format === 'glb' && 'texture=true',
-    smooth && `smooth=${smooth}`,
-    view && 'view=true',
-  ]
+export const resultUrl = (jobId: string, format: ResultFormat, longestMm?: number, smooth?: number) => {
+  const query = [longestMm && `longest_mm=${longestMm}`, format === 'glb' && 'texture=true', smooth && `smooth=${smooth}`]
     .filter(Boolean)
     .join('&');
   return `${API_URL}/jobs/${jobId}/result.${format}${query ? `?${query}` : ''}`;
 };
 
-export const downloadResult = (
-  jobId: string,
-  format: ResultFormat,
-  dest: File,
-  longestMm?: number,
-  smooth?: number,
-  view?: boolean,
-) =>
+export const downloadResult = (jobId: string, format: ResultFormat, dest: File, longestMm?: number, smooth?: number) =>
   retrying(() =>
-    File.downloadFileAsync(resultUrl(jobId, format, longestMm, smooth, view), dest, {
-      headers: headers(),
-      idempotent: true,
-    }),
+    File.downloadFileAsync(resultUrl(jobId, format, longestMm, smooth), dest, { headers: headers(), idempotent: true }),
   );
-
-/** Лекият файл за преглед на модела: зарежда се много по-бързо; файловете за печат остават с пълните детайли. */
-export const downloadForViewing = (jobId: string, dest: File) =>
-  downloadResult(jobId, 'glb', dest, undefined, undefined, true);
 
 // Подписани линкове към модела в реален размер за AR (lib/ar.ts), които браузърът отваря без нашия ключ: `page`
 // (сървъри отпреди него изпращат само `url`, тоест GLB). Сървърът първо създава файла, затова това отнема няколко
@@ -290,8 +260,6 @@ export const editModel = (jobId: string, prompt: string, longestMm: number, titl
   call<Job>('POST', `/jobs/${jobId}/edit`, { prompt, longest_mm: longestMm, title, ...(spot ? { spot } : {}) });
 
 // Pro: нов модел, създаден от този, стоящ върху плочка с име.
-export const cadModel = (jobId: string, title: string) => call<Job>('POST', `/jobs/${jobId}/cad`, { title });
-
 export const nameplateModel = (jobId: string, text: string, shape: 'round' | 'square', longestMm: number, title: string) =>
   call<Job>('POST', `/jobs/${jobId}/nameplate`, { text, shape, longest_mm: longestMm, title });
 
@@ -435,9 +403,8 @@ export async function uploadPrintPhoto(id: string, file: File) {
   await check(res, 'upload photo');
 }
 
-// view: лекият файл за преглед; без него: пълните детайли за изнасяне.
-export const downloadPost = (id: string, dest: File, view = true) =>
-  retrying(() => File.downloadFileAsync(`${API_URL}/community/${id}/model.glb${view ? '?view=true' : ''}`, dest, { headers: headers(), idempotent: true }));
+export const downloadPost = (id: string, dest: File) =>
+  retrying(() => File.downloadFileAsync(`${API_URL}/community/${id}/model.glb`, dest, { headers: headers(), idempotent: true }));
 
 // --- Тест за здравина --- Сървърът изчислява всеки вид тест веднъж за модел (сървър app/stress.py): при най-дълга
 // страна ref_mm и за 1 кг (собствено тегло: при 1 г/см³). lib/stress.ts го мащабира към избраните тегло, височина,
