@@ -33,6 +33,8 @@ transformers>=4.40,<5
 omegaconf
 einops
 huggingface-hub
+# безплатният онлайн AI модел (app/online3d.py, TRELLIS в Hugging Face Space); 1.x работи с huggingface-hub < 1, който иска transformers 4
+gradio_client==1.10.3
 imageio
 pytest
 httpx

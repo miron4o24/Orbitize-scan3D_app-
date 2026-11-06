@@ -40,11 +40,12 @@ from . import relief as RL
 from . import segment as S
 from . import sideview as SV
 from . import kind as KD
+from . import online3d
 from . import single3d
 from . import texture as TX
 
 METHODS = ("single", "claude", "photo")
-SERVICES = {"anthropic": "ANTHROPIC_API_KEY", "meshy": "MESHY_API_KEY"}
+SERVICES = {"anthropic": "ANTHROPIC_API_KEY", "meshy": "MESHY_API_KEY", "huggingface": "HF_TOKEN"}
 NEEDS = {"claude": "anthropic", "photo": "meshy"}
 
 MODEL = os.environ.get("AI_CLAUDE_MODEL", "claude-opus-5-5")
@@ -515,6 +516,14 @@ def single(job: Path, work: Path, flat_base: bool, set_state: Callable[[str], No
     elif tune.get("frames"):
         photos = fewer_frames(work, photos, frames_wanted)  # тестова задача с вече избрани кадри
     found = sorted(photos.glob("*.jp*g"))
+    if found and online_ready() and not tune.get("offline"):
+        try:
+            return by_online(job, work, found, flat_base, set_state, sh)
+        except Exception as e:  # лимитът за деня, опашка, недостъпна услуга: моделът се прави тук, както преди
+            if type(e).__name__ == "Cancelled":
+                raise
+            P.note(job, f"online AI: not used ({e!r}); making the model on this server")
+            TX.clear(job)
     if len(found) >= MIN_FRAMES and not tune.get("one_frame"):
         try:
             report = from_video(job, work, photos, len(found), flat_base, set_state, sh, tune)
@@ -543,6 +552,104 @@ def single(job: Path, work: Path, flat_base: bool, set_state: Callable[[str], No
             TX.clear(job)
             P.note(job, f"one frame model: no texture ({e}); the vertex colours")
     return P.finish(job, out) | {"photos_used": 1, "photos_total": len(found), "ai": "single"} | info
+
+
+# --- Безплатният онлайн AI модел (app/online3d.py: TRELLIS на видеокартите на Hugging Face) -----------------------------
+
+ONLINE_VIEWS = 4  # кадри от видеото, предметът от четирите страни: TRELLIS вижда и гърба, вместо да го досеща
+ONLINE_SIDE = 1024  # снимките се изпращат с толкова (TRELLIS работи с 518)
+ONLINE_PAUSE = "online_ai_until"  # настройка: до кога дневният безплатен лимит е свършил (не се опитва до тогава)
+
+
+def online_ready() -> bool:
+    if not key("huggingface"):
+        return False
+    try:
+        return time.time() >= float(db.get_setting(ONLINE_PAUSE) or 0)
+    except (TypeError, ValueError):
+        return True
+
+
+def by_online(job: Path, work: Path, found: list[Path], flat_base: bool, set_state: Callable[[str], None],
+              sh: Callable[[str, list], None]) -> dict:  # fmt: skip
+    """Моделът от TRELLIS онлайн: изрязаните кадри отиват при него, връща се модел с текстура, който се мащабира за печат,
+    а текстурата му се пази като на сканиран модел (app/texture.py), за да я показва приложението."""
+    set_state("reconstructing")
+    pick = work / "online"
+    pick.mkdir(parents=True, exist_ok=True)
+    chosen = spread(found, ONLINE_VIEWS) if len(found) > 1 else found[:1]
+    for f in chosen:
+        with Image.open(f) as im:
+            im = ImageOps.exif_transpose(im).convert("RGB")
+        im.thumbnail((ONLINE_SIDE, ONLINE_SIDE), Image.LANCZOS)
+        im.save(pick / f.name, "JPEG", quality=95)
+    masks = work / "online_masks.npz"
+    sh("finding the object", [sys.executable, S.__file__, pick, masks])
+    pictures = []
+    with np.load(masks) as z:
+        for f in sorted(pick.glob("*.jpg")):
+            if f.name not in z.files:
+                continue
+            with Image.open(f) as im:
+                rgb = im.convert("RGB")
+            alpha = Image.fromarray(z[f.name]).resize(rgb.size, Image.BILINEAR)
+            if (np.asarray(alpha) > 127).mean() < 0.01:  # предметът не е намерен в този кадър
+                continue
+            rgb.putalpha(alpha.point(lambda a: 255 if a > 127 else 0))  # изрязан фон: TRELLIS ползва прозрачността като очертание
+            pictures.append(pick / (f.stem + ".png"))
+            rgb.save(pictures[-1])
+    if not pictures:
+        raise P.Failed("no object in the pictures")
+    out_glb = work / "online.glb"
+    os.environ["HF_TOKEN"] = key("huggingface") or ""  # само за процеса на online3d (наследява средата); не се записва
+    try:
+        sh("ai modelling", [sys.executable, online3d.__file__, out_glb, *pictures])
+    except P.Failed:
+        info = json.loads(out_glb.with_suffix(".json").read_text()) if out_glb.with_suffix(".json").exists() else {}
+        if info.get("wait") is not None:  # дневният лимит: до тогава моделите се правят на сървъра без опит онлайн
+            db.set_setting(ONLINE_PAUSE, str(time.time() + float(info["wait"])))
+        raise P.Failed(f"online AI: {info.get('error', 'failed')}")
+    info = json.loads(out_glb.with_suffix(".json").read_text())
+    P.note(job, f"online AI: {info}")
+    set_state("cleaning")
+    model, texture = online_model(out_glb)
+    out = M.make_printable(model.copy(), float(model.bounds[0, 2]), flat_base, smoothing=0)
+    if texture is not None:
+        to_print = out.metadata["to_print"]
+        vertices, uv, faces, image = texture
+        TX.clear(job)
+        textured = trimesh.Trimesh(trimesh.transform_points(vertices, to_print), faces, process=False)
+        np.savez_compressed(job / TX.NPZ, count=1, vertices_0=textured.vertices.astype(np.float32),
+                            normals_0=textured.vertex_normals.astype(np.float32), uv_0=uv.astype(np.float32),
+                            faces_0=faces.astype(np.uint32))  # fmt: skip
+        image.convert("RGB").save(job / "texture_0.jpg", quality=92)
+    return P.finish(job, out) | {"photos_used": len(pictures), "photos_total": len(found), "ai": "single", "object": "",
+                                 "suitable": True, "real_mm": None, "online": True}  # fmt: skip
+
+
+def online_model(glb: Path) -> tuple[trimesh.Trimesh, tuple | None]:
+    """Мрежата от GLB на TRELLIS със Z нагоре и (точки, uv, стени, изображение) на текстурата ѝ, ако има."""
+    scene = trimesh.load(glb, file_type="glb", force="scene")
+    up = trimesh.transformations.rotation_matrix(np.pi / 2, [1, 0, 0])  # glTF с Y нагоре -> Z нагоре
+    pieces = []
+    for node in scene.graph.nodes_geometry:
+        transform, name = scene.graph[node]
+        g = scene.geometry[name]
+        if isinstance(g, trimesh.Trimesh) and len(g.faces):
+            g = g.copy()
+            g.apply_transform(up @ transform)
+            pieces.append(g)
+    if not pieces:
+        raise P.Failed("online AI returned an empty model")
+    biggest = max(pieces, key=lambda g: len(g.faces))
+    texture = None
+    uv = getattr(biggest.visual, "uv", None)
+    material = getattr(biggest.visual, "material", None)
+    image = getattr(material, "baseColorTexture", None) or getattr(material, "image", None)
+    if uv is not None and image is not None and len(uv) == len(biggest.vertices):
+        texture = (np.asarray(biggest.vertices), np.asarray(uv), np.asarray(biggest.faces), image)
+    shape = trimesh.Trimesh(biggest.vertices, biggest.faces, process=True)  # слети шевовете на текстурата: едно тяло
+    return shape, texture
 
 
 def from_video(job: Path, work: Path, photos: Path, n_photos: int, flat_base: bool,
