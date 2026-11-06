@@ -113,10 +113,14 @@ export default function Home() {
               {canAi ? (
                 <>
                   <ScanChoice highlight title={PRO_INFO.single.label} time={PRO_INFO.single.time} sub={aiTrial() ? 'Един безплатен опит' : 'Най-бързият начин'} icon="sparkles" onPress={filmAi} />
+                  <ScanChoice title={PRO_INFO.part.label} time={PRO_INFO.part.time} sub="Копие 1:1 по снимки и мерки с линийка" icon="construct-outline" onPress={() => router.push('/part')} />
                   <ScanChoice title={SCAN_INFO.label} time={SCAN_INFO.time} sub="Може да е малко по-добър от AI модела" icon="videocam-outline" onPress={scan} />
                 </>
               ) : (
-                <ScanChoice highlight title="Започни сканиране" time={SCAN_INFO.time} icon="videocam" onPress={scan} />
+                <>
+                  <ScanChoice highlight title="Започни сканиране" time={SCAN_INFO.time} icon="videocam" onPress={scan} />
+                  <ScanChoice title={PRO_INFO.part.label} time={PRO_INFO.part.time} sub="Копие 1:1 по снимки и мерки с линийка" icon="construct-outline" onPress={() => router.push('/part')} />
+                </>
               )}
               <ArrowLink label={importing ? 'Отваряне…' : 'Качи готово видео'} onPress={upload} style={s.ctaLink} />
               {!!user && !user.pro && <ArrowLink label="Виж Orbitize Pro" onPress={() => router.push('/pro')} style={s.ctaLink} />}

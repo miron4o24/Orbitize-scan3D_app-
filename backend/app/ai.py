@@ -77,9 +77,10 @@ def key_status() -> dict:
 
 def available() -> dict:
     """Какво може да използва Pro на този сървър; express: сканирането за около 5 минути (app/pipeline.py), edit:
-    текстови промени (app/edit.py; простите заявки работят без езиковия му модел), и двете винаги са налични."""
+    текстови промени (app/edit.py; простите заявки работят без езиковия му модел), part: точна част 1:1,
+    всички са винаги налични локално."""
     paid = {method: bool(key(service)) for method, service in NEEDS.items()}
-    return {"express": True, "edit": True, "single": single3d.ready()} | paid
+    return {"express": True, "edit": True, "single": single3d.ready(), "part": True} | paid
 
 
 # --- Кадри ----------------------------------------------------------------------------------------------------------

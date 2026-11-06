@@ -100,7 +100,7 @@ export default function Viewer() {
   const [error, setError] = useState<string | null>(null);
   const [wireframe, setWireframe] = useState(false);
   const [full, setFull] = useState(false); // моделът на целия екран
-  const [mmInput, setMmInput] = useState(String(scan?.longestMm ?? 100));
+  const [mmInput, setMmInput] = useState(String(scan?.longestMm ?? scan?.report?.real_mm ?? 100));
   const [busy, setBusy] = useState<string | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [realSize, setRealSize] = useState(true);
