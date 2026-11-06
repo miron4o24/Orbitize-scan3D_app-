@@ -562,7 +562,9 @@ ONLINE_PAUSE = "online_ai_until"  # настройка: до кога дневн
 
 
 def online_ready() -> bool:
-    if not key("huggingface"):
+    # Изключено, освен ако изрично не е включено (HF_3D_USE=1): пробата с фигурата на Фродо (2026-11-06) даде друга фигура
+    # (по-малка глава, по-дълго тяло, измислено лице от снимка отстрани). TRELLIS рисува "такъв предмет", не копира този.
+    if os.environ.get("HF_3D_USE") != "1" or not key("huggingface"):
         return False
     try:
         return time.time() >= float(db.get_setting(ONLINE_PAUSE) or 0)
