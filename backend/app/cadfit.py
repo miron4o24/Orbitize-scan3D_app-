@@ -423,7 +423,8 @@ def by_views(job: Path, work: Path, views: dict[str, Path], size: list[float | N
     set_state("reconstructing")
     out_ply = work / "views.ply"
     measures = ",".join(f"{v or 0:g}" for v in size)
-    sh("measuring the views", [sys.executable, views3d.__file__, out_ply, measures, *[f"{k}={p}" for k, p in views.items()]])
+    named = [f"{k if k in ('top', 'side', 'end') else 'photo'}={p}" for k, p in views.items()]
+    sh("measuring the views", [sys.executable, views3d.__file__, out_ply, measures, *named])
     info = _json.loads(out_ply.with_suffix(".json").read_text())
     P.note(job, f"part from views: {info}")
     set_state("cleaning")
@@ -452,9 +453,13 @@ def run_part(job: Path, params: dict, set_state: Callable[[str], None], sh: Call
     size, told = measured(params)
     views = {v: photos_dir / f"view_{v}.jpg" for v in ("top", "side", "end")}
     views = {v: p for v, p in views.items() if p.exists()}
-    if "top" in views and any(size):
-        return by_views(job, work, views, size, set_state, sh)
     found = sorted(photos_dir.glob("*.jp*g"))
+    if any(size):
+        # Мерки има: частта се измерва от снимките (без AI за размерите и без дневни лимити). Снимки без имена
+        # (по-старо приложение, галерия): изгледите се избират сами по пропорциите.
+        if "top" not in views:
+            views = {f"photo{i}": p for i, p in enumerate(found)}
+        return by_views(job, work, views, size, set_state, sh)
     note(f"part: {len(found)} photos, measures {size}, notes {bool(params.get('notes'))}")
     scan = None
     if len(found) >= AI.MIN_FRAMES:

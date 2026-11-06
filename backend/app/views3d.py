@@ -8,8 +8,9 @@
 от края), z височината. Снимката отгоре е отвесно надолу, отстрани е откъм потребителя, а от края е откъм дясната страна,
 без частта да се мести между снимките.
 
-Собствен процес: python views3d.py <out.ply> <мерки "L,W,H" (0: не е мерено)> top=<снимка> side=<снимка> [end=<снимка>].
-Записва и <out>.json със сведенията."""
+Собствен процес: python views3d.py <out.ply> <мерки "L,W,H" (0: не е мерено)> top=<снимка> side=<снимка> [end=<снимка>],
+или с photo=<снимка> за всяка снимка без име (по-старо приложение, снимки от галерията): тогава изгледите се избират сами
+по пропорциите на очертанията спрямо мерките (pick). Записва и <out>.json със сведенията."""
 
 import json
 import sys
@@ -106,6 +107,51 @@ def view(sess, path: Path) -> dict:
     return {"outers": outers, "holes": holes, "box": box, "px": (box[2] - box[0], box[3] - box[1])}
 
 
+def pick(found: dict[str, dict], size: list[float]) -> dict[str, dict]:
+    """Изгледите отгоре, отстрани и от края между снимки без имена: пропорциите на очертанието (дълга / къса страна) спрямо
+    очакваните от мерките (L/W, L/H, W/H); с по-малко мерки: отстрани е най-тясното очертание, от края най-късото, отгоре
+    най-голямото от останалите. Всяка снимка служи за един изглед."""
+    L, W, H = (float(v) if v else 0.0 for v in (size + [0, 0, 0])[:3])
+    ratio = {name: v["px"][0] / max(v["px"][1], 1e-6) for name, v in found.items()}
+    area = {name: v["px"][0] * v["px"][1] for name, v in found.items()}
+    left = dict(ratio)
+    chosen: dict[str, dict] = {}
+    if L and W and H:
+        # Всяка тройка (отгоре, отстрани, от края или без него): пропорциите трябва да са като от мерките, а мм на пиксел
+        # близки, защото снимките са от сходно разстояние. Само по пропорциите краят на флашка (21 x 8) изглеждаше като
+        # горната ѝ страна (51 x 21).
+        want = {"top": L / W, "side": L / H, "end": max(W, H) / min(W, H)}
+        long = {"top": L, "side": L, "end": max(W, H)}
+        names = list(found)
+        best, best_score = None, np.inf
+        for top in names:
+            for side in names:
+                if side == top:
+                    continue
+                for end in [None] + [n for n in names if n not in (top, side)]:
+                    trio = {"top": top, "side": side} | ({"end": end} if end else {})
+                    shape = sum(abs(np.log(ratio[n] / want[v])) for v, n in trio.items())
+                    scale = np.log([long[v] / found[n]["px"][0] for v, n in trio.items()])
+                    score = shape + 0.5 * float(np.ptp(scale)) + (0.3 if end is None else 0.0)
+                    if score < best_score:
+                        best, best_score = trio, score
+        return {v: found[n] for v, n in best.items()}
+    side = max(left, key=left.get)
+    chosen["side"] = found[side]
+    left.pop(side)
+    if left:
+        top = max(left, key=lambda n: area[n])
+        chosen["top"] = found[top]
+        left.pop(top)
+    if left:
+        end = min(left, key=left.get)
+        if left[end] < 2.5:
+            chosen["end"] = found[end]
+    if "top" not in chosen:
+        chosen["top"] = chosen.pop("side")
+    return chosen
+
+
 def polygon(v: dict, width: float, height: float, flip_x: bool = False):
     """Очертанието като shapely многоъгълник в мм: кутията на предмета става [0, width] x [0, height], y нагоре."""
     from shapely.geometry import Polygon
@@ -179,10 +225,27 @@ def build(views: dict, size: list[float]) -> tuple:
 
 
 def main(out: Path, measures: str, args: list[str]) -> None:
-    paths = dict(a.split("=", 1) for a in args)
+    pairs = [a.split("=", 1) for a in args]
     sess = S.session()
-    views = {name: view(sess, Path(p)) for name, p in paths.items()}
     size = [float(v) for v in measures.split(",")]
+    views, unnamed = {}, {}
+    for name, p in pairs:
+        try:
+            got = view(sess, Path(p))
+        except ValueError as e:  # предметът не е намерен в тази снимка
+            print(f"views: {Path(p).name}: {e}", flush=True)
+            continue
+        if name == "photo":
+            unnamed[Path(p).name] = got
+        else:
+            views[name] = got
+    if unnamed and "top" not in views:
+        chosen = pick(unnamed, size)
+        names = {id(v): n for n, v in unnamed.items()}
+        print("views: chosen " + ", ".join(f"{k} = {names[id(v)]}" for k, v in chosen.items()), flush=True)
+        views = chosen | views
+    if "top" not in views:
+        raise SystemExit("views: no picture shows the part")
     mesh, dims = build(views, size)
     mesh.export(out)
     info = {"size": [round(v, 2) for v in dims], "extents": np.round(mesh.extents, 2).tolist(), "faces": len(mesh.faces),
