@@ -691,24 +691,52 @@ def smooth(mesh: trimesh.Trimesh, passes: int) -> trimesh.Trimesh:
 
 # Тесни пукнатини и ямки по повърхността (фигура: резки по лицето и тялото, каквито истинската няма): места под леко загладеното
 # копие се вдигат до него. Издаденото и широките вдлъбнатини (кичури коса) остават, защото заглаждането ги следва.
+# Само малки и дълбоки места: с една граница за дълбочина (0,0005) се вдигаха 45% от точките на фигура и тя губеше кичурите,
+# лицето и гънките (по-лош модел от преди). Сега място се вдига, ако поне някъде е дълбоко (PIT_SEED) и е малко (PIT_AREA) или
+# тясно като цепка (PIT_NARROW): широките вдлъбнатини са форма.
 PIT_PASSES = 10  # стъпки на заглаждането (Лаплас): около пет ръба от мрежата
-PIT_ROUNDS = 5  # всеки кръг вдига ямката до загладеното, което при тясна ямка още е под околното
-PIT_DEPTH = 0.0005  # от размера: по-плитко е шум и не се пипа
+PIT_ROUNDS = 3  # всеки кръг вдига ямката до загладеното, което при тясна ямка още е под околното
+PIT_DEPTH = 0.0005  # от размера: до тук се простира една ямка (по-плитко е повърхността около нея)
+PIT_SEED = 0.001  # от размера: толкова дълбока е поне една точка на истинска ямка или пукнатина (0,1 мм на 10 см)
+PIT_AREA = 0.001  # от площта: по-голямо вдлъбнато място е форма (кичур, гънка, очна ябълка), не дупка
+PIT_NARROW = 2  # ръба от мрежата: по-голямо място, което изчезва, ако се изреже толкова от края му, е пукнатина
 
 
 def filled_pits(mesh: trimesh.Trimesh) -> tuple[trimesh.Trimesh, float]:
     """Мрежата с вдигнати тесни ямки и пукнатини (същите върхове, стени и цветове) и делът на преместените върхове."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+
     out = mesh.copy()
     outward = -1.0 if mesh.is_watertight and mesh.volume < 0 else 1.0  # обърната мрежа: навън е обратно
-    moved = np.zeros(len(mesh.vertices), bool)
+    size, n = float(mesh.extents.max()), len(mesh.vertices)
+    edges = mesh.edges_unique
+    links = coo_matrix((np.ones(len(edges), np.float32), (edges[:, 0], edges[:, 1])), shape=(n, n)).tocsr()
+    links = links + links.T
+    area = np.bincount(mesh.faces.ravel(), np.repeat(mesh.area_faces / 3, 3), minlength=n)
+    moved = np.zeros(n, bool)
     for _ in range(PIT_ROUNDS):
         soft = trimesh.Trimesh(out.vertices.copy(), out.faces, process=False)
         trimesh.smoothing.filter_laplacian(soft, lamb=0.5, iterations=PIT_PASSES)  # свива изпъкналото, затова вдига само ямки
         normals = soft.vertex_normals * outward
         below = np.einsum("ij,ij->i", out.vertices - soft.vertices, normals)
-        pit = below < -PIT_DEPTH * float(mesh.extents.max())
+        low = np.flatnonzero(below < -PIT_DEPTH * size)
+        if not len(low):
+            break
+        _, part = connected_components(links[low][:, low], directed=False)
+        deep = np.zeros(part.max() + 1, bool)
+        deep[part[below[low] < -PIT_SEED * size]] = True
+        small = np.bincount(part, area[low]) < PIT_AREA * area.sum()
+        core = np.zeros(n, bool)
+        core[low] = True
+        for _ in range(PIT_NARROW):  # без ръба на мястото: от цепка не остава нищо
+            core &= links @ (~core).astype(np.float32) == 0
+        narrow = np.bincount(part, core[low], minlength=len(deep)) == 0
+        pit = low[(deep & (small | narrow))[part]]
+        if not len(pit):
+            break
         out.vertices[pit] = out.vertices[pit] - below[pit, None] * normals[pit]
-        moved |= pit
+        moved[pit] = True
     return out, float(moved.mean())
 
 
