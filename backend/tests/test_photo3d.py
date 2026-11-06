@@ -781,3 +781,21 @@ def test_round_body_is_the_outline_turned_and_the_handle_stays_thin():
     assert float(half[100, 72]) < 0.4 * float(half[100, 100])  # thin at the outline
     assert 0 < float(half[90, 140]) < 0.2 * float(half[100, 100])  # the handle is a thin plate, not turned around
     assert float(half[20, 100]) == 0.0
+
+
+def test_rolling_ball_fills_slits_and_leaves_wide_grooves():
+    from app import mesh as M
+
+    ball = trimesh.creation.icosphere(subdivisions=6, radius=50.0)
+    v = ball.vertices.copy()
+    n = v / np.linalg.norm(v, axis=1, keepdims=True)
+    slit = (np.abs(v[:, 0]) < 0.6) & (v[:, 2] > 20)  # a slit 1 mm wide, 3 mm deep: a scanning crack
+    groove = (np.abs(v[:, 1]) < 6) & (v[:, 2] < -20)  # a groove 12 mm wide, 2 mm deep: part of the shape
+    v[slit] -= 3.0 * n[slit]
+    v[groove] -= 2.0 * n[groove]
+    out, share = M.closed_cracks(trimesh.Trimesh(v, ball.faces, process=False))
+    r = np.linalg.norm(out.vertices, axis=1)
+    assert 0 < share < 0.05
+    assert np.median(r[slit]) > 49.0  # the slit is filled
+    assert abs(np.median(r[groove]) - 48.0) < 0.2  # the groove stays
+    assert out.is_watertight and len(out.faces) == len(ball.faces)
