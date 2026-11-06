@@ -739,3 +739,45 @@ def test_narrow_cracks_are_filled_and_raised_parts_stay():
     assert np.abs(r[crack] - 50).max() < 1.0  # the crack is mostly gone
     assert np.median(r[bump]) > 51.5  # the raised part stays
     assert out.is_watertight and len(out.faces) == len(ball.faces)
+
+
+def test_kind_makes_flat_and_round_only_when_sure():
+    from app import kind as K
+
+    names = [k[0] for k in K.KINDS]
+    cup = np.zeros((200, 200), bool)
+    yy, xx = np.mgrid[:200, :200]
+    cup[40:180] = np.abs(xx[40:180] - 100) < 30 + (yy[40:180] - 40) * 0.1  # a cup, a little wider at the bottom
+    p = np.full(len(K.KINDS), 0.01)
+    p[names.index("a cup")] = 0.7
+    got = K.decide(p / p.sum(), cup)
+    assert got["group"] == "round" and got["name"] == "Чаша"
+    # The same outline, but the picture could be many things: the usual shape.
+    p = np.full(len(K.KINDS), 1.0)
+    assert K.decide(p / p.sum(), cup)["group"] == "other"
+    # A remote: flat with its usual thickness.
+    p = np.full(len(K.KINDS), 0.005)
+    p[names.index("a remote control")] = 0.9
+    got = K.decide(p / p.sum(), cup)
+    assert got["group"] == "flat" and got["thin"] == 0.09 and got["name"] == "Дистанционно"
+    # "Round" with a lopsided outline (not turned around an axis): the usual shape.
+    lopsided = np.zeros((200, 200), bool)
+    lopsided[40:180, 60:100] = True
+    lopsided[40:110, 100:190] = True
+    p = np.full(len(K.KINDS), 0.01)
+    p[names.index("a vase")] = 0.8
+    assert K.decide(p / p.sum(), lopsided)["group"] == "other"
+
+
+def test_round_body_is_the_outline_turned_and_the_handle_stays_thin():
+    from app import photo3d as P3
+
+    n = 201
+    on = np.zeros((n, n), bool)
+    on[40:160, 70:131] = True  # a can 61 cells wide
+    on[70:110, 131:150] = True  # with a handle on the right
+    half = P3.revolved_half(on)
+    assert abs(float(half[100, 100]) - 30.5) < 1.5  # the middle is as deep as the can is wide
+    assert float(half[100, 72]) < 0.4 * float(half[100, 100])  # thin at the outline
+    assert 0 < float(half[90, 140]) < 0.2 * float(half[100, 100])  # the handle is a thin plate, not turned around
+    assert float(half[20, 100]) == 0.0

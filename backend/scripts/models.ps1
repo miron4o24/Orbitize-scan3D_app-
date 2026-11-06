@@ -31,6 +31,10 @@ $QWEN_FILES = [ordered]@{
 $CLIPSEG_BASE = 'https://huggingface.co/Xenova/clipseg-rd64-refined/resolve/924dc94f85f58739f353f94258b33bc47eae4862'
 $CLIPSEG_MODEL_SHA256 = '25C50E9A236FA16F309AAFD54D363ADB7CEE9CC7EAD8D93CF31A2610F8AF4B37'
 $CLIPSEG_TOKENIZER_SHA256 = '342739D4A4B111D4B1BDA83A96F5C518E1B162CC597252AC89DED17681791D31'
+# Какъв е предметът на една снимка (app/kind.py): CLIP (openai/clip-vit-base-patch32, MIT) като ONNX, с фиксирана версия.
+$CLIP_BASE = 'https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/6b7c523703ae26e39be4b03774966f8571c7f523'
+$CLIP_MODEL_SHA256 = '0898A3FACFDB27F0A041E57649B4989CFD094E4A0040D6AE75ED69917DFC7328'
+$CLIP_TOKENIZER_SHA256 = 'F7F3B7AF117D467B58374797691A6438D3E6B9E9CEF800DFD5DCED7F697A90CD'
 $modelDir = Join-Path (Split-Path $PSScriptRoot -Parent) 'tools'
 
 function Install-TripoSRCode {
@@ -80,4 +84,7 @@ function Install-Models {
   Write-Host "`n==> Pro's colour changes (550 MB, CLIPSeg: finds the part to recolour, e.g. the hair, free)" -ForegroundColor Cyan
   Install-Model (Join-Path $modelDir 'clipseg\model.onnx') "$CLIPSEG_BASE/onnx/model.onnx" $CLIPSEG_MODEL_SHA256
   Install-Model (Join-Path $modelDir 'clipseg\tokenizer.json') "$CLIPSEG_BASE/tokenizer.json" $CLIPSEG_TOKENIZER_SHA256
+  Write-Host "`n==> AI that names the object in a photo (155 MB, CLIP: a cup is made round, a remote flat, free)" -ForegroundColor Cyan
+  Install-Model (Join-Path $modelDir 'clip\model_quantized.onnx') "$CLIP_BASE/onnx/model_quantized.onnx" $CLIP_MODEL_SHA256
+  Install-Model (Join-Path $modelDir 'clip\tokenizer.json') "$CLIP_BASE/tokenizer.json" $CLIP_TOKENIZER_SHA256
 }
