@@ -68,12 +68,14 @@ def picture_part(data: bytes, mime: str = "image/jpeg") -> dict:
     return {"inline_data": {"mime_type": mime, "data": base64.b64encode(data).decode()}}
 
 
-WAIT_S = 150  # един отговор; бавен или претоварен модел се пропуска до края на задачата
+WAIT_S = 150  # един отговор
+ASK_S = 200  # общо за един проект: претоварените (503) модели се опитват отново на кръгове, докато не изтече
+GONE = (400, 401, 403, 404, 429)  # лимитът за деня свършил или моделът не е достъпен: не се пита повече в тази задача
 
 
 def ask(contents: list, note: Callable[[str], None], skip: set[str]) -> tuple[dict, dict]:
-    """Един проект от Gemini: (проектът, репликата на модела за разговора). Следващият безплатен модел при лимит или
-    претоварване; skip: моделите, които вече са отказали в тази задача (не се чакат пак)."""
+    """Един проект от Gemini: (проектът, репликата на модела за разговора). Безплатните модели по ред; претоварен
+    (503, бавен) се пробва пак след останалите, докато не изтече ASK_S. skip: моделите с изчерпан лимит в тази задача."""
     key = AI.key("gemini")
     if not key:
         raise P.Failed("Услугата за CAD модели още не е включена.")
@@ -81,7 +83,23 @@ def ask(contents: list, note: Callable[[str], None], skip: set[str]) -> tuple[di
             "generationConfig": {"responseMimeType": "application/json", "responseJsonSchema": AI.DESIGN,
                                  "temperature": 0.4}}  # fmt: skip
     last = ""
-    for model in [m for m in MODELS if m not in skip] or MODELS[-1:]:
+    deadline = time.time() + ASK_S
+    while True:
+        models = [m for m in MODELS if m not in skip]
+        if not models or time.time() > deadline:
+            break
+        answered = _ask_round(models, body, key, note, skip)
+        if isinstance(answered, tuple):
+            return answered
+        last = answered
+        time.sleep(5)  # всички бяха претоварени: малко почивка, после пак
+    raise P.Failed(f"gemini: {last or 'no model left'}")
+
+
+def _ask_round(models: list[str], body: dict, key: str, note: Callable[[str], None], skip: set[str]) -> tuple[dict, dict] | str:
+    """Един опит с всеки модел по ред: (проект, реплика) от първия, който отговори, иначе последната грешка."""
+    last = ""
+    for model in models:
         for attempt in range(2):
             started = time.time()
             req = urllib.request.Request(API + model + ":generateContent", data=json.dumps(body).encode(),
@@ -95,12 +113,12 @@ def ask(contents: list, note: Callable[[str], None], skip: set[str]) -> tuple[di
                 if e.code == 400 and "responseJsonSchema" in body["generationConfig"]:  # модел без JSON схема
                     body["generationConfig"].pop("responseJsonSchema")
                     continue
-                skip.add(model)  # лимит, претоварен или недостъпен: следващият модел, и в следващите кръгове
-                break
+                if e.code in GONE:
+                    skip.add(model)
+                break  # претоварен: следващият модел, а този пак в следващия кръг
             except (urllib.error.URLError, TimeoutError, OSError) as e:
                 last = f"{model}: {e}"
                 note(f"gemini {model}: no answer after {time.time() - started:.0f} s")
-                skip.add(model)
                 break
             parts = ((answer.get("candidates") or [{}])[0].get("content") or {}).get("parts") or []
             text = "".join(p.get("text", "") for p in parts if not p.get("thought"))
@@ -111,7 +129,7 @@ def ask(contents: list, note: Callable[[str], None], skip: set[str]) -> tuple[di
                 continue
             note(f"gemini {model}: {len(design.get('parts') or [])} parts in {time.time() - started:.0f} s")
             return design, {"role": "model", "parts": [{"text": json.dumps(design)}]}
-    raise P.Failed(f"gemini: {last}")
+    return last
 
 
 # --- Сравнение със сканирането --------------------------------------------------------------------------------------
