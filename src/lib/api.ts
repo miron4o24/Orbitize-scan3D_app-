@@ -52,7 +52,8 @@ export type Geometry = { dimensions_mm: [number, number, number]; volume_mm3: nu
 // формата е от TripoSR с детайла и цветовете на снимката), express (само старите), claude и photo (платени услуги, изключени, докато
 // сървърът няма ключове за тях). edit: текстова промяна на модел (сървър app/edit.py), направена от екрана за
 // преглед.
-export type AiMethod = 'single' | 'claude' | 'photo';
+// cad: чист CAD модел от готово сканиране (сървър app/cadfit.py, безплатният Gemini, проверен спрямо сканирането).
+export type AiMethod = 'single' | 'claude' | 'photo' | 'cad';
 export type ProMethod = 'express' | 'edit' | AiMethod;
 export type Method = 'scan' | ProMethod;
 
@@ -279,6 +280,8 @@ export const editModel = (jobId: string, prompt: string, longestMm: number, titl
   call<Job>('POST', `/jobs/${jobId}/edit`, { prompt, longest_mm: longestMm, title, ...(spot ? { spot } : {}) });
 
 // Pro: нов модел, създаден от този, стоящ върху плочка с име.
+export const cadModel = (jobId: string, title: string) => call<Job>('POST', `/jobs/${jobId}/cad`, { title });
+
 export const nameplateModel = (jobId: string, text: string, shape: 'round' | 'square', longestMm: number, title: string) =>
   call<Job>('POST', `/jobs/${jobId}/nameplate`, { text, shape, longest_mm: longestMm, title });
 

@@ -720,6 +720,7 @@ class AiKeys(BaseModel):
     anthropic: str | None = Field(None, max_length=500)
     meshy: str | None = Field(None, max_length=500)
     huggingface: str | None = Field(None, max_length=500)  # безплатният онлайн AI модел (app/online3d.py)
+    gemini: str | None = Field(None, max_length=500)  # чистият CAD модел (app/cadfit.py), безплатен ключ от Google AI Studio
 
 
 @router.get("/admin/ai", dependencies=[Depends(admin_only)])
@@ -730,7 +731,7 @@ def admin_ai():
 @router.put("/admin/ai", dependencies=[Depends(admin_only)])
 def admin_set_ai(body: AiKeys):
     need_db()
-    for service in ("anthropic", "meshy", "huggingface"):
+    for service in ("anthropic", "meshy", "huggingface", "gemini"):
         value = getattr(body, service)
         if value is not None:
             AI.set_key(service, value.strip())

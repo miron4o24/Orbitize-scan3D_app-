@@ -21,6 +21,7 @@ from . import accounts as A
 from . import ai as AI
 from . import ar as AR
 from . import billing
+from . import cadfit as CF
 from . import community
 from . import db
 from . import edit as ED
@@ -397,6 +398,35 @@ def edit_job(job_id: str, params: EditParams, p: Principal = Depends(principal))
         raise
     worker.submit(new, {"method": "edit", "source": job_id, "prompt": params.prompt.strip(),
                         "longest_mm": params.longest_mm, "spot": params.spot})  # fmt: skip
+    return jobs.public(new)
+
+
+class CadParams(BaseModel):
+    title: str = Field("", max_length=100)  # името на новия модел
+
+
+@app.post("/jobs/{job_id}/cad")
+def cad_job(job_id: str, params: CadParams, p: Principal = Depends(principal)):
+    """Pro: чист CAD модел, проектиран от Gemini и проверен спрямо това сканиране (app/cadfit.py); сканирането остава.
+    Връща новата задача, която приложението следи като сканиране."""
+    if existing(job_id, p)["state"] != "done":
+        raise HTTPException(409, "Моделът още не е готов.")
+    if not A.is_pro(p):
+        raise HTTPException(403, "CAD моделите са само за Pro профили.")
+    if not AI.key("gemini"):
+        raise HTTPException(503, "Услугата за CAD модели още не е включена.")
+    if jobs.count() >= MAX_JOBS or worker.ai_q.qsize() >= MAX_QUEUED:
+        raise HTTPException(503, "Услугата е натоварена в момента. Опитайте след малко.")
+    new = jobs.create(owner=p.user_id)
+    try:
+        if p.user_id:
+            A.add_scan(new, p.user_id, params.title.strip())
+        CF.copy_source(jobs.job_dir(job_id), jobs.job_dir(new))
+    except Exception:
+        shutil.rmtree(jobs.job_dir(new), ignore_errors=True)
+        A.forget_scan(new)
+        raise
+    worker.submit(new, {"method": "cad", "source": job_id})
     return jobs.public(new)
 
 
