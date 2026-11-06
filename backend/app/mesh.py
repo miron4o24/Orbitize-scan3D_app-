@@ -702,6 +702,110 @@ PIT_AREA = 0.001  # от площта: по-голямо вдлъбнато мя
 PIT_NARROW = 2  # ръба от мрежата: по-голямо място, което изчезва, ако се изреже толкова от края му, е пукнатина
 
 
+# Пукнатини и дупки по-сигурно: топче с радиус CLOSE_RADIUS се търкаля по предмета отвън (морфологично затваряне на обема). Където
+# не стига (цепка, дупка, процеп по-тесен от топчето), повърхността се изнася до мястото, до което стига; всичко, което топчето
+# докосва (лице, кичури, гънки), остава точно както е сканирано.
+CLOSE_RADIUS = 0.012  # от размера: 1,2 мм на 10 см, значи се затваря всичко по-тясно от 2,4 мм
+CLOSE_CELLS = 240  # клетки по най-дългата страна (0,4 мм на 10 см)
+CLOSE_DEEP = 1.0  # клетки под обичайното за повърхността: по-плитко е неточността на решетката и не се пипа
+CLOSE_ROUNDS = 3
+CLOSE_BLEND = 3  # стъпки заглаждане само около преместеното, за да няма стъпало по ръба на запълненото
+
+
+def closed_cracks(mesh: trimesh.Trimesh) -> tuple[trimesh.Trimesh, float]:
+    """Мрежата със запълнени пукнатини и дупки (същите стени и върхове) и делът на преместените върхове. Без затворен обем
+    (решетката не се запълва) мрежата се връща непроменена."""
+    from scipy.sparse import coo_matrix
+
+    size = float(mesh.extents.max())
+    pitch = size / CLOSE_CELLS
+    radius = CLOSE_RADIUS * size / pitch  # в клетки
+    pad = int(np.ceil(radius)) + 3
+    origin = mesh.bounds[0] - pad * pitch
+    shape = np.ceil(mesh.extents / pitch).astype(int) + 2 * pad + 1
+    shell = np.zeros(shape, bool)
+    edges = mesh.edges_unique
+    # Големите триъгълници (дъното) се нарязват, за да няма пролуки в черупката, през които вътрешността "изтича".
+    points, _ = trimesh.remesh.subdivide_to_size(mesh.vertices, mesh.faces, max_edge=0.5 * pitch, max_iter=20)
+    cells = np.clip(np.round((points - origin) / pitch).astype(int), 0, shape - 1)
+    shell[cells[:, 0], cells[:, 1], cells[:, 2]] = True
+    solid = ndimage.binary_fill_holes(shell)
+    if solid.sum() < 2 * shell.sum():  # черупката е отворена и вътрешността не се запълни
+        return mesh, 0.0
+    near = ndimage.distance_transform_edt(~solid) <= radius  # обемът, раздут с топчето
+    closed = ndimage.distance_transform_edt(near) > radius  # и свит обратно: там, докъдето топчето стига
+    closed |= solid
+    depth = ndimage.gaussian_filter(ndimage.distance_transform_edt(closed) - ndimage.distance_transform_edt(~closed), 1.0)
+    grad = np.stack(np.gradient(depth))
+    out = mesh.copy()
+    moved = np.zeros(len(mesh.vertices), bool)
+    level = None  # клетките са по-големи от повърхността, затова тя е малко под ръба на решетката: толкова не е дълбочина
+    for _ in range(CLOSE_ROUNDS):
+        at = ((out.vertices - origin) / pitch).T
+        inside = ndimage.map_coordinates(depth, at, order=1)
+        level = float(np.median(inside)) if level is None else level
+        inside = inside - level
+        go = inside > CLOSE_DEEP
+        if not go.any():
+            break
+        g = np.stack([ndimage.map_coordinates(grad[i], at[:, go], order=1) for i in range(3)], 1)
+        g /= np.maximum(np.linalg.norm(g, axis=1, keepdims=True), 1e-9)
+        out.vertices[go] = out.vertices[go] - (inside[go] * pitch)[:, None] * g  # навън: срещу посоката, в която расте дълбочината
+        moved |= go
+    if moved.any():
+        n = len(mesh.vertices)
+        links = coo_matrix((np.ones(len(edges), np.float32), (edges[:, 0], edges[:, 1])), shape=(n, n)).tocsr()
+        links = links + links.T
+        count = np.asarray(links.sum(1)).ravel()
+        blend = moved.copy()
+        for _ in range(2):
+            blend |= links @ blend.astype(np.float32) > 0
+        v = out.vertices.copy()
+        for _ in range(CLOSE_BLEND):
+            v[blend] = 0.5 * v[blend] + 0.5 * (links @ v)[blend] / np.maximum(count[blend], 1)[:, None]
+        out.vertices = v
+    return out, float(moved.mean())
+
+
+# Тънките тъмни черти по лицето и тялото на фигура не са дупки, а прегъвки: съседни триъгълници, обърнати един към друг (над 90°;
+# на сканирана фигура ~7 хиляди ръба). Истински предмет с такава мрежа (0,4 мм) няма толкова остри ръбове, затова само около тях
+# повърхността се заглажда, а всичко останало остава.
+FOLD_ANGLE = 60.0  # градуса между съседни стени: по-остро е прегъвка
+FOLD_RING = 1  # толкова пръстена около прегъвката се заглаждат с нея
+FOLD_PASSES = 6
+FOLD_ROUNDS = 8
+
+
+def smoothed_folds(mesh: trimesh.Trimesh) -> tuple[trimesh.Trimesh, int, int]:
+    """Мрежата със загладени прегъвки (същите стени и върхове), колко остри ръба имаше и колко остават."""
+    from scipy.sparse import coo_matrix
+
+    out = mesh.copy()
+    n = len(mesh.vertices)
+    edges = mesh.edges_unique
+    links = coo_matrix((np.ones(len(edges), np.float32), (edges[:, 0], edges[:, 1])), shape=(n, n)).tocsr()
+    links = links + links.T
+    count = np.maximum(np.asarray(links.sum(1)).ravel(), 1)[:, None]
+    floor = mesh.vertices[:, 2] <= mesh.bounds[0, 2] + 1e-6 * mesh.extents.max()  # дъното остава равно
+    before = None
+    for _ in range(FOLD_ROUNDS):
+        sharp = np.degrees(out.face_adjacency_angles) > FOLD_ANGLE
+        before = int(sharp.sum()) if before is None else before
+        if not sharp.any():
+            break
+        bad = np.zeros(n, bool)
+        bad[out.face_adjacency_edges[sharp].ravel()] = True
+        for _ in range(FOLD_RING):
+            bad |= links @ bad.astype(np.float32) > 0
+        bad &= ~floor
+        v = out.vertices.copy()
+        for _ in range(FOLD_PASSES):
+            v[bad] = 0.5 * v[bad] + 0.5 * (links @ v)[bad] / count[bad]
+        out.vertices = v
+    left = int((np.degrees(out.face_adjacency_angles) > FOLD_ANGLE).sum())
+    return out, before or 0, left
+
+
 def filled_pits(mesh: trimesh.Trimesh) -> tuple[trimesh.Trimesh, float]:
     """Мрежата с вдигнати тесни ямки и пукнатини (същите върхове, стени и цветове) и делът на преместените върхове."""
     from scipy.sparse import coo_matrix
