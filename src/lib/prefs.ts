@@ -19,4 +19,5 @@ export const PRO_INFO: Record<ProMethod, { label: string; time: string; minutes:
   single: { label: 'AI модел', time: 'до 8 мин', minutes: 8 },
   claude: { label: 'Claude дизайн', time: '~3 мин', minutes: 3 },
   photo: { label: 'AI от снимки', time: '~3 мин', minutes: 3 },
+  cad: { label: 'CAD модел', time: '~3 мин', minutes: 3 },
 };

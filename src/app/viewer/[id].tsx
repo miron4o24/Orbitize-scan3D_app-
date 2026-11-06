@@ -18,6 +18,7 @@ import { SpotPicker } from '@/components/SpotPicker';
 import { Badge, Button, Card, ErrorText, Field, H2, H3, IconButton, Label, Note, Row, Screen, Section, Segmented, Small, Title } from '@/components/ui';
 import {
   authHeaders,
+  cadModel,
   downloadForViewing,
   downloadResult,
   downloadSpin,
@@ -119,6 +120,11 @@ export default function Viewer() {
   const [picking, setPicking] = useState(false); // посочване върху модела на целия екран
   const [measuring, setMeasuring] = useState(false); // две докосвания върху модела на целия екран
   const [plating, setPlating] = useState(false); // диалогът за табелка с име (Pro)
+  // Въпросът за истинския размер след готов модел: само веднъж, докато потребителят не го е задал (копие 1:1 при печат).
+  const [askSize, setAskSize] = useState(() => {
+    const now = getScan(id);
+    return now?.status === 'done' && !!now.report && !now.sizeSet && !now.sizeAsked;
+  });
   const session = useSession();
   const user = session?.kind === 'account' ? session.user : null;
   const jobId = scan?.jobId;
@@ -128,6 +134,7 @@ export default function Viewer() {
   const stressAllowed = allowance(user, 'stress', jobId);
   const arAllowed = allowance(user, 'ar', jobId);
   const canEdit = !!user?.pro && !!user.ai?.edit && !!jobId && scan?.status === 'done';
+  const canCad = !!user?.pro && !!user.ai?.cad && !!jobId && scan?.status === 'done' && scan.report?.ai !== 'cad';
   // Създаден от видео, чиито кадри още са на сървъра: може да се добави липсваща страна.
   const [openedAt] = useState(() => Date.now());
   const canExtend = !!jobId && scan?.status === 'done' && !scan.report?.edit && scan.photoCount !== 1 && openedAt - scan.createdAt < FRAMES_KEPT_MS;
@@ -252,6 +259,17 @@ export default function Viewer() {
       setEditing(false);
       setEditText('');
       setSpot(null);
+      router.push({ pathname: '/processing/[id]', params: { id: next.id } });
+    });
+
+  // Pro: чист CAD модел, проектиран от AI и сравнен със сканирането (сървър app/cadfit.py); размерът се пренася.
+  const cad = () =>
+    run('cad', async () => {
+      if (!scan) return;
+      const title = `${scanTitle(scan)} · CAD`.slice(0, 100);
+      const job = await cadModel(jobId!, title);
+      const next = createScan(currentUserId() ?? undefined, 'cad');
+      updateScan(next.id, { jobId: job.id, status: job.state, title, longestMm: mmValid ? mm : undefined, sizeSet: scan.sizeSet });
       router.push({ pathname: '/processing/[id]', params: { id: next.id } });
     });
 
@@ -473,6 +491,12 @@ export default function Viewer() {
           </Appear>
         )}
 
+        {canCad && (
+          <Appear index={2}>
+            <Button title="Чист CAD модел" icon="cube-outline" variant="secondary" size="lg" onPress={cad} loading={busy === 'cad'} disabled={!!busy} />
+          </Appear>
+        )}
+
         {canEdit && (
           <Appear index={2}>
             <Button title="Табелка с име" icon="pricetag-outline" variant="secondary" size="lg" onPress={() => setPlating(true)} disabled={!mmValid || !!busy} />
@@ -685,6 +709,19 @@ export default function Viewer() {
         />
       )}
       <RenameDialog visible={renaming} initial={scan.title ?? ''} saving={busy === 'rename'} onClose={() => setRenaming(false)} onSave={rename} />
+      <SizeDialog
+        visible={askSize && !!report}
+        which={report ? longestSide(report.dimensions_mm) : ''}
+        onLater={() => {
+          setScan(updateScan(id, { sizeAsked: true }));
+          setAskSize(false);
+        }}
+        onSave={(value) => {
+          setMmInput(String(value));
+          setScan(updateScan(id, { longestMm: value, sizeSet: true, sizeAsked: true }));
+          setAskSize(false);
+        }}
+      />
       <PlateDialog visible={plating} saving={busy === 'plate'} error={plating ? error : null} onClose={() => setPlating(false)} onSave={nameplate} />
       {model && mmValid && (
         <MeasureTool
@@ -736,6 +773,41 @@ export default function Viewer() {
         />
       )}
     </View>
+  );
+}
+
+// Коя е най-дългата страна на предмета, за да знае потребителят какво да измери (z е височината).
+function longestSide(dims: readonly number[]): string {
+  const [x, y, z] = dims;
+  return z >= Math.max(x, y) ? 'височината му (отдолу догоре)' : 'дължината му (най-дългата страна)';
+}
+
+function SizeDialog(props: { visible: boolean; which: string; onLater: () => void; onSave: (mm: number) => void }) {
+  const s = useStyles();
+  const [value, setValue] = useState('');
+  const typed = Number(value.replace(',', '.'));
+  const valid = Number.isFinite(typed) && typed >= 1 && typed <= 2000;
+  return (
+    <Modal visible={props.visible} transparent animationType="fade" onRequestClose={props.onLater}>
+      <View style={s.backdrop}>
+        <Card style={s.dialog}>
+          <H2>Истински размер</H2>
+          <Small>{`За копие 1:1 измерете с линийка ${props.which} и въведете числото в милиметри.`}</Small>
+          <Field
+            value={value}
+            onChangeText={setValue}
+            autoFocus
+            keyboardType="decimal-pad"
+            placeholder="напр. 120"
+            accessibilityLabel="Най-дълга страна в милиметри"
+          />
+          <View style={s.buttons}>
+            <Button title="По-късно" variant="secondary" onPress={props.onLater} style={s.flex} />
+            <Button title="Запази" onPress={() => props.onSave(Math.round(typed * 10) / 10)} disabled={!valid} style={s.flex} />
+          </View>
+        </Card>
+      </View>
+    </Modal>
   );
 }
 

@@ -45,7 +45,7 @@ from . import single3d
 from . import texture as TX
 
 METHODS = ("single", "claude", "photo")
-SERVICES = {"anthropic": "ANTHROPIC_API_KEY", "meshy": "MESHY_API_KEY", "huggingface": "HF_TOKEN"}
+SERVICES = {"anthropic": "ANTHROPIC_API_KEY", "meshy": "MESHY_API_KEY", "huggingface": "HF_TOKEN", "gemini": "GEMINI_API_KEY"}
 NEEDS = {"claude": "anthropic", "photo": "meshy"}
 
 MODEL = os.environ.get("AI_CLAUDE_MODEL", "claude-opus-5-5")
@@ -84,7 +84,7 @@ def available() -> dict:
     """Какво може да използва Pro на този сървър; express: сканирането за около 5 минути (app/pipeline.py), edit:
     текстови промени (app/edit.py; простите заявки работят без езиковия му модел), и двете винаги са налични."""
     paid = {method: bool(key(service)) for method, service in NEEDS.items()}
-    return {"express": True, "edit": True, "single": single3d.ready()} | paid
+    return {"express": True, "edit": True, "single": single3d.ready(), "cad": bool(key("gemini"))} | paid
 
 
 # --- Кадри ----------------------------------------------------------------------------------------------------------

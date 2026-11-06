@@ -70,6 +70,8 @@ const SUBSTEPS: Record<string, string> = {
   // AI модели (Pro)
   'claude designing': 'Проектиране на предмета',
   'claude checking': 'Проверка на модела',
+  'ai designing': 'Проектиране на предмета',
+  'ai checking': 'Сравняване със сканирането и поправяне',
   'choosing frames': 'Избор на най-добрите кадри',
   'ai modelling': 'AI изгражда модела',
   'downloading the model': 'Получаване на модела',
@@ -159,6 +161,12 @@ const PRO_PLANS: Record<ProMethod, [string, number][]> = {
     ['reading video', 5],
     ['claude designing', 90],
     ['claude checking', 90],
+    ['cleaning', 5],
+  ],
+  cad: [
+    ['reconstructing', 5],
+    ['ai designing', 60],
+    ['ai checking', 150],
     ['cleaning', 5],
   ],
   photo: [
@@ -400,7 +408,7 @@ export default function Processing() {
     const queued = scan.status === 'queued';
     const share = queued ? 0 : progress;
     const left = Math.max(1, Math.round(total * (1 - share)));
-    const steps = method === 'edit' ? EDIT_STEPS : STEPS;
+    const steps = method === 'edit' || method === 'cad' ? EDIT_STEPS : STEPS;
     const at = steps.findIndex(([st]) => st === scan.status);
     return (
       <Screen>
@@ -453,13 +461,23 @@ export default function Processing() {
   }
 
   // Текстовата промяна няма какво да качва или повтаря: оригиналът е непроменен и потребителят я описва отново там.
-  if (method === 'edit')
+  if (method === 'edit' || method === 'cad')
     return (
       <Screen>
-        <Header title={scan.status === 'failed' ? 'Промяната не успя' : 'Промяната е спряна'} />
+        <Header
+          title={
+            method === 'cad'
+              ? scan.status === 'failed'
+                ? 'CAD моделът не успя'
+                : 'CAD моделът е спрян'
+              : scan.status === 'failed'
+                ? 'Промяната не успя'
+                : 'Промяната е спряна'
+          }
+        />
         <Appear index={1} style={s.failed}>
           {scan.status === 'failed' && <ErrorText>{failureText(scan.error)}</ErrorText>}
-          <Small>Оригиналът е непроменен. Опишете промяната по-просто.</Small>
+          <Small>{method === 'cad' ? 'Сканирането е непроменено. Опитайте отново по-късно.' : 'Оригиналът е непроменен. Опишете промяната по-просто.'}</Small>
           {scan.status === 'failed' &&
             owner &&
             (log === null ? (
