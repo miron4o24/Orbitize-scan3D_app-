@@ -234,10 +234,7 @@ class Tune(BaseModel):
 class StartParams(BaseModel):
     flat_base: bool = True
     video_bytes: int | None = None  # размерът на файла в приложението, за да не се обработва никога наполовина качено видео
-    quality: Literal["detailed", "quick"] = "detailed"  # quick: по-малко и по-малки кадри (pipeline.run)
-    # scan: сканирането за около 35 минути (за всички). Pro: single, AI моделът (claude, photo: AI моделите, изискващи
-    # платени ключове; app/ai.py). part: точна част 1:1 по снимки и мерки (app/part.py).
-    method: Literal["scan", "express", "single", "claude", "photo", "part"] = "scan"
+    method: Literal["express", "single", "claude", "photo", "part"] = "single"
     tune: Tune | None = None
     extend: str | None = Field(None, pattern=r"^[0-9a-f]{32}$")  # това видео добавя липсваща страна към този модел
     measures: list[Annotated[float, Field(ge=0, le=2000)]] | None = None  # мерки с линийка/шублер (мм) за точна част
@@ -256,12 +253,9 @@ def start_job(job_id: str, params: StartParams, p: Principal = Depends(principal
     if params.video_bytes is not None and params.video_bytes != status["video_bytes"]:
         raise HTTPException(400, "Видеото не се качи докрай. Опитайте отново.")
     n = len(status["received"])
-    params.quality = "detailed"
     if not p.admin:
         params.tune = None
-    if params.method == "express":
-        params.method = "scan"
-    pro = params.method != "scan"
+    pro = True
     trial = False
     if pro:
         if params.method not in ("single", "part") and not A.is_pro(p):

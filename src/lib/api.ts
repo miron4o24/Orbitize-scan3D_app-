@@ -52,8 +52,6 @@ export type Geometry = { dimensions_mm: [number, number, number]; volume_mm3: nu
 // part (точна част 1:1 по снимки и мерки с линийка, локално на сървъра), claude и photo. edit: текстова промяна на модел.
 export type AiMethod = 'single' | 'claude' | 'photo' | 'part';
 export type ProMethod = 'express' | 'edit' | AiMethod;
-export type Method = 'scan' | ProMethod;
-
 export type ResultFormat = 'glb' | 'stl' | 'obj' | '3mf';
 
 /* Какво казва дадена функция, когато сървърът още я няма. */
@@ -148,14 +146,12 @@ export type Health = { ok: boolean; accounts?: boolean; database?: string; googl
 export const health = () => call<Health>('GET', '/health');
 export const createJob = () => call<Job>('POST', '/jobs');
 export const getJob = (id: string) => call<Job>('GET', `/jobs/${id}`);
-// quality: сървъри отпреди бързите сканирания го пренебрегват и обработват с пълни детайли. method: AI модел (Pro).
 export const startJob = (
   id: string,
   params: {
     flat_base: boolean;
     video_bytes?: number;
-    quality?: 'quick' | 'detailed';
-    method?: Method;
+    method?: ProMethod;
     extend?: string;
     measures?: (number | null)[];
   },

@@ -3,8 +3,7 @@ import { useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
 
 import { Button, Card, ErrorText, Header, H3, Note, Screen, Section, Small } from '@/components/ui';
-import { API_URL, errorText, health } from '@/lib/api';
-import { importVideo } from '@/lib/importVideo';
+import { API_URL, health } from '@/lib/api';
 import { openEntry, useLibrary, type Entry } from '@/lib/library';
 import { aiAvailable } from '@/lib/prefs';
 import { font, makeStyles, space, useColors } from '@/theme';
@@ -40,17 +39,6 @@ export default function Home() {
     }
   };
 
-  const importTestVideo = async () => {
-    setBusy(true);
-    try {
-      await importVideo('scan');
-    } catch (e) {
-      setBackend(errorText(e) ? 'failed' : 'unknown');
-    } finally {
-      setBusy(false);
-    }
-  };
-
   return (
     <Screen>
       <Header kicker="DEVELOPER CONSOLE" title="Orbitize test bench" sub="Direct access to reconstruction pipelines and job state." />
@@ -69,11 +57,7 @@ export default function Home() {
       <Section label="Pipelines">
         <View style={s.actions}>
           <Button title="1:1 photos" sub="six views + three measurements" icon="construct-outline" onPress={() => router.push('/part')} size="lg" />
-          <Button title="Record video" sub="standard reconstruction" icon="videocam-outline" onPress={() => router.push('/capture')} size="lg" />
-          {aiAvailable() && (
-            <Button title="AI video" sub="single-image AI pipeline" icon="sparkles-outline" onPress={() => router.push({ pathname: '/capture', params: { ai: '1' } })} size="lg" />
-          )}
-          <Button title="Import video" icon="download-outline" variant="secondary" onPress={importTestVideo} loading={busy} />
+          {aiAvailable() && <Button title="AI video" sub="single-image AI pipeline" icon="sparkles-outline" onPress={() => router.push('/capture')} size="lg" />}
         </View>
       </Section>
 

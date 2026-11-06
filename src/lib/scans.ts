@@ -1,8 +1,7 @@
 import { Directory, File, Paths } from 'expo-file-system';
 
-import type { Method, Report, ServerScan } from './api';
+import type { ProMethod, Report, ServerScan } from './api';
 import { dayMonth } from './dates';
-import type { Quality } from './prefs';
 
 // Сканиранията са само на диска: Paths.document/scans/<id>/{scan.json, video.mp4 или photos/, results}.
 export type ScanStatus =
@@ -31,9 +30,8 @@ export type Scan = {
   title?: string;
   share?: string; // номерът на публичния линк, докато е споделено
   published?: boolean; // в общността
-  quality?: Quality; // как го обработва сървърът (липсва: подробно)
   imported?: boolean; // видеото е от галерията, а не от камерата на приложението
-  method?: Method; // AI модел (Pro) вместо сканиране (липсва: сканиране)
+  method?: ProMethod;
   extendFrom?: string; // това видео добавя липсваща страна към този модел (номер на задачата му)
   measures?: (number | null)[]; // мерки с линийка/шублер [L, W, H] в мм (Точна част)
 };
@@ -49,14 +47,14 @@ const metaFile = (id: string) => new File(scanDir(id), 'scan.json');
 
 const newId = () => `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 
-export function createScan(userId?: string, method: Method = 'scan'): Scan {
+export function createScan(userId?: string, method: ProMethod = 'single'): Scan {
   const scan: Scan = {
     id: newId(),
     createdAt: Date.now(),
     status: 'capturing',
     photoCount: 0,
     userId,
-    ...(method !== 'scan' && { method }),
+    method,
   };
   photosDir(scan.id).create({ intermediates: true });
   saveScan(scan);
