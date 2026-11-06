@@ -470,10 +470,10 @@ def run_part(job: Path, params: dict, set_state: Callable[[str], None], sh: Call
     base = {"photos_used": len(found), "photos_total": len(found), "ai": "part", "object": "", "suitable": True}
     if report is not None and (job / "model.ply").exists():
         work.mkdir(parents=True, exist_ok=True)
-        return report | base | truesize.apply(job, list(size), sh)  # проверява пропорциите; при разминаване: изгледите
+        return report | base | truesize.apply(job, list(size), sh, plain=True)  # проверява пропорциите; при разминаване: изгледите
     note("part: no scan from the photos; building the part from their views")
     TX.clear(job)
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir(parents=True)
     set_state("reconstructing")
-    return base | truesize.from_views(job, list(size), sh)
+    return base | truesize.from_views(job, list(size), sh, plain=True)

@@ -42,7 +42,7 @@ if len(API_TOKEN) < 8:
     raise RuntimeError("Set API_TOKEN (at least 8 characters).")
 
 MIN_PHOTOS, MAX_PHOTOS = 8, 120
-PART_MIN_PHOTOS = 10  # точна част: най-малко толкова снимки от всички страни (app/cadfit.py run_part)
+PART_MIN_PHOTOS = 6  # точна част: шестте страни, посочени от потребителя, и колкото още иска (app/cadfit.py run_part)
 MAX_PHOTO_BYTES = 15 * 1024 * 1024
 MAX_VIDEO_BYTES = int(os.environ.get("MAX_VIDEO_MB", "600")) * 1024 * 1024
 MAX_CHUNK_BYTES = 16 * 1024 * 1024
