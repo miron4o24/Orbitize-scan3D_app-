@@ -346,8 +346,8 @@ export default function Processing() {
       }
       // Изборите в момента: могат да се променят, докато качването върви.
       const now = getScan(id) ?? scan!;
-      // AI моделът, а точната част (снимки и мерки) остава такава; и по-старо сканиране се опитва отново като AI модел.
-      const way = now.method === 'part' ? 'part' : 'single';
+      // Винаги AI моделът на сървъра; точна част носи и мерките, по които сървърът нагласява размера (app/truesize.py).
+      const way = 'single';
       update({ method: way, quality: undefined });
       const started = await retrying(() =>
         startJob(job.id, {
@@ -356,7 +356,7 @@ export default function Processing() {
           ...(hasVideo && { video_bytes: video.size }),
           method: way,
           ...(now.extendFrom && { extend: now.extendFrom }),
-          ...(way === 'part' && { size_mm: now.partSize ?? [], notes: now.partNotes ?? '' }),
+          ...(now.partSize && { size_mm: now.partSize }),
         }),
       ).catch((e) => {
         // Опит, който е минал, но е загубил отговора си, оставя задачата вече стартирана.
