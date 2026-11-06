@@ -26,6 +26,7 @@ from . import mesh as M
 from . import motion as MO
 from . import pipeline as PI
 from . import plans as PL
+from . import part as PART
 from . import printing as PR
 from . import progress
 from . import render as RE
@@ -271,9 +272,15 @@ def start_job(job_id: str, params: StartParams, p: Principal = Depends(principal
                 trial = True
         if not AI.available().get(params.method, True):
             raise HTTPException(503, "Тази AI услуга още не е включена.")
-    min_photos = 1 if params.method in (*AI.METHODS, "part") else MIN_PHOTOS
-    if not status["video_bytes"] and n < min_photos:
-        raise HTTPException(400, f"Нужно е видео или поне {MIN_PHOTOS} снимки.")
+    if params.method == "part":
+        if status["video_bytes"]:
+            raise HTTPException(400, "Точна част 1:1 работи със шест снимки от страни и три мерки, не с видео.")
+        if n < len(PART.SIDES):
+            raise HTTPException(400, "За точна част 1:1 са нужни шестте обозначени снимки на частта.")
+    else:
+        min_photos = 1 if params.method in AI.METHODS else MIN_PHOTOS
+        if not status["video_bytes"] and n < min_photos:
+            raise HTTPException(400, f"Нужно е видео или поне {MIN_PHOTOS} снимки.")
     if (worker.ai_q if pro else worker.q).qsize() >= MAX_QUEUED:
         raise HTTPException(503, "Твърде много сканирания чакат в момента. Опитайте по-късно.")
     if params.extend:
