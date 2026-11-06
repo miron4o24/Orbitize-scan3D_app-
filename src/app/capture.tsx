@@ -35,9 +35,15 @@ export default function Capture() {
   useKeepAwake(); // екранът не бива да се заключва по средата на кръга
   const [permission, requestPermission] = useCameraPermissions();
   // Заснемане с точка в средата. extend: това видео добавя липсваща страна към модела.
-  const params = useLocalSearchParams<{ extend?: string; title?: string }>();
+  // part: точна част, мерките "L,W,H" в мм от екрана part.tsx (0: не е мерено); сървърът нагласява размера по тях.
+  const params = useLocalSearchParams<{ extend?: string; title?: string; part?: string }>();
   const [scan] = useState(() => {
     const made = createScan(currentUserId() ?? undefined, 'single');
+    const size = params.part?.split(',').map(Number);
+    if (size?.length === 3 && size.every((v) => Number.isFinite(v) && v >= 0)) {
+      const sized = size as [number, number, number];
+      return updateScan(made.id, { partSize: sized, longestMm: Math.max(...sized) }) ?? made;
+    }
     return params.extend ? updateScan(made.id, { extendFrom: params.extend, title: params.title }) ?? made : made;
   });
   const extending = !!params.extend;

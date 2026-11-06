@@ -12,7 +12,7 @@ import time
 import uuid
 from pathlib import Path
 
-from . import ai, cadfit, edit, notify, pipeline
+from . import ai, cadfit, edit, notify, pipeline, truesize
 from .mesh import MeshError
 
 DATA = Path(os.environ.get("DATA_DIR", "data")).resolve()
@@ -330,6 +330,8 @@ class Worker:
             elif method in ai.METHODS:
                 report = ai.run(d, method, bool(params.get("flat_base", True)), set_state, sh,
                                 lambda step: self._step(job_id, step), params.get("tune"))  # fmt: skip
+                if params.get("size_mm"):  # точна част: размерът по трите оси по мерките на потребителя (app/truesize.py)
+                    report = report | truesize.apply(d, params["size_mm"])
             else:
                 report = pipeline.run(d, bool(params.get("flat_base", True)), set_state, sh,
                                       quick=params.get("quality") == "quick", express=method == "express")  # fmt: skip
