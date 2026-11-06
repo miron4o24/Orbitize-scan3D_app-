@@ -39,6 +39,7 @@ export type Report = {
   ai?: AiMethod; // създаден от AI (Pro), а не сканиран
   object?: string; // какво е видял AI, на български
   real_mm?: number | null; // реалната най-дълга страна: оценка на AI или резултат от текстова промяна
+  size_given?: boolean; // точна част: размерът е по мерките на потребителя (копие 1:1)
   // при размер 100 мм, за оценката на печата (lib/printEstimate.ts); за по-стари сканирания: getGeometry
   volume_mm3?: number;
   area_mm2?: number;
@@ -53,7 +54,8 @@ export type Geometry = { dimensions_mm: [number, number, number]; volume_mm3: nu
 // сървърът няма ключове за тях). edit: текстова промяна на модел (сървър app/edit.py), направена от екрана за
 // преглед.
 // cad: чист CAD модел от готово сканиране (сървър app/cadfit.py, безплатният Gemini, проверен спрямо сканирането).
-export type AiMethod = 'single' | 'claude' | 'photo' | 'cad';
+// part: точна част (инженерен режим): снимки + мерки с линийка -> CAD модел в истинския размер (сървър app/cadfit.py run_part).
+export type AiMethod = 'single' | 'claude' | 'photo' | 'cad' | 'part';
 export type ProMethod = 'express' | 'edit' | AiMethod;
 export type Method = 'scan' | ProMethod;
 
@@ -154,7 +156,15 @@ export const getJob = (id: string) => call<Job>('GET', `/jobs/${id}`);
 // quality: сървъри отпреди бързите сканирания го пренебрегват и обработват с пълни детайли. method: AI модел (Pro).
 export const startJob = (
   id: string,
-  params: { flat_base: boolean; video_bytes?: number; quality?: 'quick' | 'detailed'; method?: Method; extend?: string },
+  params: {
+    flat_base: boolean;
+    video_bytes?: number;
+    quality?: 'quick' | 'detailed';
+    method?: Method;
+    extend?: string;
+    size_mm?: number[];
+    notes?: string;
+  },
 ) => call<Job>('POST', `/jobs/${id}/start`, params);
 export const cancelJob = (id: string) => call<Job>('DELETE', `/jobs/${id}`);
 

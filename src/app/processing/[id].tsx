@@ -163,6 +163,15 @@ const PRO_PLANS: Record<ProMethod, [string, number][]> = {
     ['claude checking', 90],
     ['cleaning', 5],
   ],
+  part: [
+    ['finding the object', 40],
+    ['camera solving', 30],
+    ['dense matching', 90],
+    ['fusing depth', 40],
+    ['ai designing', 60],
+    ['ai checking', 120],
+    ['cleaning', 5],
+  ],
   cad: [
     ['reconstructing', 5],
     ['ai designing', 60],
@@ -262,6 +271,8 @@ export default function Processing() {
             // AI модел носи името си и приблизителния реален размер, ако потребителят не е дал такъв.
             ...(r?.object && !was?.title && { title: r.object }),
             ...(r?.real_mm && !was?.longestMm && { longestMm: r.real_mm }),
+            // Точна част по мерките на потребителя: размерът е истинският, без въпрос след това.
+            ...(r?.real_mm && r.size_given && { longestMm: r.real_mm, sizeSet: true }),
           }),
         );
         if (job.state === 'done') {
@@ -339,15 +350,17 @@ export default function Processing() {
       }
       // Изборите в момента: могат да се променят, докато качването върви.
       const now = getScan(id) ?? scan!;
-      // Само AI моделът: и по-старо сканиране се опитва отново така.
-      update({ method: 'single', quality: undefined });
+      // AI моделът, а точната част (снимки и мерки) остава такава; и по-старо сканиране се опитва отново като AI модел.
+      const way = now.method === 'part' ? 'part' : 'single';
+      update({ method: way, quality: undefined });
       const started = await retrying(() =>
         startJob(job.id, {
           flat_base: now.flatBase ?? true,
           quality: 'detailed',
           ...(hasVideo && { video_bytes: video.size }),
-          method: 'single',
+          method: way,
           ...(now.extendFrom && { extend: now.extendFrom }),
+          ...(way === 'part' && { size_mm: now.partSize ?? [], notes: now.partNotes ?? '' }),
         }),
       ).catch((e) => {
         // Опит, който е минал, но е загубил отговора си, оставя задачата вече стартирана.
