@@ -65,18 +65,30 @@ def soft_mask(sess, image: Image.Image) -> tuple[np.ndarray, tuple[int, int]]:
     return full, (box[0], box[1])
 
 
-def upright(mask: np.ndarray) -> np.ndarray:
-    """Маската, завъртяна така, че дългата ос на предмета да е хоризонтална (с най-малкото завъртане)."""
+def upright_angle(mask: np.ndarray) -> float:
+    """Ъгълът (градуси), с който дългата ос на предмета става хоризонтална (най-малкото завъртане)."""
     ys, xs = np.nonzero(mask > 0.5)
     pts = np.c_[xs, ys].astype(float)
     pts -= pts.mean(0)
     _, vecs = np.linalg.eigh(np.cov(pts.T))
     long = vecs[:, -1]
     angle = np.degrees(np.arctan2(long[1], long[0]))
-    angle = (angle + 90) % 180 - 90  # в (-90, 90]
+    return float((angle + 90) % 180 - 90)  # в (-90, 90]
+
+
+def turned(a: np.ndarray, angle: float, order: int = 1) -> np.ndarray:
     if abs(angle) < 0.3:
-        return mask
-    return ndimage.rotate(mask, angle, reshape=True, order=1, mode="constant", cval=0.0)
+        return a
+    return ndimage.rotate(a, angle, axes=(1, 0), reshape=True, order=order, mode="constant", cval=0.0)
+
+
+def upright(mask: np.ndarray) -> np.ndarray:
+    """Маската, завъртяна така, че дългата ос на предмета да е хоризонтална (с най-малкото завъртане)."""
+    return turned(mask, upright_angle(mask))
+
+
+COLOUR_SIDE = 700  # цветовете на изгледа се пазят с толкова пиксела (за оцветяването на модела)
+OFF_VIEW = 0.3  # log на пропорциите: по-далеч от очакваното изгледът не е от тази страна
 
 
 def outline(mask: np.ndarray) -> tuple[list[np.ndarray], list[np.ndarray], tuple[float, float, float, float]]:
@@ -101,10 +113,48 @@ def outline(mask: np.ndarray) -> tuple[list[np.ndarray], list[np.ndarray], tuple
 def view(sess, path: Path) -> dict:
     with Image.open(path) as im:
         image = ImageOps.exif_transpose(im).convert("RGB")
-    full, _ = soft_mask(sess, image)
-    full = upright(full)
+    full, (bx, by) = soft_mask(sess, image)
+    angle = upright_angle(full)
+    # Цветовете: същото изрязване и завъртане, но умалени (паметта: видео дава десетки кадри).
+    f = min(1.0, COLOUR_SIDE / max(full.shape))
+    crop = image.crop((bx, by, bx + full.shape[1], by + full.shape[0]))
+    small = np.asarray(crop.resize((max(1, int(crop.width * f)), max(1, int(crop.height * f))), Image.BILINEAR), np.float32)
+    colour = turned(small, angle).clip(0, 255).astype(np.uint8)
+    full = turned(full, angle)
     outers, holes, box = outline(full)
-    return {"outers": outers, "holes": holes, "box": box, "px": (box[2] - box[0], box[3] - box[1])}
+    return {"outers": outers, "holes": holes, "box": box, "px": (box[2] - box[0], box[3] - box[1]), "rgb": colour,
+            "rgb_scale": colour.shape[1] / full.shape[1]}  # fmt: skip
+
+
+def paint(mesh, views: dict, dims: list[float]) -> None:
+    """Цветове на върховете от изгледите: всяка стена взима цвета от изгледа, към който гледа (горе и долу от снимката
+    отгоре, отпред и отзад от тази отстрани, краищата от тази от края, ако я има)."""
+    L, W, H = dims
+    n = mesh.vertex_normals
+    v = mesh.vertices
+    # (изглед, ос по ширината на снимката, ос по височината, размерите им в мм)
+    plan = {"top": (0, 1, L, W), "side": (0, 2, L, H), "end": (1, 2, W, H)}
+    choice = np.argmax(np.abs(n), axis=1)  # 0: краищата, 1: отпред/отзад, 2: горе/долу
+    want = np.where(choice == 2, "top", np.where(choice == 1, "side", "end"))
+    colours = np.full((len(v), 4), 200, np.uint8)
+    colours[:, 3] = 255
+    for name, (a, b, wa, wb) in plan.items():
+        # Без такъв изглед: цветът от снимката отгоре, право под точката (ръбът на частта там).
+        source = name if name in views else "top"
+        rows = want == name
+        if not rows.any() or source not in views:
+            continue
+        sv = views[source]
+        sa, sb, swa, swb = plan[source]
+        x0, y0, x1, y1 = sv["box"]
+        k = sv["rgb_scale"]
+        px = (x0 + v[rows, sa] / swa * (x1 - x0)) * k
+        py = (y1 - v[rows, sb] / swb * (y1 - y0)) * k
+        img = sv["rgb"]
+        px = np.clip(np.round(px).astype(int), 0, img.shape[1] - 1)
+        py = np.clip(np.round(py).astype(int), 0, img.shape[0] - 1)
+        colours[rows, :3] = img[py, px]
+    mesh.visual.vertex_colors = colours
 
 
 def pick(found: dict[str, dict], size: list[float]) -> dict[str, dict]:
@@ -135,7 +185,13 @@ def pick(found: dict[str, dict], size: list[float]) -> dict[str, dict]:
                     score = shape + 0.5 * float(np.ptp(scale)) + (0.3 if end is None else 0.0)
                     if score < best_score:
                         best, best_score = trio, score
-        return {v: found[n] for v, n in best.items()}
+        # Изглед, чиито пропорции не са като от мерките, не е истински страничен или от края (видео само отгоре):
+        # без него стените са отвесни, а височината е мярката.
+        out = {"top": found[best["top"]]}
+        for v in ("side", "end"):
+            if v in best and abs(np.log(ratio[best[v]] / want[v])) <= OFF_VIEW:
+                out[v] = found[best[v]]
+        return out
     side = max(left, key=left.get)
     chosen["side"] = found[side]
     left.pop(side)
@@ -247,6 +303,11 @@ def main(out: Path, measures: str, args: list[str]) -> None:
     if "top" not in views:
         raise SystemExit("views: no picture shows the part")
     mesh, dims = build(views, size)
+    import trimesh
+
+    points, faces = trimesh.remesh.subdivide_to_size(mesh.vertices, mesh.faces, max_edge=0.01 * max(dims), max_iter=12)
+    mesh = trimesh.Trimesh(points, faces, process=False)
+    paint(mesh, views, dims)
     mesh.export(out)
     info = {"size": [round(v, 2) for v in dims], "extents": np.round(mesh.extents, 2).tolist(), "faces": len(mesh.faces),
             "watertight": bool(mesh.is_watertight), "views": {k: {"px": [round(p) for p in v["px"]], "holes": len(v["holes"])}
