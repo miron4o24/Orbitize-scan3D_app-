@@ -765,6 +765,29 @@ def to_the_rim(places: np.ndarray, depth: np.ndarray, thick: float) -> tuple[np.
     return np.r_[0.0, places, 1.0], np.clip(np.r_[first, depth, last], 0.0, thick)
 
 
+HANDLE = 0.12  # от радиуса: половината дебелина на това, което стърчи от кръгло тяло (дръжка на чаша)
+
+
+def revolved_half(on: np.ndarray) -> np.ndarray:
+    """Половината дебелина (в клетки на решетката) на кръгъл предмет във всяка точка: тялото е очертанието, завъртяно около
+    отвесната си ос (радиусът на всеки ред е по-малкото от двете страни, за да не се завърти и дръжката), а стърчащото извън него
+    (дръжка) е плоча с дебелина HANDLE от радиуса."""
+    n = on.shape[0]
+    rows = on.any(1)
+    left = np.where(rows, on.argmax(1), 0)
+    right = np.where(rows, n - 1 - on[:, ::-1].argmax(1), 0)
+    axis = float(np.median(((left + right) / 2)[rows])) if rows.any() else n / 2
+    radius = np.where(rows, np.maximum(np.minimum(axis - left, right - axis), 0) + 0.5, 0.0)
+    # Гладко от ред на ред: стъпалата на очертанието иначе стават пръстени по тялото (малка снимка).
+    if rows.any():
+        first, last = np.flatnonzero(rows)[[0, -1]]
+        radius[first : last + 1] = ndimage.gaussian_filter1d(radius[first : last + 1], max(1.0, ROUND_SMOOTH * n), mode="nearest")
+    x = np.arange(n)[None, :] - axis
+    body = np.sqrt(np.maximum(radius[:, None] ** 2 - x**2, 0.0))
+    plate = HANDLE * float(np.median(radius[rows])) if rows.any() else 0.0
+    return np.where(on, np.maximum(body, np.where(np.abs(x) > radius[:, None], plate, 0.0)), 0.0).astype(np.float32)
+
+
 def length_scale(on: np.ndarray, depth: float, focal: float) -> float:
     """Колко е дължината на предмета (решетката `on`) в единиците на сцената на разстояние depth. focal: в дялове от квадрата."""
     ys, xs = np.nonzero(on)
@@ -880,11 +903,12 @@ def flipped(a: np.ndarray, how: str) -> np.ndarray:
 def build(frame: Path, m: np.ndarray, place: tuple[int, int, int], vol: np.ndarray, radius: float, level: float,
           distance: float, fov: float, colour_at: Callable[[np.ndarray], np.ndarray], work: Path, out: Path,
           others: list[tuple[Path, np.ndarray]] = (), strength: float = 1.0, thin: float | None = None,
-          switched: bool = False) -> dict | None:  # fmt: skip
+          switched: bool = False, round_body: bool = False) -> dict | None:  # fmt: skip
     """Записва модела в `out` и картите в `work`; връща описанието му или None, ако формата на TripoSR не пасва на
     снимката. place: (left, top, side), квадратът от кадъра, показан на TripoSR. colour_at: цветовете на TripoSR (0-1)
     за точки. switched: кадърът вече е сменен веднъж заради пръсти (плоският предмет взима от TripoSR само дълбочината и гърба,
-    така че друг кадър отпред не пречи)."""
+    така че друг кадър отпред не пречи). round_body: предметът е кръгъл (чаша, бутилка; app/kind.py): тялото е очертанието, завъртяно
+    около отвесната си ос, а гърбът е със цветовете на снимката."""
     if __package__:
         from . import mesh as M
     else:
@@ -911,7 +935,8 @@ def build(frame: Path, m: np.ndarray, place: tuple[int, int, int], vol: np.ndarr
             f2, m2 = view_frames[better]
             print(f"front frame: {f2.name} instead of {frame.name}, where the face is covered", flush=True)
             rest = [(frame, m)] + [(f, mask) for f, mask in others if f != f2]
-            return build(f2, m2, place, vol, radius, level, distance, fov, colour_at, work, out, rest, strength, thin, switched=True)
+            return build(f2, m2, place, vol, radius, level, distance, fov, colour_at, work, out, rest, strength, thin, switched=True,
+                         round_body=round_body)  # fmt: skip
         place = centred_place(box)
         all_views, all_frames = list(views), list(view_frames)  # и за гърба
         views = [v for k, v in enumerate(views) if k not in held]  # ръка в изгледа би влязла и в детайла
@@ -934,7 +959,7 @@ def build(frame: Path, m: np.ndarray, place: tuple[int, int, int], vol: np.ndarr
     small_mask = lambda n: np.asarray(Image.fromarray(square).resize((n, n), Image.BILINEAR)) > 127  # noqa: E731
     azimuth, fits = best_azimuth(vol, radius, level, distance, fov, small_mask(96))
     print(f"shape against the photo's outline, by direction: { {k: round(v, 2) for k, v in fits.items()} }, using {azimuth}", flush=True)
-    if fits[azimuth] < MIN_IOU and not flat:  # плоският предмет взима от TripoSR само цветовете на гърба, ако няма кадър
+    if fits[azimuth] < MIN_IOU and not (flat or round_body):  # тогава от TripoSR се взема само разстоянието (и цветовете на гърба)
         return None
     cam = orbit_camera(distance, fov, azimuth)
 
@@ -1014,6 +1039,13 @@ def build(frame: Path, m: np.ndarray, place: tuple[int, int, int], vol: np.ndarr
         print(f"flat body, measured thickness {thin:.3f} of the length; cross-section: {made}"
               + (f", rounded side {'front' if front_round else 'back'}" if shaped else "")
               + ("" if along is None else f", thickness at the ends {float(along[:8].mean()):.2f} and {float(along[-8:].mean()):.2f}"), flush=True)  # fmt: skip
+    elif round_body:
+        middle = np.nanmedian(resized((near + far) / 2, n)[on])
+        depth = float(middle if np.isfinite(middle) else distance)
+        half = revolved_half(on) * depth / (cam.focal * (n - 1))  # клетки -> единици на сцената на това разстояние
+        front_body, back_body = depth - half, depth + half
+        shaped = True
+        print("round body: the outline turned around its upright axis", flush=True)
     else:
         front_body, back_body = RL.masked_blur(resized(near, n), on, SHAPE_BLUR * width), RL.masked_blur(resized(far, n), on, BACK_BLUR * width)
     front_t = front_body
@@ -1076,6 +1108,8 @@ def build(frame: Path, m: np.ndarray, place: tuple[int, int, int], vol: np.ndarr
         _, how, colour2, ins2, _, part2, _, _, b2 = back_side  # colour2: кадърът на гърба без ръката
         fix2 = TX.light_fix(np.asarray(colour2), ins2, neutral, None if neutral else gain)
         back_chart = np.asarray(Image.fromarray(flipped(filled_colours(fix2(np.asarray(colour2.crop(b2))), part2), how)).resize((w0, h0), Image.LANCZOS))
+    if back_chart is None and round_body:  # отзад кръглият предмет е като отпред: без шев по очертанието
+        back_chart = face
     if back_chart is None:
         back_points = cam.center + cam.rays(*grid(RAYS)) * resized(back_t, RAYS)[..., None]
         ai = (np.clip(colour_at(back_points.reshape(-1, 3).astype(np.float32)), 0, 1) * 255).reshape(RAYS, RAYS, 3).astype(np.float32)

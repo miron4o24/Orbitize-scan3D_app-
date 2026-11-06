@@ -25,6 +25,7 @@ FOREGROUND = 0.85  # дял от квадрата, запълнен от пре�
 RESOLUTION = 320  # мрежа за marching cubes: по-фина от 256 на TripoSR за детайл при печат
 THRESHOLD = 25.0  # нивото на плътност на повърхността при TripoSR
 CHUNK = 32768
+KIND_FILE = "kind.json"  # app/kind.py: какъв е предметът на снимката (app/ai.py by_single)
 CAM_DISTANCE, CAM_FOV = 1.9, 40.0  # изгледът, от който TripoSR приема, че е входът (tsr.system.TSR.render)
 
 
@@ -147,9 +148,16 @@ def main(frames_dir: Path, masks_file: Path, out: Path, strength: float = 1.0, t
             return model.renderer.query_triplane(model.decoder, torch.from_numpy(points).float(), code)["color"].numpy()
 
         others = [(f, masks[f.name]) for f in frames if f.name in masks and f != frame]
+        # Какъв е предметът (app/kind.py, само при една снимка): плосък получава обичайната за вида дебелина, кръгъл се завърта.
+        kind_file = out.parent / KIND_FILE
+        kind = json.loads(kind_file.read_text(encoding="utf-8")) if kind_file.exists() else {}
+        if kind.get("group") == "flat" and thin is None and kind.get("thin"):
+            thin = float(kind["thin"])
+            print(f"flat object ({kind.get('prompt')}): usual thickness {thin:.3f} of the length", flush=True)
+        round_body = kind.get("group") == "round"
         try:
             info = photo3d.build(frame, m, place, vol, r, THRESHOLD, CAM_DISTANCE, CAM_FOV, colour_at, out.parent, out, others,
-                                 strength, thin)  # fmt: skip
+                                 strength, thin, round_body=round_body)  # fmt: skip
         except Exception as e:  # каквото и да е: моделът на TripoSR пак си заслужава
             print(f"two sided model failed: {e!r}", flush=True)
             info = None

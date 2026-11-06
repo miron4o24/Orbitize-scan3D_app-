@@ -39,6 +39,7 @@ from . import pipeline as P
 from . import relief as RL
 from . import segment as S
 from . import sideview as SV
+from . import kind as KD
 from . import single3d
 from . import texture as TX
 
@@ -838,13 +839,22 @@ def by_single(job: Path, work: Path, found: list[Path], sh: Callable[[str, list]
     masks, out = work / "single_masks.npz", work / "single.ply"
     sh("finding the object", [sys.executable, S.__file__, pick, masks])
     thin = read_thinnest(work)
+    kind = {}
+    if len(found) == 1 and KD.ready():  # една снимка: какъв е предметът решава как да се направи (видеото си мери формата)
+        try:
+            sh("finding the object", [sys.executable, KD.__file__, next(pick.iterdir()), masks, work / single3d.KIND_FILE])
+            if (work / single3d.KIND_FILE).exists():
+                kind = json.loads((work / single3d.KIND_FILE).read_text(encoding="utf-8"))
+                P.note(job, f"object: {kind.get('prompt')} ({kind.get('name')}), made as {kind.get('group')}: {kind.get('why')}")
+        except P.Failed as e:
+            P.note(job, f"object kind: failed ({e})")
     sh("ai modelling", [sys.executable, single3d.__file__, pick, masks, out, str(strength), *([] if thin is None else [str(thin)])])
     info = json.loads(out.with_suffix(".json").read_text())
     # Без сливане на върхове: двата слоя се допират по ръба и слетите точки го разпадаха на хиляди парчета.
     model = trimesh.load(out, force="mesh", process=False)
     model.metadata.pop("_ply_raw", None)
     P.note(job, f"single frame AI: {info}")
-    return model, {"object": "", "suitable": True, "real_mm": None}
+    return model, {"object": str(kind.get("name") or ""), "suitable": True, "real_mm": None}  # името става заглавие в приложението
 
 
 # --- Задачата -------------------------------------------------------------------------------------------------------
