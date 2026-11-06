@@ -799,3 +799,11 @@ def test_rolling_ball_fills_slits_and_leaves_wide_grooves():
     assert np.median(r[slit]) > 49.0  # the slit is filled
     assert abs(np.median(r[groove]) - 48.0) < 0.2  # the groove stays
     assert out.is_watertight and len(out.faces) == len(ball.faces)
+
+
+def test_online_ai_quota_message_gives_the_wait():
+    from app import online3d
+
+    msg = "You have exceeded your ZeroGPU quota (120s requested vs. 172s left). Try again in 23:59:25."
+    assert online3d.wait_from(msg) == 23 * 3600 + 59 * 60 + 25
+    assert online3d.wait_from("FileNotFoundError") is None
