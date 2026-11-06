@@ -649,7 +649,7 @@ def decimate(mesh: trimesh.Trimesh, faces: int, keep_closed: bool = True) -> tri
     m = ms.current_mesh()
     out_colors = (np.clip(m.vertex_color_matrix(), 0, 1) * 255).astype(np.uint8) if colors is not None else None
     out = trimesh.Trimesh(m.vertex_matrix(), m.face_matrix(), vertex_colors=out_colors)
-    if keep_closed and not out.is_watertight:
+    if keep_closed and not out.is_watertight:  # (поправките на MeshLab за това сриваха процеса: модел от снимка се прави направо по-малък)
         return mesh
     trimesh.repair.fix_normals(out)
     return out
@@ -716,6 +716,9 @@ def make_printable(mesh: trimesh.Trimesh, floor: float, flat_base: bool, longest
                    smoothing: int = LIGHT, max_faces: int = MAX_FACES) -> trimesh.Trimesh:  # fmt: skip
     """smoothing: проходи на smooth(); 0 за проектиран модел (CAD от app/ai.py), чиито стени вече са плоски, и за модел
     от снимка, чийто детайл е нарочен. max_faces: повече стени за модел с фин релеф."""
+    # Суровите данни на прочетен PLY: split копира метаданните във всяко парче, а модел от снимка се разпадаше на 2207 парчета
+    # (2207 копия по 20 MB: 14 минути и сървърът без памет).
+    mesh.metadata.pop("_ply_raw", None)
     parts = mesh.split(only_watertight=False)
     if not len(parts):
         raise MeshError("От кадрите не се получи модел. Опитайте да заснемете отново, по-бавно и с повече светлина.")

@@ -944,8 +944,10 @@ def build(frame: Path, m: np.ndarray, place: tuple[int, int, int], vol: np.ndarr
     near, far = fill_gaps(near), fill_gaps(far)
     print(f"layers traced, {time.time() - started:.0f} s", flush=True)
 
-    # Толкова гъста решетка, че предметът да има около POINTS точки.
-    n = int(min(side, side * (POINTS / max(1, inside.sum())) ** 0.5)) + 1
+    # Толкова гъста решетка, че предметът да има около POINTS точки; обемен предмет толкова, че мрежата да е с около FACES стени без
+    # опростяване (то оставяше 880 хиляди стени, защото двата слоя се допират по ръба).
+    wanted = POINTS if flat else FACES // 4
+    n = int(min(side, side * (wanted / max(1, inside.sum())) ** 0.5)) + 1
     on = RL.one_piece(small_mask(n))
     longest = 0.85 * distance / cam.focal  # предметът запълва 85% от квадрата на разстоянието на камерата
     width = 0.85 * n
