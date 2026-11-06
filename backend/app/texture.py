@@ -49,10 +49,8 @@ WHITE_POWER = 6.0
 WHITE_STRENGTH = 0.75
 WHITE_LIMITS = (0.65, 1.5)
 WHITE_MIN_BACKGROUND = 0.3  # дял от кадъра: при по-малко фон светлината не може да се отдели от цвета на предмета
-# Фигура, снимана отдалеч: TextureMesh я наряза на 47 хиляди парчета от различни кадри, а изравняването на шевовете местеше цветовете
-# средно с 29 от 255 (петна, тюркоазено наметало), а изострянето им даваше вид на пиксели. Няколко кадъра се смесват за всяко място
-# (по-малко и по-големи парчета) и без изостряне.
-BLENDED = ["--virtual-face-images", "3", "--sharpness-weight", "0"]
+# Опитано и махнато: смесване на няколко кадъра за всяко място (--virtual-face-images 3, --sharpness-weight 0) наряза същата фигура
+# на 80 хиляди парчета вместо 47 и моделът изглеждаше по-зле, затова TextureMesh работи с обичайните си настройки.
 # Светлината върху самия предмет (app/photo3d.py). Бяло дистанционно в стая с топла лампа и червен шкаф излизаше кафяво (медиана 107, 93,
 # 79), а светлите му места са неутрални (168, 172, 171): смесена светлина, при която един множител за целия кадър не стига.
 NEUTRAL = 0.08  # наситеност на светлите места на предмета (без отблясъците), под която материалът е бял, сив или черен
@@ -396,12 +394,7 @@ def texture_model(job: Path, work: Path, photos: Path, best: Path, model: trimes
                "-o", tex / "textured.obj", "--export-type", "obj", "--close-holes", "0", "--decimate", "1",
                "--global-seam-leveling", "0", "--local-seam-leveling", "0", "--max-texture-size", str(MAX_TEXTURE),
                "--empty-color", str(empty), "--max-threads", threads]  # fmt: skip
-    try:
-        sh("texturing", command + BLENDED)
-    except Exception as e:  # (pipeline.Failed) по-стар OpenMVS без тези настройки: както преди
-        if type(e).__name__ == "Cancelled":  # отказана задача (app/jobs.py)
-            raise
-        sh("texturing", command)
+    sh("texturing", command)
     meshes = parts(trimesh.load(tex / "textured.obj", process=False))
     if not meshes:
         raise ValueError("TextureMesh wrote no mesh")
