@@ -165,7 +165,12 @@ const PRO_PLANS: Record<ProMethod, [string, number][]> = {
     ['cleaning', 5],
   ],
   part: [
-    ['measuring the views', 40],
+    ['finding the object', 60],
+    ['camera solving', 40],
+    ['dense matching', 90],
+    ['fusing depth', 40],
+    ['texturing', 20],
+    ['measuring the views', 60],
     ['cleaning', 5],
   ],
   cad: [
@@ -346,8 +351,9 @@ export default function Processing() {
       }
       // Изборите в момента: могат да се променят, докато качването върви.
       const now = getScan(id) ?? scan!;
-      // Винаги AI моделът на сървъра; точна част носи и мерките, по които сървърът нагласява размера (app/truesize.py).
-      const way = 'single';
+      // AI моделът на сървъра; точната част (снимки и мерки, app/cadfit.py run_part) остава такава. И двете носят мерките,
+      // по които сървърът нагласява размера (app/truesize.py).
+      const way = now.method === 'part' ? 'part' : 'single';
       update({ method: way, quality: undefined });
       const started = await retrying(() =>
         startJob(job.id, {

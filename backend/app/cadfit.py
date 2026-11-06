@@ -439,54 +439,41 @@ def by_views(job: Path, work: Path, views: dict[str, Path], size: list[float | N
 
 def run_part(job: Path, params: dict, set_state: Callable[[str], None], sh: Callable[[str, list], None],
              step: Callable[[str], None]) -> dict:  # fmt: skip
-    """Точна част (инженерен режим): снимки от всички страни и мерките на потребителя. С поне AI.MIN_FRAMES снимки първо
-    се сканира (истинската форма), после Gemini я проектира като CAD и сървърът сверява проекта със сканирането; с по-малко
-    снимки проектът е по снимките и мерките. Накрая размерът става точно мерките на потребителя."""
+    """Точна част (инженерен режим): колкото снимки иска потребителят (поне 10, от всички страни) и мерките му с линийка.
+    Всичко е на сървъра, без външни услуги и лимити: първо AI моделът от снимките (сканиране, app/ai.py from_video), после
+    проверка на пропорциите му спрямо мерките и точен размер по всяка ос (app/truesize.py). Ако сканирането не стане или
+    пропорциите му не отговарят, частта се изгражда от изгледите в самите снимки (app/views3d.py), в мерките."""
     import shutil
 
+    from . import truesize
+
     note = lambda text: P.note(job, text)  # noqa: E731
+    size = truesize.wanted(params.get("size_mm"))
+    if not any(size):
+        raise P.Failed("Въведете поне една мярка на частта с линийка.")
     work = job / "work"
     shutil.rmtree(work, ignore_errors=True)
     work.mkdir(parents=True)
     TX.clear(job)
     photos_dir = job / "photos"
-    size, told = measured(params)
-    views = {v: photos_dir / f"view_{v}.jpg" for v in ("top", "side", "end")}
-    views = {v: p for v, p in views.items() if p.exists()}
     found = sorted(photos_dir.glob("*.jp*g"))
-    if any(size):
-        # Мерки има: частта се измерва от снимките (без AI за размерите и без дневни лимити). Снимки без имена
-        # (по-старо приложение, галерия): изгледите се избират сами по пропорциите.
-        if "top" not in views:
-            views = {f"photo{i}": p for i, p in enumerate(found)}
-        return by_views(job, work, views, size, set_state, sh)
-    note(f"part: {len(found)} photos, measures {size}, notes {bool(params.get('notes'))}")
-    scan = None
+    note(f"part: {len(found)} photos, measures {size}")
+    report = None
     if len(found) >= AI.MIN_FRAMES:
         set_state("reconstructing")
         try:
             report = AI.from_video(job, work, photos_dir, len(found), True, set_state, sh, {"started": time.time()})
-            if report is not None:
-                scan = trimesh.load(job / "model.ply", force="mesh")
-                note(f"part: scanned from {report.get('photos_used')} of {len(found)} photos")
-        except Exception as e:
+        except Exception as e:  # снимки, които решаващият алгоритъм не може да подреди: изгледите вършат работата
             if type(e).__name__ == "Cancelled":
                 raise
-            note(f"part: scan failed ({e!r}); designing from the photos and measures")
-        TX.clear(job)  # CAD моделът е с цветове по частите, не с текстурата на сканирането
-        shutil.rmtree(work, ignore_errors=True)
-        work.mkdir(parents=True)
-    if scan is not None and any(size):
-        scan = to_measures(scan, list(size))  # сканирането в мм: проектът е направо в истинския размер
-        note(f"part: scan in mm {np.round(scan_size(scan.extents), 1).tolist()}")
+            note(f"part: scan from the photos failed ({e!r})")
+    base = {"photos_used": len(found), "photos_total": len(found), "ai": "part", "object": "", "suitable": True}
+    if report is not None and (job / "model.ply").exists():
+        work.mkdir(parents=True, exist_ok=True)
+        return report | base | truesize.apply(job, list(size), sh)  # проверява пропорциите; при разминаване: изгледите
+    note("part: no scan from the photos; building the part from their views")
+    TX.clear(job)
+    shutil.rmtree(work, ignore_errors=True)
+    work.mkdir(parents=True)
     set_state("reconstructing")
-    photos = photo_parts(AI.spread(found, PART_PHOTOS) if len(found) > PART_PHOTOS else found)
-    score, model, design = fit(job, scan, photos, told, step)
-    set_state("cleaning")
-    model = to_measures(model, size)
-    note(f"part: final size {np.round(scan_size(model.extents), 2).tolist()} mm (measured {size})")
-    out = M.make_printable(coloured(model, scan) if scan is not None else model, float(model.bounds[0, 2]), False, smoothing=0)
-    longest = float(max(model.extents))
-    return P.finish(job, out) | {"photos_used": len(photos), "photos_total": len(found), "ai": "part", "object": "",
-                                 "suitable": bool(design.get("suitable")), "match": round(score, 3),
-                                 "real_mm": round(longest, 2) if any(size) else None, "size_given": any(size)}  # fmt: skip
+    return base | truesize.from_views(job, list(size), sh)

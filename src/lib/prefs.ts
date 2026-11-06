@@ -20,5 +20,5 @@ export const PRO_INFO: Record<ProMethod, { label: string; time: string; minutes:
   claude: { label: 'Claude дизайн', time: '~3 мин', minutes: 3 },
   photo: { label: 'AI от снимки', time: '~3 мин', minutes: 3 },
   cad: { label: 'CAD модел', time: '~3 мин', minutes: 3 },
-  part: { label: 'Точна част', time: 'до 8 мин', minutes: 8 },
+  part: { label: 'Точна част', time: '~3–8 мин', minutes: 6 },
 };

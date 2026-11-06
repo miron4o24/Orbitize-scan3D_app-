@@ -98,7 +98,7 @@ export default function Home() {
                 highlight
                 title={PRO_INFO.part.label}
                 time={PRO_INFO.part.time}
-                sub="Мерки и видео: копие 1:1 за печат"
+                sub="Снимки и мерки: копие 1:1 за печат"
                 icon="construct-outline"
                 onPress={() => router.push('/part')}
               />
