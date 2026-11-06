@@ -29,6 +29,7 @@ MIN_HOLE = 0.0008  # праг за площ на дупките (по-малки
 DEPTH = 1.3  # коефициент на дълбочината на изтеглянето за чисто пресичане
 COLOUR_SIDE = 700  # размер за текстуриране/оцветяване
 OFF_VIEW = 0.35  # максимално log-отклонение за автоматично разпознаване на изглед
+GRID_MAX = 384  # висока резолюция за visual hull; размерът се нормализира обратно до mm
 
 SIDES = ("top", "bottom", "front", "back", "left", "right")
 VIEW_MAP = {
@@ -263,8 +264,17 @@ def calculate_dimensions(views: dict, size: list[float]) -> tuple[float, float, 
 
 
 def build_mesh(views: dict, dims: tuple[float, float, float]) -> "trimesh.Trimesh":
-    """Изгражда плътен 3D модел от сечението на профилите."""
+    """Изгражда visual hull от трите ортографски профила.
+
+    Профилите са единствената геометрична информация, която снимките от шестте
+    страни гарантират без калибрирана камера. Растеризирането на всеки профил и
+    пресичането на трите екструдирани маски запазва вдлъбнатини и отвори, вместо
+    да ги изглажда с евристична закръгленост. Финалният mesh се мащабира по
+    отделните оси, така че външните граници съвпадат с въведените мерки.
+    """
     import trimesh
+    from skimage import measure
+    from skimage.draw import polygon as draw_polygon
 
     L, W, H = dims
     top = views.get("top")
@@ -273,33 +283,52 @@ def build_mesh(views: dict, dims: tuple[float, float, float]) -> "trimesh.Trimes
     if not top and side:
         top = side
 
-    big = DEPTH * max(L, W, H)
-    solid = extrude_manifold(polygon_shapely(top, L, W), big).translate([0, 0, H / 2])
+    if not top or not side or not end:
+        raise ValueError("three orthogonal profiles are required")
 
-    if side:
-        s = extrude_manifold(polygon_shapely(side, L, H), big)
-        s = s.rotate([90, 0, 0]).translate([0, W / 2, 0])
-        solid = solid ^ s
-    else:
-        import manifold3d as m3
+    def resolution(*sizes: float) -> int:
+        smallest = max(min(sizes), 0.1)
+        return max(96, min(GRID_MAX, int(round(max(sizes) / smallest * 160))))
 
-        solid = solid ^ m3.Manifold.cube([L, W, H])
+    n = resolution(L, W, H)
 
-    if end:
-        section = polygon_shapely(end, W, H)
-    else:
-        from shapely.geometry import box
+    def raster(shape, width: float, height: float) -> np.ndarray:
+        mask = np.zeros((n, n), dtype=bool)
+        polygons = list(shape.geoms) if shape.geom_type == "MultiPolygon" else [shape]
+        def paint(ring, value: bool):
+            points = np.asarray(ring.coords)
+            xs = np.clip(points[:, 0] / width * (n - 1), 0, n - 1)
+            ys = np.clip((height - points[:, 1]) / height * (n - 1), 0, n - 1)
+            rr, cc = draw_polygon(ys, xs, mask.shape)
+            mask[rr, cc] = value
+        for poly in polygons:
+            paint(poly.exterior, True)
+            for hole in poly.interiors:
+                paint(hole, False)
+        return mask
 
-        fractions = [roundness(polygon_shapely(top, L, W), L, W)] + ([roundness(polygon_shapely(side, L, H), L, H)] if side else [])
-        r = float(np.mean(fractions)) * min(W, H) / 2 * 0.98
-        section = box(r, r, W - r, H - r).buffer(r, quad_segs=24) if r > 0.02 * min(W, H) else box(0, 0, W, H)
+    def profile_shape(view, width: float, height: float):
+        shape = view.get("shape_mm")
+        return shape if shape is not None else polygon_shapely(view, width, height)
 
-    e = extrude_manifold(section, big)
-    e = e.rotate([90, 0, 0]).rotate([0, 0, 90]).translate([L / 2, 0, 0])
-    solid = solid ^ e
+    top_mask = raster(profile_shape(top, L, W), L, W)
+    side_mask = raster(profile_shape(side, L, H), L, H)
+    end_mask = raster(profile_shape(end, W, H), W, H)
+    occupied = top_mask[None, :, :] & side_mask[:, None, :] & end_mask[:, :, None]
+    if int(occupied.sum()) < 16:
+        raise ValueError("the profiles do not contain a common solid")
 
-    m = solid.to_mesh()
-    mesh = trimesh.Trimesh(np.asarray(m.vert_properties)[:, :3], np.asarray(m.tri_verts), process=True)
+    vertices, faces, _, _ = measure.marching_cubes(
+        occupied.astype(np.float32), level=0.5, spacing=(H / n, W / n, L / n)
+    )
+    vertices = vertices[:, [2, 1, 0]]
+    mesh = trimesh.Trimesh(vertices, faces, process=True)
+    bounds = mesh.bounds
+    span = np.maximum(bounds[1] - bounds[0], 1e-9)
+    target = np.array([L, W, H], dtype=float)
+    mesh.vertices = (mesh.vertices - bounds[0]) * (target / span)
+    mesh.remove_degenerate_faces()
+    mesh.remove_unreferenced_vertices()
     return mesh
 
 
@@ -346,6 +375,8 @@ def run(job: Path, params: dict, set_state: Callable[[str], None], sh: Callable[
     measures = [float(v) if isinstance(v, (int, float)) and float(v) > 0 else 0.0 for v in raw_measures[:3]]
     if not any(measures):
         raise P.Failed("Въведете поне една мярка на частта с линийка или шублер (мм).")
+    if not all(measures):
+        raise P.Failed("За инженерно копие 1:1 са нужни дължина, ширина и височина в милиметри.")
 
     set_state("reconstructing")
     step("finding the object")
@@ -367,29 +398,37 @@ def run(job: Path, params: dict, set_state: Callable[[str], None], sh: Callable[
 
     views = {}
     for view_name, choices in VIEW_MAP.items():
+        candidates = []
         for side in choices:
             if side in named_files:
                 try:
-                    views[view_name] = view_data(sess, named_files[side])
+                    candidate = view_data(sess, named_files[side])
+                    candidates.append(candidate)
                     P.note(job, f"part: {view_name} from {named_files[side].name}")
-                    break
                 except Exception as e:
                     P.note(job, f"part: could not read {side} ({e})")
+        if candidates:
+            views[view_name] = candidates[0]
+            if len(candidates) > 1:
+                from shapely.ops import unary_union
+                profile_sizes = {
+                    "top": (measures[0], measures[1]),
+                    "side": (measures[0], measures[2]),
+                    "end": (measures[1], measures[2]),
+                }
+                views[view_name]["shape_mm"] = unary_union([
+                    polygon_shapely(candidate, *profile_sizes[view_name])
+                    for candidate in candidates
+                ])
+        if len(candidates) != 2:
+            raise P.Failed(f"Неуспешно разпознаване на двата изгледа за профил {view_name}. Направете снимките отново.")
 
-    # Ако липсват основни изгледи, опитваме с неименуваните снимки
-    if "top" not in views and unnamed_files:
-        parsed_unnamed = {}
-        for f in unnamed_files[:12]:
-            try:
-                parsed_unnamed[f.name] = view_data(sess, f)
-            except Exception as e:
-                P.note(job, f"part: skipping {f.name} ({e})")
-        if parsed_unnamed:
-            picked = pick_views(parsed_unnamed, measures)
-            views = picked | views
-
-    if not views:
-        raise P.Failed("Предметът не можа да бъде открит ясно в снимките. Снимайте върху еднороден фон.")
+    required = set(SIDES)
+    if required - named_files.keys():
+        missing = ", ".join(sorted(required - named_files.keys()))
+        raise P.Failed(f"Липсват ортографски изгледи: {missing}. Качете всички шест обозначени страни.")
+    if unnamed_files:
+        P.note(job, f"part: {len(unnamed_files)} supplementary photos retained for audit")
 
     step("measuring the views")
     dims = calculate_dimensions(views, measures)
@@ -422,6 +461,7 @@ def run(job: Path, params: dict, set_state: Callable[[str], None], sh: Callable[
     return report | {
         "photos_used": len(views),
         "photos_total": len(found_files),
+        "profiles_required": ["top", "side", "end"],
         "ai": "part",
         "object": "Точна част 1:1",
         "suitable": True,
