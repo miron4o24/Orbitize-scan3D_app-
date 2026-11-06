@@ -57,7 +57,11 @@ def move_texture(job, A: np.ndarray) -> None:
     np.savez_compressed(job / TX.NPZ, **arrays)
 
 
-def apply(job, size_mm: list | None, sh=None) -> dict:
+def grey(mesh: trimesh.Trimesh) -> None:
+    mesh.visual = trimesh.visual.ColorVisuals(mesh, vertex_colors=np.tile(np.array([200, 200, 200, 255], np.uint8), (len(mesh.vertices), 1)))
+
+
+def apply(job, size_mm: list | None, sh=None, plain: bool = False) -> dict:
     """Мащабира model.ply (и текстурата) по мерките или го изгражда от изгледите; връща полетата за отчета."""
     size = wanted(size_mm)
     given = [(i, v) for i, v in enumerate(size) if v]
@@ -74,7 +78,7 @@ def apply(job, size_mm: list | None, sh=None) -> dict:
                 f"differences {errors}")  # fmt: skip
     if max(abs(e) for e in errors.values()) > AGREE and sh is not None:
         try:
-            return from_views(job, size, sh)
+            return from_views(job, size, sh, plain)
         except Exception as e:  # пак е по-добре от нищо: сканирането по мерките, с бележка
             if type(e).__name__ == "Cancelled":
                 raise
@@ -89,6 +93,9 @@ def apply(job, size_mm: list | None, sh=None) -> dict:
     centre = trimesh.transformations.translation_matrix([-(lo[0] + hi[0]) / 2, -(lo[1] + hi[1]) / 2, -lo[2]])
     T = S @ centre @ A
     model.apply_transform(T)
+    if plain:  # инженерният режим: без цветовете от снимките
+        TX.clear(job)
+        grey(model)
     model.export(job / "model.ply")
     move_texture(job, T)
     for f in job.glob("view_*.glb*"):  # лекият файл за преглед се прави отново от новия модел
@@ -98,7 +105,7 @@ def apply(job, size_mm: list | None, sh=None) -> dict:
     return M.report(model) | {"real_mm": round(float(real.max()), 2), "size_given": True, "size_mm": dims, "size_from": "scan"}
 
 
-def from_views(job, size: list[float | None], sh) -> dict:
+def from_views(job, size: list[float | None], sh, plain: bool = False) -> dict:
     """Частта от изгледите в кадрите на видеото (app/views3d.py), в мм по мерките."""
     from . import views3d
 
@@ -109,7 +116,9 @@ def from_views(job, size: list[float | None], sh) -> dict:
     work.mkdir(exist_ok=True)
     out = work / "views.ply"
     measures = ",".join(f"{v or 0:g}" for v in size)
-    sh("measuring the views", [sys.executable, views3d.__file__, out, measures, *[f"photo={f}" for f in frames]])
+    # view_<страна>.jpg: снимките, на които потребителят е посочил страната; другите се избират сами.
+    args = [f"{f.stem[5:]}={f}" if f.stem.startswith("view_") else f"photo={f}" for f in frames]
+    sh("measuring the views", [sys.executable, views3d.__file__, out, measures, *args, *(["plain=1"] if plain else [])])
     info = json.loads(out.with_suffix(".json").read_text())
     part = trimesh.load(out, force="mesh", process=False)
     real = float(max(part.extents))

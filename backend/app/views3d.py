@@ -241,6 +241,24 @@ def extrude(shape, depth: float):
     return m3.Manifold.extrude(cross, depth).translate([0, 0, -depth / 2])
 
 
+def roundness(shape, width: float, height: float) -> float:
+    """Колко заоблени са ъглите на очертанието: радиусът им като дял (0..1) от половината на по-късата страна, от празното
+    място в четирите ъглови квадрата (заоблен ъгъл с радиус r оставя празни (1 - pi/4) r^2)."""
+    from shapely.geometry import box
+
+    s = min(width, height) / 2
+    fractions = []
+    for x0, y0 in ((0, 0), (width - s, 0), (0, height - s), (width - s, height - s)):
+        square = box(x0, y0, x0 + s, y0 + s)
+        empty = max(0.0, s * s - shape.intersection(square).area)
+        fractions.append(min(1.0, float(np.sqrt(empty / (1 - np.pi / 4))) / s))
+    return float(np.median(fractions))
+
+
+ROUND_STEPS = 24  # сегменти на четвърт окръжност в заобленото напречно сечение
+ROUNDED: list[float] = []  # радиусът на заобленото сечение (мм) за сведенията
+
+
 def build(views: dict, size: list[float]) -> tuple:
     """Тялото от изгледите в мм и [дължина, ширина, височина]: липсващите мерки идват от пропорциите на изгледите."""
     import trimesh
@@ -272,23 +290,54 @@ def build(views: dict, size: list[float]) -> tuple:
     else:
         solid = solid ^ __import__("manifold3d").Manifold.cube([L, W, H])
     if end:
-        e = extrude(polygon(end, W, H), big)  # в равнината y-z, гледано от +x
-        e = e.rotate([90, 0, 0]).rotate([0, 0, 90]).translate([L / 2, 0, 0])
-        solid = solid ^ e
+        section = polygon(end, W, H)
+    else:
+        # Без снимка от края напречното сечение не се вижда: ъглите му се заоблят колкото ъглите на очертанията отгоре и
+        # отстрани (флашка, дистанционно: заоблени навсякъде), вместо остри 90 градуса.
+        from shapely.geometry import box
+
+        fractions = [roundness(polygon(top, L, W), L, W)] + ([roundness(polygon(side, L, H), L, H)] if side else [])
+        r = float(np.mean(fractions)) * min(W, H) / 2 * 0.98
+        section = box(r, r, W - r, H - r).buffer(r, quad_segs=ROUND_STEPS) if r > 0.02 * min(W, H) else box(0, 0, W, H)
+        ROUNDED.append(round(r, 2))
+    e = extrude(section, big)  # в равнината y-z, гледано от +x
+    e = e.rotate([90, 0, 0]).rotate([0, 0, 90]).translate([L / 2, 0, 0])
+    solid = solid ^ e
     mesh = solid.to_mesh()
     out = trimesh.Trimesh(np.asarray(mesh.vert_properties)[:, :3], np.asarray(mesh.tri_verts), process=True)
     return out, [L, W, H]
+
+
+SIDES = ("top", "bottom", "front", "back", "left", "right")  # имената от приложението (view_<страна>.jpg)
+VIEW_OF = {"top": ("top", "bottom"), "side": ("front", "back"), "end": ("right", "left")}
 
 
 def main(out: Path, measures: str, args: list[str]) -> None:
     pairs = [a.split("=", 1) for a in args]
     sess = S.session()
     size = [float(v) for v in measures.split(",")]
+    plain = any(name == "plain" for name, _ in pairs)
+    pairs = [(n, p) for n, p in pairs if n != "plain"]
+    # Страните, посочени от потребителя (app/part.tsx): отгоре/отпред/отдясно са основните изгледи, а отсрещните им
+    # (отдолу/отзад/отляво) ги заместват, ако липсват. Без посочени страни изгледите се избират сами (pick).
+    named = {n: p for n, p in pairs if n in SIDES}
     views, unnamed = {}, {}
+    for view_name, choices in VIEW_OF.items():
+        for side in choices:
+            if side not in named:
+                continue
+            try:
+                views[view_name] = view(sess, Path(named[side]))
+                print(f"views: {view_name} from the photo marked {side}", flush=True)
+                break
+            except ValueError as e:  # предметът не е намерен в тази снимка
+                print(f"views: {side}: {e}", flush=True)
     for name, p in pairs:
+        if name in SIDES or "top" in views:
+            continue
         try:
             got = view(sess, Path(p))
-        except ValueError as e:  # предметът не е намерен в тази снимка
+        except ValueError as e:
             print(f"views: {Path(p).name}: {e}", flush=True)
             continue
         if name == "photo":
@@ -305,11 +354,15 @@ def main(out: Path, measures: str, args: list[str]) -> None:
     mesh, dims = build(views, size)
     import trimesh
 
-    points, faces = trimesh.remesh.subdivide_to_size(mesh.vertices, mesh.faces, max_edge=0.01 * max(dims), max_iter=12)
-    mesh = trimesh.Trimesh(points, faces, process=False)
-    paint(mesh, views, dims)
+    if not plain:  # гъста мрежа само за цветовете от снимките
+        points, faces = trimesh.remesh.subdivide_to_size(mesh.vertices, mesh.faces, max_edge=0.01 * max(dims), max_iter=12)
+        mesh = trimesh.Trimesh(points, faces, process=False)
+    if plain:  # инженерният режим: само формата, в един сив цвят
+        mesh.visual.vertex_colors = np.tile(np.array([200, 200, 200, 255], np.uint8), (len(mesh.vertices), 1))
+    else:
+        paint(mesh, views, dims)
     mesh.export(out)
-    info = {"size": [round(v, 2) for v in dims], "extents": np.round(mesh.extents, 2).tolist(), "faces": len(mesh.faces),
+    info = {"size": [round(v, 2) for v in dims], "rounded_mm": ROUNDED[-1] if ROUNDED else None, "extents": np.round(mesh.extents, 2).tolist(), "faces": len(mesh.faces),
             "watertight": bool(mesh.is_watertight), "views": {k: {"px": [round(p) for p in v["px"]], "holes": len(v["holes"])}
                                                                for k, v in views.items()}}  # fmt: skip
     out.with_suffix(".json").write_text(json.dumps(info))

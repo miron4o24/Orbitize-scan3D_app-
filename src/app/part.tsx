@@ -13,15 +13,23 @@ import { createScan, deleteScan, photosDir, updateScan } from '@/lib/scans';
 import { currentUserId } from '@/lib/session';
 import { makeStyles, radius, space, useColors } from '@/theme';
 
-// Точна част (инженерен режим, сървър app/cadfit.py run_part): колкото снимки иска потребителят (поне MIN_PHOTOS, от всички
-// страни) и мерките с линийка. Сървърът прави AI модела от снимките на място, проверява пропорциите му спрямо мерките и
-// нагласява размера по всяка ос; ако сканирането не стане, изгражда частта от изгледите в снимките. Без външни услуги.
-const MIN_PHOTOS = 10; // PART_MIN_PHOTOS на сървъра
-const MAX_PHOTOS = 60;
+// Точна част (инженерен режим, сървър app/cadfit.py run_part): по една снимка на всяка от шестте страни, посочена от
+// потребителя (сървърът не гадае коя е коя), колкото още снимки иска и мерките с линийка. Моделът е само формата, сив.
+const MAX_EXTRA = 50;
 const MAX_BYTES = 15 * 1024 * 1024; // MAX_PHOTO_BYTES на сървъра
+
+type Side = 'top' | 'bottom' | 'front' | 'back' | 'left' | 'right';
+const SIDES: { side: Side; label: string; how: string }[] = [
+  { side: 'top', label: 'Отгоре', how: 'Телефонът точно над частта; дължината отляво надясно.' },
+  { side: 'bottom', label: 'Отдолу', how: 'Обърнете частта; дължината пак отляво надясно.' },
+  { side: 'front', label: 'Отпред', how: 'Дългата страна към вас, на нивото на масата.' },
+  { side: 'back', label: 'Отзад', how: 'Другата дълга страна, на нивото на масата.' },
+  { side: 'left', label: 'Отляво', how: 'Левият край, на нивото на масата.' },
+  { side: 'right', label: 'Отдясно', how: 'Десният край, на нивото на масата.' },
+];
 const SIZES = [
-  { label: 'Дължина', hint: 'най-дългата страна, както лежи' },
-  { label: 'Ширина', hint: 'по-късата страна отгоре' },
+  { label: 'Дължина', hint: 'отляво надясно' },
+  { label: 'Ширина', hint: 'отпред назад' },
   { label: 'Височина', hint: 'от масата догоре' },
 ] as const;
 
@@ -30,54 +38,66 @@ const number = (text: string) => {
   return Number.isFinite(v) && v > 0 && v <= 2000 ? v : null;
 };
 
+async function choose(source: 'camera' | 'gallery', many: boolean): Promise<string[]> {
+  if (source === 'camera') {
+    const access = await ImagePicker.requestCameraPermissionsAsync();
+    if (!access.granted) {
+      Alert.alert('Камера', 'Разрешете достъпа до камерата от настройките на телефона.');
+      return [];
+    }
+    const shot = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.95 });
+    return shot.canceled ? [] : shot.assets.map((a) => a.uri);
+  }
+  const got = await ImagePicker.launchImageLibraryAsync({
+    mediaTypes: ['images'],
+    quality: 0.95,
+    allowsMultipleSelection: many,
+    selectionLimit: many ? MAX_EXTRA : 1,
+  });
+  return got.canceled ? [] : got.assets.map((a) => a.uri);
+}
+
 export default function Part() {
   const c = useColors();
   const s = useStyles();
-  const [photos, setPhotos] = useState<string[]>([]);
+  const [sides, setSides] = useState<Partial<Record<Side, string>>>({});
+  const [extra, setExtra] = useState<string[]>([]);
   const [sizes, setSizes] = useState(['', '', '']);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const add = (uris: string[]) => setPhotos((now) => [...now, ...uris].slice(0, MAX_PHOTOS));
-
-  async function shoot() {
-    const access = await ImagePicker.requestCameraPermissionsAsync();
-    if (!access.granted) return Alert.alert('Камера', 'Разрешете достъпа до камерата от настройките на телефона.');
-    const shot = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.95 });
-    if (!shot.canceled && shot.assets?.length) add(shot.assets.map((a) => a.uri));
-  }
-
-  async function pick() {
-    const got = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ['images'],
-      quality: 0.95,
-      allowsMultipleSelection: true,
-      selectionLimit: MAX_PHOTOS,
-    });
-    if (!got.canceled && got.assets?.length) add(got.assets.map((a) => a.uri));
-  }
+  const setSide = async (side: Side, source: 'camera' | 'gallery') => {
+    const [uri] = await choose(source, false);
+    if (uri) setSides((now) => ({ ...now, [side]: uri }));
+  };
+  const addExtra = async (source: 'camera' | 'gallery') => {
+    const uris = await choose(source, true);
+    if (uris.length) setExtra((now) => [...now, ...uris].slice(0, MAX_EXTRA));
+  };
 
   const measures = sizes.map(number);
   const bad = sizes.some((t, i) => t.trim() !== '' && measures[i] === null);
-  const enough = photos.length >= MIN_PHOTOS;
-  const ready = enough && !bad && measures.some((v) => v !== null);
+  const missing = SIDES.filter((x) => !sides[x.side]);
+  const ready = missing.length === 0 && !bad && measures.some((v) => v !== null);
 
   function start() {
     setError(null);
-    if (!enough) return setError(`Нужни са поне ${MIN_PHOTOS} снимки от различни страни.`);
+    if (missing.length) return setError(`Липсва снимка: ${missing.map((x) => x.label.toLowerCase()).join(', ')}.`);
     if (bad) return setError('Мерките са в милиметри, от 0,1 до 2000.');
     if (!measures.some((v) => v !== null)) return setError('Нужна е поне една мярка с линийка. С трите копието е 1:1 по всяка ос.');
     setBusy(true);
     const scan = createScan(currentUserId() ?? undefined, 'part');
     try {
-      photos.forEach((uri, i) => {
-        const dest = new File(photosDir(scan.id), `img_${String(i + 1).padStart(4, '0')}.jpg`);
+      const copy = (uri: string, name: string) => {
+        const dest = new File(photosDir(scan.id), name);
         new File(uri).copySync(dest);
         if (dest.size > MAX_BYTES) throw new Error('Една от снимките е твърде голяма. Изберете по-малка.');
-      });
+      };
+      SIDES.forEach((x) => copy(sides[x.side]!, `view_${x.side}.jpg`));
+      extra.forEach((uri, i) => copy(uri, `img_${String(i + 1).padStart(4, '0')}.jpg`));
       updateScan(scan.id, {
         status: 'uploading',
-        photoCount: photos.length,
+        photoCount: SIDES.length + extra.length,
         partSize: measures.map((v) => v ?? 0) as [number, number, number],
         longestMm: Math.max(...measures.map((v) => v ?? 0)),
       });
@@ -92,21 +112,38 @@ export default function Part() {
 
   return (
     <Screen>
-      <Header kicker={`${PRO_INFO.part.label} · ${PRO_INFO.part.time}`} title="Снимки и мерки" sub="Копие 1:1 за печат." />
+      <Header kicker={`${PRO_INFO.part.label} · ${PRO_INFO.part.time}`} title="Шестте страни и мерки" sub="Копие 1:1 за печат: само формата." />
 
-      <Note>{`Снимайте частта отвсякъде: отгоре, отстрани, от краищата, отблизо. Колкото повече снимки, толкова по-добре, поне ${MIN_PHOTOS}.`}</Note>
+      <Note>Частта на еднородна маса. За всяка страна по една снимка отблизо, частта да изпълва кадъра. После добавете колкото още искате.</Note>
 
-      <Section label={`Снимки · ${photos.length}${enough ? '' : ` от поне ${MIN_PHOTOS}`}`}>
-        {photos.length > 0 && (
+      <Section label={`Шестте страни · ${SIDES.length - missing.length} от ${SIDES.length}`}>
+        <View style={s.grid}>
+          {SIDES.map((x) => (
+            <Card key={x.side} style={s.slot}>
+              {sides[x.side] ? (
+                <Image source={{ uri: sides[x.side] }} style={s.thumb} contentFit="cover" />
+              ) : (
+                <View style={[s.thumb, s.empty]}>
+                  <Ionicons name="camera-outline" size={22} color={c.muted} />
+                </View>
+              )}
+              <H3>{x.label}</H3>
+              <Small>{x.how}</Small>
+              <View style={s.row}>
+                <Button title="Снимай" onPress={() => setSide(x.side, 'camera')} style={s.flex} />
+                <Button title="Галерия" variant="secondary" onPress={() => setSide(x.side, 'gallery')} style={s.flex} />
+              </View>
+            </Card>
+          ))}
+        </View>
+      </Section>
+
+      <Section label={`Още снимки (по желание) · ${extra.length}`}>
+        {extra.length > 0 && (
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.thumbs}>
-            {photos.map((uri, i) => (
-              <Pressable
-                key={`${uri}-${i}`}
-                onPress={() => setPhotos((now) => now.filter((_, j) => j !== i))}
-                accessibilityRole="button"
-                accessibilityLabel={`Махни снимка ${i + 1}`}
-              >
-                <Image source={{ uri }} style={s.thumb} contentFit="cover" />
+            {extra.map((uri, i) => (
+              <Pressable key={`${uri}-${i}`} onPress={() => setExtra((now) => now.filter((_, j) => j !== i))} accessibilityRole="button" accessibilityLabel={`Махни снимка ${i + 1}`}>
+                <Image source={{ uri }} style={s.small} contentFit="cover" />
                 <View style={s.remove}>
                   <Ionicons name="close" size={14} color={c.text} />
                 </View>
@@ -115,9 +152,10 @@ export default function Part() {
           </ScrollView>
         )}
         <View style={s.row}>
-          <Button title="Снимай" icon="camera-outline" onPress={shoot} style={s.flex} disabled={photos.length >= MAX_PHOTOS} />
-          <Button title="От галерията" icon="images-outline" variant="secondary" onPress={pick} style={s.flex} disabled={photos.length >= MAX_PHOTOS} />
+          <Button title="Снимай" icon="camera-outline" variant="secondary" onPress={() => addExtra('camera')} style={s.flex} />
+          <Button title="От галерията" icon="images-outline" variant="secondary" onPress={() => addExtra('gallery')} style={s.flex} />
         </View>
+        <Small>Отвсякъде и отблизо: с 10 и повече снимки общо сървърът опитва и пълно сканиране.</Small>
       </Section>
 
       <Section label="Мерки с линийка или шублер (мм)">
@@ -150,8 +188,12 @@ export default function Part() {
 }
 
 const useStyles = makeStyles((c) => ({
+  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: space.sm },
+  slot: { width: '48.5%', gap: space.xs },
+  thumb: { width: '100%', aspectRatio: 4 / 3, borderRadius: radius.sm, backgroundColor: c.surface2 },
+  empty: { alignItems: 'center', justifyContent: 'center' },
   thumbs: { gap: space.sm, paddingBottom: space.sm },
-  thumb: { width: 84, height: 84, borderRadius: radius.sm, backgroundColor: c.surface2 },
+  small: { width: 76, height: 76, borderRadius: radius.sm, backgroundColor: c.surface2 },
   remove: {
     position: 'absolute',
     top: 4,
