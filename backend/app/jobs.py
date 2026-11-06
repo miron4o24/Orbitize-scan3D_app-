@@ -68,6 +68,34 @@ def kill(proc: subprocess.Popen):
         os.killpg(proc.pid, signal.SIGKILL)
 
 
+def memory() -> dict:
+    """Паметта на машината в GB (за /health): свободна, свободна за заделяне (с файла за страниране) и колко държи този
+    сървър. Пълна памет спря сканиранията и отдалечения вход на 2026-11-06, без да личи отвън."""
+    if not WINDOWS:
+        return {}
+    import ctypes
+    from ctypes import wintypes
+
+    class Status(ctypes.Structure):
+        _fields_ = [("length", wintypes.DWORD), ("load", wintypes.DWORD), ("total", ctypes.c_ulonglong),
+                    ("free", ctypes.c_ulonglong), ("page_total", ctypes.c_ulonglong), ("page_free", ctypes.c_ulonglong),
+                    ("virtual_total", ctypes.c_ulonglong), ("virtual_free", ctypes.c_ulonglong), ("extended", ctypes.c_ulonglong)]  # fmt: skip
+
+    class Counters(ctypes.Structure):
+        _fields_ = [("cb", wintypes.DWORD), ("faults", wintypes.DWORD)] + [(n, ctypes.c_size_t) for n in (
+            "peak_ws", "ws", "peak_paged", "paged", "peak_nonpaged", "nonpaged", "private", "peak_private")]  # fmt: skip
+
+    s = Status()
+    s.length = ctypes.sizeof(Status)
+    ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(s))
+    c = Counters()
+    c.cb = ctypes.sizeof(Counters)
+    ctypes.windll.psapi.GetProcessMemoryInfo(ctypes.windll.kernel32.GetCurrentProcess(), ctypes.byref(c), c.cb)
+    gb = 1024**3
+    return {"total_gb": round(s.total / gb, 1), "free_gb": round(s.free / gb, 1), "commit_free_gb": round(s.page_free / gb, 1),
+            "server_gb": round(c.private / gb, 1)}  # fmt: skip
+
+
 def low_priority(low: bool) -> dict:
     """Аргументи на Popen за инструмент с приоритет под нормалния (дъщерните му процеси го наследяват)."""
     if not low:
