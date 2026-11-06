@@ -235,10 +235,11 @@ class StartParams(BaseModel):
     video_bytes: int | None = None  # размерът на файла в приложението, за да не се обработва никога наполовина качено видео
     quality: Literal["detailed", "quick"] = "detailed"  # quick: по-малко и по-малки кадри (pipeline.run)
     # scan: сканирането за около 35 минути (за всички). Pro: single, AI моделът (claude, photo: AI моделите, изискващи
-    # платени ключове; app/ai.py). quick или express от по-старо приложение е scan (start_job).
-    method: Literal["scan", "express", "single", "claude", "photo"] = "scan"
+    # платени ключове; app/ai.py). part: точна част 1:1 по снимки и мерки (app/part.py).
+    method: Literal["scan", "express", "single", "claude", "photo", "part"] = "scan"
     tune: Tune | None = None
     extend: str | None = Field(None, pattern=r"^[0-9a-f]{32}$")  # това видео добавя липсваща страна към този модел
+    measures: list[Annotated[float, Field(ge=0, le=2000)]] | None = None  # мерки с линийка/шублер (мм) за точна част
 
 
 @app.post("/jobs/{job_id}/start")
@@ -262,14 +263,16 @@ def start_job(job_id: str, params: StartParams, p: Principal = Depends(principal
     pro = params.method != "scan"
     trial = False
     if pro:
-        if not A.is_pro(p):
-            if params.method != "single":
-                raise HTTPException(403, "Това е само за Pro профили.")
-            PL.check(p, "ai", job_id)  # единственият AI модел на безплатен профил; 402, когато е използван
-            trial = True
-        if not AI.available()[params.method]:
+        if params.method not in ("single", "part") and not A.is_pro(p):
+            raise HTTPException(403, "Това е само за Pro профили.")
+        if params.method == "single":
+            if not A.is_pro(p):
+                PL.check(p, "ai", job_id)  # единственият AI модел на безплатен профил; 402, когато е използван
+                trial = True
+        if not AI.available().get(params.method, True):
             raise HTTPException(503, "Тази AI услуга още не е включена.")
-    if not status["video_bytes"] and n < (1 if params.method in AI.METHODS else MIN_PHOTOS):
+    min_photos = 1 if params.method in (*AI.METHODS, "part") else MIN_PHOTOS
+    if not status["video_bytes"] and n < min_photos:
         raise HTTPException(400, f"Нужно е видео или поне {MIN_PHOTOS} снимки.")
     if (worker.ai_q if pro else worker.q).qsize() >= MAX_QUEUED:
         raise HTTPException(503, "Твърде много сканирания чакат в момента. Опитайте по-късно.")

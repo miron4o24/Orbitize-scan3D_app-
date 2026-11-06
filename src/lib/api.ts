@@ -43,16 +43,14 @@ export type Report = {
   volume_mm3?: number;
   area_mm2?: number;
   edit?: { prompt: string; changes: string[]; source: string | null }; // създаден чрез текстова промяна (Pro)
+  part_size_mm?: [number, number, number]; // точен размер 1:1 по мерките с линийка (Точна част)
 };
 
 export type Geometry = { dimensions_mm: [number, number, number]; volume_mm3: number; area_mm2: number };
 
-// Pro (сървър app/ai.py): експресното сканиране за около 5 минути и AI моделите: single (безплатен, на сървъра:
-// очертанията на предмета, изрязани с AI във всеки кадър, в които се сливат измерената и AI дълбочината, със снимките
-// като текстура; TripoSR от един кадър е резервен вариант), claude и photo (платени услуги, изключени, докато
-// сървърът няма ключове за тях). edit: текстова промяна на модел (сървър app/edit.py), направена от екрана за
-// преглед.
-export type AiMethod = 'single' | 'claude' | 'photo';
+// Pro (сървър app/ai.py): експресното сканиране за около 5 минути и AI моделите: single (безплатен, на сървъра),
+// part (точна част 1:1 по снимки и мерки с линийка, локално на сървъра), claude и photo. edit: текстова промяна на модел.
+export type AiMethod = 'single' | 'claude' | 'photo' | 'part';
 export type ProMethod = 'express' | 'edit' | AiMethod;
 export type Method = 'scan' | ProMethod;
 
@@ -153,7 +151,14 @@ export const getJob = (id: string) => call<Job>('GET', `/jobs/${id}`);
 // quality: сървъри отпреди бързите сканирания го пренебрегват и обработват с пълни детайли. method: AI модел (Pro).
 export const startJob = (
   id: string,
-  params: { flat_base: boolean; video_bytes?: number; quality?: 'quick' | 'detailed'; method?: Method; extend?: string },
+  params: {
+    flat_base: boolean;
+    video_bytes?: number;
+    quality?: 'quick' | 'detailed';
+    method?: Method;
+    extend?: string;
+    measures?: (number | null)[];
+  },
 ) => call<Job>('POST', `/jobs/${id}/start`, params);
 export const cancelJob = (id: string) => call<Job>('DELETE', `/jobs/${id}`);
 

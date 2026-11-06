@@ -40,9 +40,9 @@ test('blurring a texture lowers sharpness below the threshold', () => {
 
 test('dark and overexposed frames warn but are kept', () => {
   const dark = judge(image((x, y) => 10 + 25 * noise(x, y)));
-  assert.ok(dark.warnings.some((w) => w.startsWith('Too dark')));
+  assert.ok(dark.warnings.some((w) => w.startsWith('Твърде тъмно')));
   const bright = judge(image((x, y) => (noise(x, y) > 0.5 ? 255 : 120)));
-  assert.ok(bright.warnings.some((w) => w.startsWith('Overexposed')));
+  assert.ok(bright.warnings.some((w) => w.startsWith('Твърде светло')));
   assert.equal(bright.reject, false);
 });
 
@@ -136,4 +136,16 @@ test('print export: Y-up model becomes Z-up and is scaled to the requested size'
   assert.ok(Math.abs(ext[2] - 80) < 1e-3, `z extent ${ext[2]}`); // старото Y (височина) сега е Z
   assert.ok(Math.abs(ext[0] - 20) < 1e-3 && Math.abs(ext[1] - 40) < 1e-3, `${ext}`);
   assert.match(exportForPrint(tall, 'obj', 80) as string, /^v /m);
+});
+
+test('part: numbers and dimensions parsing handles comma, dot and missing values', () => {
+  const number = (text: string) => {
+    const v = Number(text.replace(',', '.'));
+    return Number.isFinite(v) && v > 0 && v <= 2000 ? v : null;
+  };
+  assert.equal(number('50,5'), 50.5);
+  assert.equal(number('12.3'), 12.3);
+  assert.equal(number(''), null);
+  assert.equal(number('-5'), null);
+  assert.equal(number('3000'), null);
 });

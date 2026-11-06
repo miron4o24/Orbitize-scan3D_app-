@@ -35,6 +35,7 @@ export type Scan = {
   imported?: boolean; // видеото е от галерията, а не от камерата на приложението
   method?: Method; // AI модел (Pro) вместо сканиране (липсва: сканиране)
   extendFrom?: string; // това видео добавя липсваща страна към този модел (номер на задачата му)
+  measures?: (number | null)[]; // мерки с линийка/шублер [L, W, H] в мм (Точна част)
 };
 
 const root = new Directory(Paths.document, 'scans');

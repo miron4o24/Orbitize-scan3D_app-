@@ -74,12 +74,23 @@ const SUBSTEPS: Record<string, string> = {
   'downloading the model': 'Получаване на модела',
   'understanding the request': 'Разчитане на промяната',
   'finding the part': 'Намиране на частта от модела',
+  'measuring the views': 'Измерване на контурите и размерите',
+  'building solid': 'Изграждане на 1:1 CAD тяло',
+  'cutting holes': 'Оформяне на отворите',
+  'scaling to size': 'Мащабиране точно по мерките',
+  'preparing for print': 'Подготовка за 3D печат',
 };
-// Текстовата промяна (Pro) минава през тези вместо това.
+// Текстовата промяна (Pro) и точната част минават през тези вместо това.
 const EDIT_STEPS: [string, string][] = [
   ['queued', 'На опашка'],
   ['reconstructing', 'Разчитане на промяната'],
   ['cleaning', 'Прилагане на промените'],
+];
+const PART_STEPS: [string, string][] = [
+  ['queued', 'На опашка'],
+  ['reconstructing', 'Отделяне на контурите'],
+  ['meshing', 'Изграждане на 1:1 CAD модел'],
+  ['cleaning', 'Подготовка за печат'],
 ];
 
 const pop = ZoomIn.duration(240).easing(Easing.out(Easing.back(2))).reduceMotion(ReduceMotion.System); // отметка на стъпка
@@ -159,6 +170,15 @@ const PRO_PLANS: Record<ProMethod, [string, number][]> = {
     ['ai modelling', 150],
     ['downloading the model', 10],
     ['cleaning', 5],
+  ],
+  part: [
+    ['reconstructing', 5],
+    ['finding the object', 35],
+    ['measuring the views', 20],
+    ['meshing', 5],
+    ['building solid', 30],
+    ['cleaning', 10],
+    ['preparing for print', 15],
   ],
 };
 
@@ -323,9 +343,8 @@ export default function Processing() {
       }
       // Изборите в момента: могат да се променят, докато качването върви.
       const now = getScan(id) ?? scan!;
-      // Само предлаганите два начина: друг начин от по-старо сканиране (express, quick) се опитва отново като
-      // стандартно сканиране.
-      const chosen = now.method === 'single' && aiAvailable() ? 'single' : undefined;
+      // Само предлаганите начини:
+      const chosen = now.method === 'part' ? 'part' : now.method === 'single' && aiAvailable() ? 'single' : undefined;
       update({ method: chosen, quality: undefined });
       const started = await retrying(() =>
         startJob(job.id, {
@@ -334,6 +353,7 @@ export default function Processing() {
           ...(hasVideo && { video_bytes: video.size }),
           ...(chosen && { method: chosen }),
           ...(now.extendFrom && { extend: now.extendFrom }),
+          ...(now.measures && { measures: now.measures }),
         }),
       ).catch((e) => {
         // Опит, който е минал, но е загубил отговора си, оставя задачата вече стартирана.
@@ -395,7 +415,7 @@ export default function Processing() {
     const queued = scan.status === 'queued';
     const share = queued ? 0 : progress;
     const left = Math.max(1, Math.round(total * (1 - share)));
-    const steps = method === 'edit' ? EDIT_STEPS : STEPS;
+    const steps = method === 'edit' ? EDIT_STEPS : method === 'part' ? PART_STEPS : STEPS;
     const at = steps.findIndex(([st]) => st === scan.status);
     return (
       <Screen>
