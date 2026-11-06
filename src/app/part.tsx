@@ -80,16 +80,15 @@ export default function Part() {
   const measures = sizes.map(number);
   const bad = sizes.some((t, i) => t.trim() !== '' && measures[i] === null);
   const sideCount = Object.keys(sides).length;
-  // За точно копие е нужна поне една снимка отгоре или отпред, и поне една мярка с линийка
-  const hasMinPhotos = !!(sides.top || sides.front || sides.bottom || sides.right || extra.length >= 3);
-  const hasMinMeasures = measures.some((v) => v !== null);
+  const hasMinPhotos = SIDES.every(({ side }) => !!sides[side]);
+  const hasMinMeasures = measures.every((v) => v !== null);
   const ready = hasMinPhotos && !bad && hasMinMeasures;
 
   function start() {
     setError(null);
-    if (!hasMinPhotos) return setError('Направете снимка поне отгоре или отпред на частта.');
+    if (!hasMinPhotos) return setError('Направете и шестте обозначени снимки на частта.');
     if (bad) return setError('Мерките са в милиметри, от 0,1 до 2000.');
-    if (!hasMinMeasures) return setError('Въведете поне една мярка с линийка или шублер. С трите копието е точно 1:1 по всяка ос.');
+    if (!hasMinMeasures) return setError('Въведете дължина, ширина и височина с линийка или шублер.');
 
     setBusy(true);
     const scan = createScan(currentUserId() ?? undefined, 'part');
@@ -124,9 +123,9 @@ export default function Part() {
     <Screen>
       <Header kicker={`${PRO_INFO.part.label} · ${PRO_INFO.part.time}`} title="Точна част 1:1" sub="Копие за 3D печат по снимки и мерки с шублер." />
 
-      <Note>Поставете детайла на еднородна повърхност без отблясъци. Направете снимки от основните страни отблизо и въведете поне една мярка.</Note>
+      <Note>Поставете детайла на еднородна повърхност без отблясъци. За инженерно копие без догадки са нужни всички шест страни и трите мерки с линийка или шублер.</Note>
 
-      <Section label={`Основни страни · ${sideCount} от ${SIDES.length}`}>
+      <Section label={`Задължителни страни · ${sideCount} от ${SIDES.length}`}>
         <View style={s.grid}>
           {SIDES.map((x) => (
             <Card key={x.side} style={s.slot}>
@@ -193,7 +192,7 @@ export default function Part() {
             </View>
           ))}
         </Card>
-        <Small>Въведете поне една мярка. Всички останали се изчисляват автоматично от снимките, а с трите копието е точно 1:1 по всяка ос.</Small>
+        <Small>И трите мерки са задължителни. Снимките определят формата, а шублерът определя реалния мащаб по всяка ос.</Small>
       </Section>
 
       {error && <ErrorText>{error}</ErrorText>}
