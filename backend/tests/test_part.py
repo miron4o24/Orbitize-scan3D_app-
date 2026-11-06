@@ -84,3 +84,13 @@ def test_build_mesh_preserves_measured_bounds_and_profile_hole():
 def test_build_mesh_requires_three_profiles():
     with pytest.raises(ValueError, match="three orthogonal profiles"):
         part.build_mesh({"top": _profile(60, 30)}, (60.0, 30.0, 12.0))
+
+
+def test_choose_profiles_recovers_mislabeled_physical_axes():
+    named = {
+        "top": _profile(300, 90), "bottom": _profile(300, 90),
+        "front": _profile(90, 30), "back": _profile(90, 30),
+        "left": _profile(300, 30), "right": _profile(300, 30),
+    }
+    _, mapping = part.choose_profiles(named, [100.0, 30.0, 10.0])
+    assert mapping == {"top": "top", "side": "end", "end": "side"}
