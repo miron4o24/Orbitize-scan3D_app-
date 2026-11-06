@@ -17,7 +17,8 @@ from pathlib import Path
 SPACE = os.environ.get("HF_3D_SPACE", "trellis-community/TRELLIS")
 WAIT_S = float(os.environ.get("HF_3D_WAIT_S", "240"))  # опашка + изграждане; после моделът се прави на сървъра
 TEXTURE = 2048
-SIMPLIFY = 0.95  # дял от триъгълниците, които TRELLIS маха (същото като в демото му)
+SIMPLIFY = float(os.environ.get("HF_3D_SIMPLIFY", "0.9"))  # дял от триъгълниците, които TRELLIS маха (0,95 даваше 10 хиляди: груб модел)
+ALGO = os.environ.get("HF_3D_ALGO", "multidiffusion")  # как се съчетават няколко снимки
 QUOTA = 3
 
 
@@ -42,7 +43,7 @@ def make(out: Path, images: list[Path]) -> dict:
     ready = [{"image": handle_file(r["image"]), "caption": None} for r in ready]
     print(f"online AI: {len(ready)} pictures ready after {time.time() - started:.0f} s", flush=True)
     job = client.submit(image=ready[0]["image"], multiimages=ready, seed=0, ss_guidance_strength=7.5, ss_sampling_steps=12,
-                        slat_guidance_strength=3.0, slat_sampling_steps=12, multiimage_algo="stochastic",
+                        slat_guidance_strength=3.0, slat_sampling_steps=12, multiimage_algo=ALGO,
                         mesh_simplify=SIMPLIFY, texture_size=TEXTURE, api_name="/generate_and_extract_glb")  # fmt: skip
     result = job.result(timeout=max(30.0, WAIT_S - (time.time() - started)))
     glb = result[1] if isinstance(result[1], str) else (result[1] or {}).get("value") or (result[1] or {}).get("path")
