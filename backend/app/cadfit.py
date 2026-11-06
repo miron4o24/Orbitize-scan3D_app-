@@ -412,6 +412,30 @@ def to_measures(model: trimesh.Trimesh, size: list[float | None]) -> trimesh.Tri
     return model
 
 
+def by_views(job: Path, work: Path, views: dict[str, Path], size: list[float | None], set_state: Callable[[str], None],
+             sh: Callable[[str, list], None]) -> dict:  # fmt: skip
+    """Точната част от трите изгледа (app/views3d.py): размерите от измерените пиксели и мерките, без преценка на AI."""
+    import json as _json
+    import sys
+
+    from . import views3d
+
+    set_state("reconstructing")
+    out_ply = work / "views.ply"
+    measures = ",".join(f"{v or 0:g}" for v in size)
+    sh("measuring the views", [sys.executable, views3d.__file__, out_ply, measures, *[f"{k}={p}" for k, p in views.items()]])
+    info = _json.loads(out_ply.with_suffix(".json").read_text())
+    P.note(job, f"part from views: {info}")
+    set_state("cleaning")
+    model = trimesh.load(out_ply, force="mesh")
+    model.visual.vertex_colors = np.tile([205, 205, 205, 255], (len(model.vertices), 1))
+    longest = float(max(model.extents))
+    out = M.make_printable(model, float(model.bounds[0, 2]), False, smoothing=0)
+    return P.finish(job, out) | {"photos_used": len(views), "photos_total": len(views), "ai": "part", "object": "",
+                                 "suitable": True, "match": None, "real_mm": round(longest, 2), "size_given": True,
+                                 "part_size_mm": info.get("size")}  # fmt: skip
+
+
 def run_part(job: Path, params: dict, set_state: Callable[[str], None], sh: Callable[[str, list], None],
              step: Callable[[str], None]) -> dict:  # fmt: skip
     """Точна част (инженерен режим): снимки от всички страни и мерките на потребителя. С поне AI.MIN_FRAMES снимки първо
@@ -425,8 +449,12 @@ def run_part(job: Path, params: dict, set_state: Callable[[str], None], sh: Call
     work.mkdir(parents=True)
     TX.clear(job)
     photos_dir = job / "photos"
-    found = sorted(photos_dir.glob("*.jp*g"))
     size, told = measured(params)
+    views = {v: photos_dir / f"view_{v}.jpg" for v in ("top", "side", "end")}
+    views = {v: p for v, p in views.items() if p.exists()}
+    if "top" in views and any(size):
+        return by_views(job, work, views, size, set_state, sh)
+    found = sorted(photos_dir.glob("*.jp*g"))
     note(f"part: {len(found)} photos, measures {size}, notes {bool(params.get('notes'))}")
     scan = None
     if len(found) >= AI.MIN_FRAMES:

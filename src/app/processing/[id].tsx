@@ -70,6 +70,7 @@ const SUBSTEPS: Record<string, string> = {
   // AI модели (Pro)
   'claude designing': 'Проектиране на предмета',
   'claude checking': 'Проверка на модела',
+  'measuring the views': 'Измерване на частта от трите снимки',
   'ai designing': 'Проектиране на предмета',
   'ai checking': 'Сравняване със сканирането и поправяне',
   'choosing frames': 'Избор на най-добрите кадри',
@@ -164,12 +165,7 @@ const PRO_PLANS: Record<ProMethod, [string, number][]> = {
     ['cleaning', 5],
   ],
   part: [
-    ['finding the object', 40],
-    ['camera solving', 30],
-    ['dense matching', 90],
-    ['fusing depth', 40],
-    ['ai designing', 60],
-    ['ai checking', 120],
+    ['measuring the views', 40],
     ['cleaning', 5],
   ],
   cad: [
