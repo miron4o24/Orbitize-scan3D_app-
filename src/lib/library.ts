@@ -41,7 +41,7 @@ export function badgeOf(status: ScanStatus): BadgeKind {
 export function isAi(entry: Entry): boolean {
   const report = entry.server?.report ?? entry.scan?.report;
   const method = entry.scan?.method;
-  return !!report?.ai || !!report?.edit || (!!method && method !== 'scan' && method !== 'express');
+  return !!report?.ai || !!report?.edit || !!method;
 }
 
 /* Копира състоянието от сървъра в съответните местни записи. */

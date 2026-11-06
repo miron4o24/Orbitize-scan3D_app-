@@ -1,14 +1,6 @@
 import type { ProMethod } from './api';
 import { getSession } from './session';
 
-// Двата начина за създаване на модел с едни и същи имена на всеки екран: стандартното сканиране (за всички) и AI
-// модела (Pro).
-
-// По-старите сканирания може да са "quick" (по-малко и по-малки кадри, около 10 мин); новите никога не са.
-export type Quality = 'quick' | 'detailed';
-
-export const SCAN_INFO = { label: 'Стандартно', time: '~35 мин', minutes: 35 };
-
 // Pro (сървър app/ai.py, app/pipeline.py EXPRESS_*). Сега може да се стартира само "single"; останалите са тук за
 // вече направени с тях сканирания и за текстови промени ("edit").
 export const PRO_INFO: Record<ProMethod, { label: string; time: string; minutes: number }> = {
