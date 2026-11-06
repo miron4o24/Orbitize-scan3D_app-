@@ -80,7 +80,32 @@ def existing(job_id: str, p: Principal) -> dict:
 
 @app.get("/health")
 def health():
-    return {"ok": True} | A.health_info()
+    info = {"ok": True} | A.health_info()
+    try:
+        info["memory"] = jobs.memory()
+    except Exception:  # само сведение: никога не бива да спира проверката
+        pass
+    return info
+
+
+@app.post("/admin/restart", dependencies=[Depends(admin_only)])
+def admin_restart():
+    """Рестарт отдалеч, когато сървърът е задръстен (пълна памет): спира инструментите на текущите задачи и самия сървър;
+    scripts/run-server.ps1 го стартира отново след 10 секунди. Текущите задачи остават неуспешни и могат да се пуснат пак."""
+    with worker.lock:
+        procs = list(worker.procs.values())
+    for proc in procs:
+        try:
+            if os.name == "nt":  # с дъщерните му процеси
+                import subprocess
+
+                subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, timeout=30)
+            else:
+                proc.kill()
+        except Exception:
+            pass
+    threading.Timer(1.0, os._exit, args=(3,)).start()
+    return {"restarting": True, "stopped_tools": len(procs)}
 
 
 @app.post("/jobs")
