@@ -331,7 +331,7 @@ class Worker:
                 report = ai.run(d, method, bool(params.get("flat_base", True)), set_state, sh,
                                 lambda step: self._step(job_id, step), params.get("tune"))  # fmt: skip
                 if params.get("size_mm"):  # точна част: размерът по трите оси по мерките на потребителя (app/truesize.py)
-                    report = report | truesize.apply(d, params["size_mm"])
+                    report = report | truesize.apply(d, params["size_mm"], sh)
             else:
                 report = pipeline.run(d, bool(params.get("flat_base", True)), set_state, sh,
                                       quick=params.get("quality") == "quick", express=method == "express")  # fmt: skip
