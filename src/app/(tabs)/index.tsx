@@ -15,8 +15,7 @@ import { ArrowLink, IconButton, Kicker, ScrollBar, Section, useScrollY } from '@
 import { errorText } from '@/lib/api';
 import { refreshProfile } from '@/lib/auth';
 import { importVideo } from '@/lib/importVideo';
-import { startFromPhoto } from '@/lib/importPhoto';
-import { ONE_PHOTO_INFO, PRO_INFO } from '@/lib/prefs';
+import { PRO_INFO } from '@/lib/prefs';
 import { openEntry, useLibrary } from '@/lib/library';
 import { checkProgress, useProgress } from '@/lib/progress';
 import { useSession } from '@/lib/session';
@@ -95,8 +94,15 @@ export default function Home() {
               delay={60}
             />
             <Appear index={5} style={s.cta}>
-              <ScanChoice highlight title={PRO_INFO.single.label} time={PRO_INFO.single.time} sub="От видео: най-точният модел" icon="sparkles" onPress={() => router.push('/capture')} />
-              <ScanChoice title={ONE_PHOTO_INFO.label} time={ONE_PHOTO_INFO.time} sub="Най-бързо, а гърбът е предположен от AI" icon="image-outline" onPress={startFromPhoto} />
+              <ScanChoice
+                highlight
+                title={PRO_INFO.part.label}
+                time={PRO_INFO.part.time}
+                sub="Снимки и мерки: част 1:1 за печат"
+                icon="construct-outline"
+                onPress={() => router.push('/part')}
+              />
+              <ScanChoice title={PRO_INFO.single.label} time={PRO_INFO.single.time} sub="От видео: фигури и всичко друго" icon="videocam-outline" onPress={() => router.push('/capture')} />
               <ArrowLink label={importing ? 'Отваряне…' : 'Качи готово видео'} onPress={upload} style={s.ctaLink} />
               {!!user && !user.pro && <ArrowLink label="Виж Orbitize Pro" onPress={() => router.push('/pro')} style={s.ctaLink} />}
             </Appear>

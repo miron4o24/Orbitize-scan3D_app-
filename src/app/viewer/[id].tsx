@@ -134,7 +134,7 @@ export default function Viewer() {
   const stressAllowed = allowance(user, 'stress', jobId);
   const arAllowed = allowance(user, 'ar', jobId);
   const canEdit = !!user?.pro && !!user.ai?.edit && !!jobId && scan?.status === 'done';
-  const canCad = !!user?.pro && !!user.ai?.cad && !!jobId && scan?.status === 'done' && scan.report?.ai !== 'cad';
+  const canCad = !!user?.pro && !!user.ai?.cad && !!jobId && scan?.status === 'done' && scan.report?.ai !== 'cad' && scan.report?.ai !== 'part';
   // Създаден от видео, чиито кадри още са на сървъра: може да се добави липсваща страна.
   const [openedAt] = useState(() => Date.now());
   const canExtend = !!jobId && scan?.status === 'done' && !scan.report?.edit && scan.photoCount !== 1 && openedAt - scan.createdAt < FRAMES_KEPT_MS;

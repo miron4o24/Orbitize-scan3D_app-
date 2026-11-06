@@ -26,6 +26,7 @@ from scipy.spatial import cKDTree
 from . import ai as AI
 from . import mesh as M
 from . import pipeline as P
+from . import texture as TX
 
 API = "https://generativelanguage.googleapis.com/v1beta/models/"
 # Безплатните модели на Gemini (Pro не е безплатен): по ред, следващият при претоварване или лимит.
@@ -272,28 +273,39 @@ def coloured(cad: trimesh.Trimesh, scan: trimesh.Trimesh) -> trimesh.Trimesh:
     return cad
 
 
-def run(job: Path, params: dict, set_state: Callable[[str], None], step: Callable[[str], None]) -> dict:
-    note = lambda text: P.note(job, text)  # noqa: E731
-    set_state("reconstructing")
-    scan = trimesh.load(job / SOURCE, force="mesh")
-    lo, cell = frame_of(scan)
-    scan_maps = maps(scan, lo, cell)
-    x0, y0, _ = scan.bounds[0]
-    x1, y1, z1 = scan.bounds[1]
-    photos = []
-    for f in sorted((job / PHOTOS).glob("*.jp*g")):
+def photo_parts(files: list[Path]) -> list[dict]:
+    out = []
+    for f in files:
         with Image.open(f) as im:
             im = ImageOps.exif_transpose(im).convert("RGB")
         im.thumbnail((PHOTO_SIDE, PHOTO_SIDE), Image.LANCZOS)
         buf = io.BytesIO()
         im.save(buf, "JPEG", quality=88)
-        photos.append(picture_part(buf.getvalue()))
-    first = FIRST.format(x0=x0, x1=x1, y0=y0, y1=y1, z1=z1)
-    contents = [{"role": "user", "parts": photos + [picture_part(scan_picture(scan_maps, cell), "image/png"), {"text": first}]}]
+        out.append(picture_part(buf.getvalue()))
+    return out
+
+
+def fit(job: Path, scan: trimesh.Trimesh | None, photos: list[dict], told: str,
+        step: Callable[[str], None]) -> tuple[float, trimesh.Trimesh, dict]:  # fmt: skip
+    """Проект от Gemini, поправян на кръгове: спрямо сканирането (очертания и дълбочина от шест страни), а без сканиране
+    (малко снимки) спрямо снимките по нарисувания проект. told: мерките и бележките на потребителя. Връща най-добрия
+    (оценка, модел, проект); без сканиране оценката е 0."""
+    note = lambda text: P.note(job, text)  # noqa: E731
+    if scan is not None:
+        lo, cell = frame_of(scan)
+        scan_maps = maps(scan, lo, cell)
+        x0, y0, _ = scan.bounds[0]
+        x1, y1, z1 = scan.bounds[1]
+        first = FIRST.format(x0=x0, x1=x1, y0=y0, y1=y1, z1=z1) + told
+        contents = [{"role": "user", "parts": photos + [picture_part(scan_picture(scan_maps, cell), "image/png"), {"text": first}]}]
+        rounds = ROUNDS
+    else:
+        contents = [{"role": "user", "parts": photos + [{"text": FIRST_PHOTOS + told}]}]
+        rounds = PHOTO_ROUNDS
     best = None
     skip: set[str] = set()
     started = time.time()
-    for round_ in range(ROUNDS + 1):
+    for round_ in range(rounds + 1):
         step("ai designing" if round_ == 0 else "ai checking")
         try:
             design, turn = ask(contents, note, skip)
@@ -303,13 +315,23 @@ def run(job: Path, params: dict, set_state: Callable[[str], None], step: Callabl
                 raise
             note(f"cad round {round_}: {e}; keeping the best so far")
             break
+        parts_text = f"{len(design.get('parts') or [])} parts ({skipped} not buildable), {time.time() - started:.0f} s"
+        if scan is None:
+            note(f"cad round {round_}: {parts_text}, size {np.round(model.extents, 1).tolist()}")
+            best = (0.0, model, design)  # без сканиране няма мярка: последната поправка е най-добрата
+            if round_ == rounds:
+                break
+            work = job / "work"
+            work.mkdir(exist_ok=True)
+            picture = AI.drawing(work, model)
+            contents = contents[:1] + [turn, {"role": "user", "parts": [picture_part(picture, "image/png"), {"text": REVIEW_PHOTOS}]}]
+            continue
         cad_maps = maps(model, lo, cell)
         score, ious, depths = compare(scan_maps, cad_maps, cell)
-        note(f"cad round {round_}: score {score:.3f}, outlines " + ", ".join(f"{k} {v:.2f}" for k, v in ious.items())
-             + f", {len(design.get('parts') or [])} parts ({skipped} not buildable), {time.time() - started:.0f} s")  # fmt: skip
+        note(f"cad round {round_}: score {score:.3f}, outlines " + ", ".join(f"{k} {v:.2f}" for k, v in ious.items()) + ", " + parts_text)
         if best is None or score > best[0]:
             best = (score, model, design)
-        if score >= GOOD or round_ == ROUNDS:
+        if score >= GOOD or round_ == rounds:
             break
         review = REVIEW.format(ious=", ".join(f"{k} {v:.2f}" for k, v in ious.items()),
                                depths=", ".join(f"{k} {v:.1f}" for k, v in depths.items()), score=score)  # fmt: skip
@@ -317,11 +339,121 @@ def run(job: Path, params: dict, set_state: Callable[[str], None], step: Callabl
         # за да не расте заявката.
         contents = contents[:1] + [turn, {"role": "user", "parts": [picture_part(difference_picture(scan_maps, cad_maps, cell), "image/png"),
                                                                      {"text": review}]}]  # fmt: skip
-    score, model, design = best
+    note(f"cad: best score {best[0]:.3f}, object {best[2].get('object')!r}")
+    return best
+
+
+def run(job: Path, params: dict, set_state: Callable[[str], None], step: Callable[[str], None]) -> dict:
+    """Чист CAD модел от готово сканиране (POST /jobs/{id}/cad)."""
+    set_state("reconstructing")
+    scan = trimesh.load(job / SOURCE, force="mesh")
+    photos = photo_parts(sorted((job / PHOTOS).glob("*.jp*g")))
+    score, model, design = fit(job, scan, photos, "", step)
     set_state("cleaning")
     out = M.make_printable(coloured(model, scan), float(model.bounds[0, 2]), False, smoothing=0)
-    note(f"cad: best score {score:.3f}, object {design.get('object')!r}")
     # Името от Gemini Flash понякога излиза като безсмислица на кирилица: заглавието идва от сканирането (приложението).
     return P.finish(job, out) | {"photos_used": len(photos), "photos_total": len(photos), "ai": "cad",
                                  "object": "", "suitable": bool(design.get("suitable")),
                                  "real_mm": None, "match": round(score, 3)}  # fmt: skip
+
+
+# --- Точна част: снимки + мерки на потребителя (метод "part") -------------------------------------------------------
+
+PART_PHOTOS = 6  # снимки към Gemini
+PHOTO_ROUNDS = 2  # поправки без сканиране (по нарисувания проект)
+STRETCH = 0.15  # най-много толкова се разтяга една ос, за да стане точно мярката на потребителя
+
+FIRST_PHOTOS = """Design this object from the photos, in millimetres, at its real size. It is a small engineering \
+part that will be printed as a replacement, so the size of every feature matters: use the user's measurements \
+below exactly, and judge the rest from them (and from a ruler or grid paper if one is in the photos). Answer with \
+the design only."""
+REVIEW_PHOTOS = """This is your design, built and drawn from the front right and a little from above. Compare it \
+with the photos and the user's measurements: proportions, every hole, slot, rib, chamfer and rounded edge, thickness \
+of walls. Answer with the complete corrected design (all parts), or the same design if it already matches."""
+
+
+def measured(params: dict) -> tuple[list[float | None], str]:
+    """Мерките на потребителя [дължина, ширина, височина] в мм (None: не е дадена) и текстът за Gemini."""
+    size = [float(v) if isinstance(v, (int, float)) and 0 < float(v) <= 2000 else None for v in (params.get("size_mm") or [])[:3]]
+    size += [None] * (3 - len(size))
+    lines = [f"{name} {v:g} mm" for name, v in zip(("length (longest side lying flat)", "width", "height"), size) if v]
+    notes = " ".join(str(params.get("notes") or "").split())[:300]
+    told = ""
+    if lines:
+        told += "\n\nThe user measured the real part with a ruler: " + ", ".join(lines) + "."
+    if notes:
+        told += f"\nThe user's notes (may be in Bulgarian): {notes}"
+    return size, told
+
+
+def scan_size(extents: np.ndarray) -> np.ndarray:
+    """[дължина, ширина, височина] на модел със Z нагоре: дължината е по-дългата от двете хоризонтални страни."""
+    x, y, z = extents
+    return np.array([max(x, y), min(x, y), z])
+
+
+def to_measures(model: trimesh.Trimesh, size: list[float | None]) -> trimesh.Trimesh:
+    """Моделът в мм според мерките: общ мащаб от средното на дадените, после всяка дадена ос малко разтеглена до точната
+    мярка (до STRETCH), за да е копието 1:1 там, където потребителят е мерил."""
+    given = [(i, v) for i, v in enumerate(size) if v]
+    if not given:
+        return model
+    have = scan_size(model.extents)
+    model.apply_scale(float(np.median([v / have[i] for i, v in given])))
+    have = scan_size(model.extents)
+    x, y, _ = model.extents
+    axes = {0: 0 if x >= y else 1, 1: 1 if x >= y else 0, 2: 2}  # дължина / ширина / височина -> ос
+    stretch = np.ones(3)
+    for i, v in given:
+        f = v / have[i]
+        if abs(f - 1) <= STRETCH:
+            stretch[axes[i]] = f
+    model.apply_transform(np.diag([*stretch, 1.0]))
+    return model
+
+
+def run_part(job: Path, params: dict, set_state: Callable[[str], None], sh: Callable[[str, list], None],
+             step: Callable[[str], None]) -> dict:  # fmt: skip
+    """Точна част (инженерен режим): снимки от всички страни и мерките на потребителя. С поне AI.MIN_FRAMES снимки първо
+    се сканира (истинската форма), после Gemini я проектира като CAD и сървърът сверява проекта със сканирането; с по-малко
+    снимки проектът е по снимките и мерките. Накрая размерът става точно мерките на потребителя."""
+    import shutil
+
+    note = lambda text: P.note(job, text)  # noqa: E731
+    work = job / "work"
+    shutil.rmtree(work, ignore_errors=True)
+    work.mkdir(parents=True)
+    TX.clear(job)
+    photos_dir = job / "photos"
+    found = sorted(photos_dir.glob("*.jp*g"))
+    size, told = measured(params)
+    note(f"part: {len(found)} photos, measures {size}, notes {bool(params.get('notes'))}")
+    scan = None
+    if len(found) >= AI.MIN_FRAMES:
+        set_state("reconstructing")
+        try:
+            report = AI.from_video(job, work, photos_dir, len(found), True, set_state, sh, {"started": time.time()})
+            if report is not None:
+                scan = trimesh.load(job / "model.ply", force="mesh")
+                note(f"part: scanned from {report.get('photos_used')} of {len(found)} photos")
+        except Exception as e:
+            if type(e).__name__ == "Cancelled":
+                raise
+            note(f"part: scan failed ({e!r}); designing from the photos and measures")
+        TX.clear(job)  # CAD моделът е с цветове по частите, не с текстурата на сканирането
+        shutil.rmtree(work, ignore_errors=True)
+        work.mkdir(parents=True)
+    if scan is not None and any(size):
+        scan = to_measures(scan, list(size))  # сканирането в мм: проектът е направо в истинския размер
+        note(f"part: scan in mm {np.round(scan_size(scan.extents), 1).tolist()}")
+    set_state("reconstructing")
+    photos = photo_parts(AI.spread(found, PART_PHOTOS) if len(found) > PART_PHOTOS else found)
+    score, model, design = fit(job, scan, photos, told, step)
+    set_state("cleaning")
+    model = to_measures(model, size)
+    note(f"part: final size {np.round(scan_size(model.extents), 2).tolist()} mm (measured {size})")
+    out = M.make_printable(coloured(model, scan) if scan is not None else model, float(model.bounds[0, 2]), False, smoothing=0)
+    longest = float(max(model.extents))
+    return P.finish(job, out) | {"photos_used": len(photos), "photos_total": len(found), "ai": "part", "object": "",
+                                 "suitable": bool(design.get("suitable")), "match": round(score, 3),
+                                 "real_mm": round(longest, 2) if any(size) else None, "size_given": any(size)}  # fmt: skip

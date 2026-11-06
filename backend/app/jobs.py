@@ -232,7 +232,7 @@ def cleanup():
                 (d / "photos").mkdir(exist_ok=True)
 
 
-PRO_METHODS = ("express", "edit", "cad", *ai.METHODS)  # edit: текстова промяна на модел (app/edit.py)
+PRO_METHODS = ("express", "edit", "cad", "part", *ai.METHODS)  # edit: текстова промяна на модел (app/edit.py)
 
 
 def is_pro(params: dict | None) -> bool:
@@ -325,6 +325,8 @@ class Worker:
                 report = edit.run(d, params, set_state, sh)
             elif method == "cad":  # чист CAD модел от готово сканиране (app/cadfit.py)
                 report = cadfit.run(d, params, set_state, lambda step: self._step(job_id, step))
+            elif method == "part":  # точна част: снимки и мерки (app/cadfit.py)
+                report = cadfit.run_part(d, params, set_state, sh, lambda step: self._step(job_id, step))
             elif method in ai.METHODS:
                 report = ai.run(d, method, bool(params.get("flat_base", True)), set_state, sh,
                                 lambda step: self._step(job_id, step), params.get("tune"))  # fmt: skip
