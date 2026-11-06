@@ -300,9 +300,11 @@ class Worker:
             elif method in ai.METHODS:
                 report = ai.run(d, method, bool(params.get("flat_base", True)), set_state, sh,
                                 lambda step: self._step(job_id, step), params.get("tune"))  # fmt: skip
-            else:
+            elif method == "express":
                 report = pipeline.run(d, bool(params.get("flat_base", True)), set_state, sh,
-                                      quick=params.get("quality") == "quick", express=method == "express")  # fmt: skip
+                                      express=True)  # fmt: skip
+            else:
+                raise ValueError(f"Unsupported reconstruction method: {method!r}")
             write(job_id, state="done", step=None, report=report | {"seconds": round(time.time() - started)})
             try:
                 (d / THUMB).unlink(missing_ok=True)  # повторно изпълнение може да е избрало други кадри

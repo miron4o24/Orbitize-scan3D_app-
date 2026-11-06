@@ -14,7 +14,7 @@ import { errorText } from '@/lib/api';
 import { viewDir } from '@/lib/coverage';
 import { motionSamples, type RawMotion } from '@/lib/motion';
 import { OrbitTracker, type OrbitState } from '@/lib/orbit';
-import { aiAvailable, PRO_INFO, SCAN_INFO } from '@/lib/prefs';
+import { aiAvailable, PRO_INFO } from '@/lib/prefs';
 import { createScan, deleteScan, motionFile, updateScan, videoFile } from '@/lib/scans';
 import { currentUserId } from '@/lib/session';
 import { checkVideo } from '@/lib/videoCheck';
@@ -49,16 +49,14 @@ const fmt = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '
 export default function Capture() {
   useKeepAwake(); // екранът не бива да се заключва по средата на кръга
   const [permission, requestPermission] = useCameraPermissions();
-  // AI моделът заснема само с точка в средата; стандартното сканиране с водача около предмета. extend: това видео
-  // добавя липсваща страна към модела: обикновена камера, независимо как е създаден моделът.
-  const params = useLocalSearchParams<{ ai?: string; extend?: string; title?: string }>();
-  const [ai] = useState(() => params.ai === '1' && aiAvailable());
+  // Видео режимът е само за активния AI pipeline. Точният 1:1 режим е отделен екран с шест снимки.
+  const params = useLocalSearchParams<{ extend?: string; title?: string }>();
   const [scan] = useState(() => {
-    const made = createScan(currentUserId() ?? undefined, ai ? 'single' : 'scan');
+    const made = createScan(currentUserId() ?? undefined, 'single');
     return params.extend ? updateScan(made.id, { extendFrom: params.extend, title: params.title }) ?? made : made;
   });
   const extending = !!params.extend;
-  const plain = ai || extending;
+  const plain = true;
   const camera = useRef<CameraView>(null);
   const { width, height } = useWindowDimensions();
   const [ready, setReady] = useState(false);
@@ -149,7 +147,7 @@ export default function Capture() {
     const found = await checkVideo(uri, secs);
     if (unmounted.current) return;
     setChecking(false);
-    if (ai && !extending && tracker.current.firstLoopFraction < MIN_ROUND) found.push('Не обиколихте целия предмет.');
+    if (!extending && tracker.current.firstLoopFraction < MIN_ROUND) found.push('Не обиколихте целия предмет.');
     if (!found.length) return keep(uri, secs);
     Alert.alert('Да запишем ли отново?', `${found.join('\n')}\n\nМоделът може да излезе по-лош.`, [
       { text: 'Запиши отново', onPress: () => new File(uri).delete() },
@@ -186,12 +184,7 @@ export default function Capture() {
         return;
       }
       // Спряно от ограничението за време преди дори един пълен кръг: нека потребителят реши.
-      if (!plain && !stopReason.current && tracker.current.firstLoopFraction < 1)
-        Alert.alert('Времето изтече', 'Първият кръг не е завършен, затова моделът ще има дупки.', [
-          { text: 'Запиши отново', onPress: () => new File(video.uri).delete() },
-          { text: 'Използвай все пак', onPress: () => keep(video.uri, secs) },
-        ]);
-      else await review(video.uri, secs);
+      await review(video.uri, secs);
     } catch (e) {
       if (!unmounted.current) setMessage(`Записът не успя. ${errorText(e)}`);
     } finally {
@@ -222,7 +215,7 @@ export default function Capture() {
   const guide = Math.min(width - 32, height * 0.5);
   const phase = PHASES[Math.min(orbit?.loop ?? 0, PHASES.length - 1)];
   const pace = orbit?.pace;
-  const way = ai ? PRO_INFO.single : SCAN_INFO;
+  const way = PRO_INFO.single;
   const noPanel = plain ? recording && !message : !recording && !showTips && !message;
   return (
     <View style={styles.fill}>

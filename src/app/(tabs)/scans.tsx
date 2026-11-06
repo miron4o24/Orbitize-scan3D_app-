@@ -1,3 +1,4 @@
+import { router } from 'expo-router';
 import { useState } from 'react';
 import { Alert, RefreshControl, View } from 'react-native';
 import Animated from 'react-native-reanimated';
@@ -9,7 +10,6 @@ import { Stage } from '@/components/Stage';
 import { Button, ErrorText, ScrollBar, Segmented, Title, useScrollY } from '@/components/ui';
 import { errorText } from '@/lib/api';
 import { deleteEntry, isAi, openEntry, useLibrary, type Entry } from '@/lib/library';
-import { startScan } from '@/lib/startScan';
 import { makeStyles, space, useColors } from '@/theme';
 
 type Group = 'ai' | 'other';
@@ -74,7 +74,7 @@ export default function MyScans() {
                   onChange={setChosen}
                   options={[
                     { value: 'ai', label: `AI модели · ${ai.length}` },
-                    { value: 'other', label: `Стандартни · ${other.length}` },
+                    { value: 'other', label: `Legacy · ${other.length}` },
                   ]}
                 />
               </Appear>
@@ -106,7 +106,7 @@ export default function MyScans() {
                 <Title style={s.emptyTitle}>Още няма сканирания.</Title>
               </Appear>
               <Appear index={4}>
-                <Button variant="brand" size="lg" title="Първо сканиране" icon="videocam-outline" onPress={startScan} />
+                <Button variant="brand" size="lg" title="Start 1:1 photo test" icon="construct-outline" onPress={() => router.push('/part')} />
               </Appear>
             </View>
           )
