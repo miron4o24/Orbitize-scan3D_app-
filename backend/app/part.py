@@ -362,6 +362,61 @@ def paint_mesh(mesh, views: dict, dims: tuple[float, float, float]) -> None:
     mesh.visual.vertex_colors = colours
 
 
+def choose_profiles(named_views: dict[str, dict], size: list[float]) -> tuple[dict[str, dict], dict[str, str]]:
+    """Assigns the three physical profiles from all six photos by measured proportions.
+
+    The labels are useful hints, but they are not trusted as geometry: users often
+    hold a small part in a different orientation while taking the six photos.
+    """
+    from itertools import permutations
+    from shapely.ops import unary_union
+
+    measures = [float(v) for v in size[:3]]
+    if not all(measures):
+        raise ValueError("all three measured dimensions are required")
+    groups = {
+        "top": ("top", "bottom"),
+        "side": ("front", "back"),
+        "end": ("left", "right"),
+    }
+    expected = {
+        "top": (measures[0] / measures[1], measures[0]),
+        "side": (measures[0] / measures[2], measures[0]),
+        "end": (max(measures[1], measures[2]) / min(measures[1], measures[2]), max(measures[1], measures[2])),
+    }
+
+    def score(group_name: str, role: str) -> float:
+        ratio_want, long_want = expected[role]
+        group = groups[group_name]
+        ratios = []
+        scales = []
+        for side in group:
+            view = named_views[side]
+            px_w, px_h = view["px"]
+            ratios.append(max(px_w / max(px_h, 1e-6), px_h / max(px_w, 1e-6)))
+            scales.append(np.log(long_want / max(px_w, 1e-6)))
+        return abs(np.log(np.median(ratios) / max(ratio_want, 1e-6))) + 0.5 * float(np.ptp(scales))
+
+    names = tuple(groups)
+    roles = ("top", "side", "end")
+    assignment = min(permutations(names), key=lambda candidate: sum(score(group, role) for role, group in zip(roles, candidate)))
+    profile_sizes = {
+        "top": (measures[0], measures[1]),
+        "side": (measures[0], measures[2]),
+        "end": (measures[1], measures[2]),
+    }
+    out = {}
+    mapping = {}
+    for role, group_name in zip(roles, assignment):
+        candidates = [named_views[side] for side in groups[group_name]]
+        out[role] = dict(candidates[0])
+        out[role]["shape_mm"] = unary_union([
+            polygon_shapely(candidate, *profile_sizes[role]) for candidate in candidates
+        ])
+        mapping[role] = group_name
+    return out, mapping
+
+
 def run(job: Path, params: dict, set_state: Callable[[str], None], sh: Callable[[str, list], None],
         step: Callable[[str], None]) -> dict:
     """Изпълнява точна част 1:1 по качените снимки и въведените размери."""
@@ -396,37 +451,22 @@ def run(job: Path, params: dict, set_state: Callable[[str], None], sh: Callable[
         if not matched:
             unnamed_files.append(f)
 
-    views = {}
-    for view_name, choices in VIEW_MAP.items():
-        candidates = []
-        for side in choices:
-            if side in named_files:
-                try:
-                    candidate = view_data(sess, named_files[side])
-                    candidates.append(candidate)
-                    P.note(job, f"part: {view_name} from {named_files[side].name}")
-                except Exception as e:
-                    P.note(job, f"part: could not read {side} ({e})")
-        if candidates:
-            views[view_name] = candidates[0]
-            if len(candidates) > 1:
-                from shapely.ops import unary_union
-                profile_sizes = {
-                    "top": (measures[0], measures[1]),
-                    "side": (measures[0], measures[2]),
-                    "end": (measures[1], measures[2]),
-                }
-                views[view_name]["shape_mm"] = unary_union([
-                    polygon_shapely(candidate, *profile_sizes[view_name])
-                    for candidate in candidates
-                ])
-        if len(candidates) != 2:
-            raise P.Failed(f"Неуспешно разпознаване на двата изгледа за профил {view_name}. Направете снимките отново.")
-
     required = set(SIDES)
     if required - named_files.keys():
         missing = ", ".join(sorted(required - named_files.keys()))
         raise P.Failed(f"Липсват ортографски изгледи: {missing}. Качете всички шест обозначени страни.")
+    parsed = {}
+    for side, path in named_files.items():
+        try:
+            parsed[side] = view_data(sess, path)
+            P.note(job, f"part: read {side} from {path.name}")
+        except Exception as e:
+            raise P.Failed(f"Неуспешно разпознаване на изгледа {side}. Направете снимката отново.") from e
+    try:
+        views, mapping = choose_profiles(parsed, measures)
+    except Exception as e:
+        raise P.Failed(f"Изгледите не дават надеждни три профила: {e}") from e
+    P.note(job, f"part: profile assignment {mapping}")
     if unnamed_files:
         P.note(job, f"part: {len(unnamed_files)} supplementary photos retained for audit")
 
