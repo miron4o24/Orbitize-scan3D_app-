@@ -840,7 +840,9 @@ def by_single(job: Path, work: Path, found: list[Path], sh: Callable[[str, list]
     thin = read_thinnest(work)
     sh("ai modelling", [sys.executable, single3d.__file__, pick, masks, out, str(strength), *([] if thin is None else [str(thin)])])
     info = json.loads(out.with_suffix(".json").read_text())
-    model = trimesh.load(out, force="mesh")
+    # Без сливане на върхове: двата слоя се допират по ръба и слетите точки го разпадаха на хиляди парчета.
+    model = trimesh.load(out, force="mesh", process=False)
+    model.metadata.pop("_ply_raw", None)
     P.note(job, f"single frame AI: {info}")
     return model, {"object": "", "suitable": True, "real_mm": None}
 
