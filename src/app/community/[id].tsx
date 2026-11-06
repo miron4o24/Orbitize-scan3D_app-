@@ -63,7 +63,6 @@ export default function CommunityPost() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
   const [wireframe, setWireframe] = useState(false);
-  const [plain, setPlain] = useState(false); // моделът без цветовете, само формата
   const [full, setFull] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -121,13 +120,10 @@ export default function CommunityPost() {
   const exportAs = (format: Format) =>
     run(format, async () => {
       if (!model || !post) return;
-      // Изнасянето е с пълните детайли, а показваният модел е лекият файл за преглед.
-      const full = new File(Paths.cache, `post-${id}-full.glb`);
-      if (!full.exists) await downloadPost(id, full, false);
-      let file = full;
+      let file = new File(Paths.cache, `post-${id}.glb`);
       if (format !== 'glb') {
         file = new File(Paths.cache, `post-${id}-${Math.round(post.longest_mm)}mm.${format}`);
-        file.writeSync(exportForPrint(await parseGlb(full, `post-${id}-full`), format, post.longest_mm));
+        file.writeSync(exportForPrint(model, format, post.longest_mm));
       }
       const mime = FORMATS.find((f) => f.format === format)!.mime;
       await Sharing.shareAsync(file.uri, { mimeType: mime, dialogTitle: 'Изнасяне на 3D модел' });
@@ -173,7 +169,7 @@ export default function CommunityPost() {
       <View style={s.preview}>
         {model ? (
           <Animated.View entering={fade} style={s.flex}>
-            {!full && <ModelView model={model} wireframe={wireframe} plain={plain} background={c.viewer} />}
+            {!full && <ModelView model={model} wireframe={wireframe} background={c.viewer} />}
           </Animated.View>
         ) : loadError ? (
           <View style={s.center}>
@@ -299,8 +295,6 @@ export default function CommunityPost() {
           title={post?.title ?? ''}
           wireframe={wireframe}
           onWireframe={() => setWireframe((w) => !w)}
-          plain={plain}
-          onPlain={() => setPlain((p) => !p)}
           onClose={() => setFull(false)}
         />
       )}

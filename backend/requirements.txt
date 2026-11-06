@@ -4,37 +4,35 @@ numpy==2.5.4
 scipy==1.18.1
 trimesh==5.1.1
 pymeshlab==2025.7.post1
-# маски на предмета (app/segment.py) и повърхността на обвивката (marching cubes)
+# object masks (app/segment.py) and the visual hull's surface (marching cubes)
 onnxruntime==1.31.0
 scikit-image==0.26.0
-# изнасяне в 3MF с trimesh
+# trimesh 3MF export
 networkx==3.7
 lxml==6.1.3
-# триангулация на капака в trimesh при срязване на плоската основа
+# trimesh cap triangulation when cutting the flat base
 shapely
 mapbox-earcut
 rtree
-# ffmpeg за видео кадри, когато няма такъв в PATH (Windows)
+# ffmpeg binary for video frames when none is on PATH (Windows)
 imageio-ffmpeg
-# PNG -> JPEG за скрипта с примерни данни
+# PNG -> JPEG for the sample dataset script
 pillow
-# профили (app/accounts.py, app/db.py): таблици в MySQL, проверка на входа с Google. cryptography: вход с парола в MySQL 8
+# accounts (app/accounts.py, app/db.py): MySQL tables, Google sign-in check. cryptography: MySQL 8 password login
 sqlalchemy>=2.0
 pymysql>=1.1
 cryptography
 google-auth>=2.20
 requests
-# AI моделите на Pro (app/ai.py): проекти от езиков модел и съединяване на частите им в едно тяло (булевите операции на trimesh)
+# Pro's AI models (app/ai.py): Claude's designs, and joining their parts into one solid (trimesh's boolean engine)
 anthropic
 manifold3d
-# безплатният AI модел на Pro от един кадър (app/single3d.py, TripoSR на процесора; torch от PyPI за Windows е за процесор)
+# Pro's free AI model from one frame (app/single3d.py, TripoSR on the CPU; PyPI's Windows torch is the CPU build)
 torch
 transformers>=4.40,<5
 omegaconf
 einops
 huggingface-hub
-# безплатният онлайн AI модел (app/online3d.py, TRELLIS в Hugging Face Space); 1.x работи с huggingface-hub < 1, който иска transformers 4
-gradio_client==1.10.3
 imageio
 pytest
 httpx

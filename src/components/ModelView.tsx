@@ -14,7 +14,6 @@ import {
   LineBasicMaterial,
   Mesh,
   MeshBasicMaterial,
-  MeshStandardMaterial,
   PerspectiveCamera,
   PlaneGeometry,
   Raycaster,
@@ -43,7 +42,6 @@ export type Spot = readonly [number, number, number];
 type Props = {
   model: Object3D;
   wireframe: boolean;
-  plain?: boolean; // само формата: сив материал вместо цветовете, за да се виждат неравностите
   background: readonly [string, string];
   beforeDraw?: () => void;
   spot?: Spot | null;
@@ -126,10 +124,7 @@ const INTRO_TURN = 1.1; // радианите, на които моделът с
 const INTRO_MS = 1400;
 
 // Един пръст върти, два мащабират. Рисува само при промяна: след краткото завъртане при появата нищо не се анимира.
-// Сивото на модела без цветове: светло и матово, за да личат и малките неравности.
-const PLAIN_GREY = '#c9c9c9';
-
-export function ModelView({ model, wireframe, plain = false, background, beforeDraw, spot, marks, onPick }: Props) {
+export function ModelView({ model, wireframe, background, beforeDraw, spot, marks, onPick }: Props) {
   const reduce = useReducedMotion();
   const [view, setView] = useState(() => (reduce ? INITIAL : { ...INITIAL, ry: INITIAL.ry - INTRO_TURN }));
   const [stage, setStage] = useState<Stage | null>(null);
@@ -227,29 +222,11 @@ export function ModelView({ model, wireframe, plain = false, background, beforeD
     };
   }, [stage, model]);
 
-  // Без цветове: всяка част получава сив материал, а нейният се пази в userData и се връща. Текстурите от снимки се качват
-  // отново, ако изгледът е създаден, докато е бил сив.
-  useEffect(() => {
-    model.traverse((o) => {
-      if (!(o instanceof Mesh)) return;
-      const data = o.userData as { coloured?: Material | Material[] };
-      if (plain && !data.coloured) {
-        data.coloured = o.material;
-        o.material = new MeshStandardMaterial({ color: PLAIN_GREY, roughness: 0.8, metalness: 0 });
-      } else if (!plain && data.coloured) {
-        (o.material as Material).dispose();
-        o.material = data.coloured;
-        delete data.coloured;
-      }
-    });
-    if (!plain && stage) uploadPhotoTextures(model, stage.gl, stage.renderer);
-  }, [model, plain, stage]);
-
   useEffect(() => {
     model.traverse((o) => {
       if (o instanceof Mesh) for (const m of [o.material].flat() as Material[]) (m as Material & { wireframe: boolean }).wireframe = wireframe;
     });
-  }, [model, wireframe, plain]);
+  }, [model, wireframe]);
 
   // Избраните точки като кръгчета върху модела (в собствените му оси, за да се въртят с него), като две се свързват с
   // линия, видима през модела. Самите те не се улавят от докосвания.
@@ -300,7 +277,7 @@ export function ModelView({ model, wireframe, plain = false, background, beforeD
     beforeDraw?.();
     stage.renderer.render(stage.scene, stage.camera);
     stage.gl.endFrameEXP();
-  }, [stage, model, view, wireframe, plain, inner, outer, beforeDraw, shown]);
+  }, [stage, model, view, wireframe, inner, outer, beforeDraw, shown]);
 
   return (
     <View

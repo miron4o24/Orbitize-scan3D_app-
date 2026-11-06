@@ -719,8 +719,6 @@ class AiKeys(BaseModel):
 
     anthropic: str | None = Field(None, max_length=500)
     meshy: str | None = Field(None, max_length=500)
-    huggingface: str | None = Field(None, max_length=500)  # безплатният онлайн AI модел (app/online3d.py)
-    gemini: str | None = Field(None, max_length=500)  # чистият CAD модел (app/cadfit.py), безплатен ключ от Google AI Studio
 
 
 @router.get("/admin/ai", dependencies=[Depends(admin_only)])
@@ -731,7 +729,7 @@ def admin_ai():
 @router.put("/admin/ai", dependencies=[Depends(admin_only)])
 def admin_set_ai(body: AiKeys):
     need_db()
-    for service in ("anthropic", "meshy", "huggingface", "gemini"):
+    for service in ("anthropic", "meshy"):
         value = getattr(body, service)
         if value is not None:
             AI.set_key(service, value.strip())
@@ -747,4 +745,4 @@ def health_info() -> dict:
     # (проверява се отдалечено след инсталиране). stress, progress, pro: тестът за здравина (app/stress.py), точките
     # (app/progress.py) и AI моделите на Pro (app/ai.py) са налични, затова приложението ги показва.
     return {"accounts": ok, "database": db.status(), "google_client_id": ids[0] if ids else None,
-            "version": "2026-11-05-detail", "stress": True, "progress": True, "pro": True}  # fmt: skip
+            "version": "2026-11-04-orbitize", "stress": True, "progress": True, "pro": True}  # fmt: skip

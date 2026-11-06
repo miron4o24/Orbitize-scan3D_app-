@@ -25,10 +25,6 @@ export type Scan = {
   jobId?: string;
   error?: string;
   longestMm?: number;
-  sizeSet?: boolean; // потребителят сам е задал истинския размер: само тогава печатът е 1:1
-  sizeAsked?: boolean; // въпросът за истинския размер вече е показан веднъж (и е пропуснат)
-  partSize?: [number, number, number]; // точна част: дължина, ширина, височина в мм (0: не е мерено)
-  partNotes?: string; // точна част: бележки за сървъра ("отвор 5 мм")
   flatBase?: boolean;
   report?: Report;
   userId?: string; // профилът, на който принадлежи; без такъв: създадено като гост (присъединява се към профила при влизане)

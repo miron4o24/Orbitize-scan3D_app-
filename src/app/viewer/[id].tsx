@@ -1,6 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { File, Paths } from 'expo-file-system';
-import { Image } from 'expo-image';
 import { router, useLocalSearchParams, type ErrorBoundaryProps } from 'expo-router';
 import * as Sharing from 'expo-sharing';
 import { useEffect, useState } from 'react';
@@ -17,9 +16,6 @@ import { PrintHelper } from '@/components/PrintHelper';
 import { SpotPicker } from '@/components/SpotPicker';
 import { Badge, Button, Card, ErrorText, Field, H2, H3, IconButton, Label, Note, Row, Screen, Section, Segmented, Small, Title } from '@/components/ui';
 import {
-  authHeaders,
-  cadModel,
-  downloadForViewing,
   downloadResult,
   downloadSpin,
   editModel,
@@ -30,7 +26,6 @@ import {
   renameScan,
   shareScan,
   shareUrl,
-  thumbUrl,
   unpublishScan,
   unshareScan,
   type Report,
@@ -42,7 +37,7 @@ import { exportForPrint } from '@/lib/exportModel';
 import { badgeOf, deleteEntry } from '@/lib/library';
 import { parseGlb } from '@/lib/model';
 import { allowance, allowanceNote, blocked } from '@/lib/plan';
-import { OLD_SCAN_INFO, PRO_INFO } from '@/lib/prefs';
+import { PRO_INFO, SCAN_INFO } from '@/lib/prefs';
 import { estimate, euro, getPrices, printTime, setPrice } from '@/lib/printEstimate';
 import { checkProgress } from '@/lib/progress';
 import { createScan, getScan, modelFile, scanTitle, updateScan } from '@/lib/scans';
@@ -54,7 +49,7 @@ async function loadModel(id: string, jobId: string | undefined): Promise<Object3
   const file = modelFile(id);
   if (!file.exists) {
     if (!jobId) throw new Error('Моделът вече не е наличен.');
-    await downloadForViewing(jobId, file);
+    await downloadResult(jobId, 'glb', file);
   }
   try {
     return await parseGlb(file, `scan-${id}`);
@@ -104,7 +99,6 @@ export default function Viewer() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [wireframe, setWireframe] = useState(false);
-  const [plain, setPlain] = useState(false); // моделът без цветовете, само формата
   const [full, setFull] = useState(false); // моделът на целия екран
   const [mmInput, setMmInput] = useState(String(scan?.longestMm ?? 100));
   const [busy, setBusy] = useState<string | null>(null);
@@ -120,11 +114,6 @@ export default function Viewer() {
   const [picking, setPicking] = useState(false); // посочване върху модела на целия екран
   const [measuring, setMeasuring] = useState(false); // две докосвания върху модела на целия екран
   const [plating, setPlating] = useState(false); // диалогът за табелка с име (Pro)
-  // Въпросът за истинския размер след готов модел: само веднъж, докато потребителят не го е задал (копие 1:1 при печат).
-  const [askSize, setAskSize] = useState(() => {
-    const now = getScan(id);
-    return now?.status === 'done' && !!now.report && !now.sizeSet && !now.sizeAsked;
-  });
   const session = useSession();
   const user = session?.kind === 'account' ? session.user : null;
   const jobId = scan?.jobId;
@@ -134,10 +123,9 @@ export default function Viewer() {
   const stressAllowed = allowance(user, 'stress', jobId);
   const arAllowed = allowance(user, 'ar', jobId);
   const canEdit = !!user?.pro && !!user.ai?.edit && !!jobId && scan?.status === 'done';
-  const canCad = !!user?.pro && !!user.ai?.cad && !!jobId && scan?.status === 'done' && scan.report?.ai !== 'cad' && scan.report?.ai !== 'part';
   // Създаден от видео, чиито кадри още са на сървъра: може да се добави липсваща страна.
   const [openedAt] = useState(() => Date.now());
-  const canExtend = !!jobId && scan?.status === 'done' && !scan.report?.edit && scan.photoCount !== 1 && openedAt - scan.createdAt < FRAMES_KEPT_MS;
+  const canExtend = !!jobId && scan?.status === 'done' && !scan.report?.edit && openedAt - scan.createdAt < FRAMES_KEPT_MS;
 
   useEffect(() => {
     if (arDone) arSupport().then(setSupport);
@@ -194,44 +182,21 @@ export default function Viewer() {
     }
   }
 
-  const typeLongestMm = (text: string) => {
-    setMmInput(text);
-    const typed = Number(text.replace(',', '.'));
-    if (Number.isFinite(typed) && typed >= 1 && typed <= 2000) setScan(updateScan(id, { longestMm: typed, sizeSet: true }));
-  };
-
-  const exportFile = (format: Format) =>
+  const exportAs = (format: Format) =>
     run(format, async () => {
       if (!model || !mmValid) return;
       setScan(updateScan(id, { longestMm: mm }));
       let file = modelFile(id);
-      if (format === 'glb' && jobId) {
-        // Изнасянето е с пълните детайли, а показваният модел е лекият файл за преглед.
-        file = new File(Paths.cache, `scan-${id}-full.glb`);
-        if (!file.exists) await downloadResult(jobId, 'glb', file);
-      } else if (format !== 'glb') {
+      if (format !== 'glb') {
         file = new File(Paths.cache, `scan-${id}-${Math.round(mm)}mm.${format}`);
-        if (jobId) {
+        if (surface === 'smooth' && jobId) {
           if (file.exists) file.delete();
-          await downloadResult(jobId, format, file, mm, surface === 'smooth' ? SMOOTH_PASSES : undefined);
+          await downloadResult(jobId, format, file, mm, SMOOTH_PASSES);
         } else file.writeSync(exportForPrint(model, format, mm));
       }
       const mime = FORMATS.find((f) => f.format === format)!.mime;
       await Sharing.shareAsync(file.uri, { mimeType: mime, dialogTitle: 'Изнасяне на 3D модел' });
     });
-
-  // От видео не може да се разбере истинският размер: без него копието не е 1:1, затова това се казва преди печат.
-  const exportAs = (format: Format) => {
-    if (format === 'glb' || scan?.sizeSet || !mmValid) return exportFile(format);
-    Alert.alert(
-      'Размерът не е зададен',
-      `Моделът ще излезе с най-дълга страна ${mm} мм. За копие 1:1 първо измерете предмета с линийка и въведете истинския му размер.`,
-      [
-        { text: 'Въведи размера', style: 'cancel', onPress: () => setTab('size') },
-        { text: 'Изнеси така', onPress: () => exportFile(format) },
-      ],
-    );
-  };
 
   const viewAr = () => {
     if (blocked(arAllowed)) return Alert.alert('Виж в стаята', allowanceNote(arAllowed));
@@ -259,17 +224,6 @@ export default function Viewer() {
       setEditing(false);
       setEditText('');
       setSpot(null);
-      router.push({ pathname: '/processing/[id]', params: { id: next.id } });
-    });
-
-  // Pro: чист CAD модел, проектиран от AI и сравнен със сканирането (сървър app/cadfit.py); размерът се пренася.
-  const cad = () =>
-    run('cad', async () => {
-      if (!scan) return;
-      const title = `${scanTitle(scan)} · CAD`.slice(0, 100);
-      const job = await cadModel(jobId!, title);
-      const next = createScan(currentUserId() ?? undefined, 'cad');
-      updateScan(next.id, { jobId: job.id, status: job.state, title, longestMm: mmValid ? mm : undefined, sizeSet: scan.sizeSet });
       router.push({ pathname: '/processing/[id]', params: { id: next.id } });
     });
 
@@ -388,8 +342,8 @@ export default function Viewer() {
   const title = scanTitle(scan);
   const done = scan.status === 'done';
   const kind = badgeOf(scan.status);
-  // Как е създаден: AI модел или старото сканиране.
-  const way = report?.ai ? PRO_INFO[report.ai].label : report && !report.edit ? OLD_SCAN_INFO.label : null;
+  // Кой от двата начина го е създал; безплатният профил има само един, затова няма какво да се различава.
+  const way = report?.ai ? PRO_INFO[report.ai].label : report && !report.edit && user?.pro ? SCAN_INFO.label : null;
   const tabs: { value: Tab; label: string }[] = [
     { value: 'size', label: 'Размер' },
     { value: 'files', label: 'Файлове' },
@@ -401,7 +355,7 @@ export default function Viewer() {
       <View style={s.preview}>
         {model ? (
           <Animated.View entering={fade} style={s.flex}>
-            {!full && !picking && <ModelView model={model} wireframe={wireframe} plain={plain} background={c.viewer} />}
+            {!full && !picking && <ModelView model={model} wireframe={wireframe} background={c.viewer} />}
           </Animated.View>
         ) : loadError ? (
           <View style={s.center}>
@@ -418,32 +372,13 @@ export default function Viewer() {
           </View>
         ) : (
           <View style={s.loading}>
-            {jobId ? (
-              <Image
-                source={{ uri: `${thumbUrl(jobId)}?v=model`, headers: authHeaders() }}
-                style={s.loadingPicture}
-                contentFit="contain"
-                transition={200}
-              />
-            ) : (
-              <Skeleton style={s.loadingBlock} />
-            )}
+            <Skeleton style={s.loadingBlock} />
             <Label>Зареждане на модела…</Label>
           </View>
         )}
         <SafeAreaView edges={['top']} style={s.floatTop} pointerEvents="box-none">
           <IconButton icon="chevron-back" label="Назад" onPress={() => router.back()} />
-          {model && (
-            <View style={s.floatButtons}>
-              <IconButton
-                icon="color-palette-outline"
-                label={plain ? 'Покажи цветовете' : 'Покажи без цветове'}
-                active={plain}
-                onPress={() => setPlain((p) => !p)}
-              />
-              <IconButton icon="expand-outline" label="Цял екран" onPress={() => setFull(true)} />
-            </View>
-          )}
+          {model && <IconButton icon="expand-outline" label="Цял екран" onPress={() => setFull(true)} />}
         </SafeAreaView>
       </View>
 
@@ -491,12 +426,6 @@ export default function Viewer() {
           </Appear>
         )}
 
-        {canCad && (
-          <Appear index={2}>
-            <Button title="Чист CAD модел" icon="cube-outline" variant="secondary" size="lg" onPress={cad} loading={busy === 'cad'} disabled={!!busy} />
-          </Appear>
-        )}
-
         {canEdit && (
           <Appear index={2}>
             <Button title="Табелка с име" icon="pricetag-outline" variant="secondary" size="lg" onPress={() => setPlating(true)} disabled={!mmValid || !!busy} />
@@ -525,7 +454,7 @@ export default function Viewer() {
                     <Field
                       style={s.mm}
                       value={mmInput}
-                      onChangeText={typeLongestMm}
+                      onChangeText={setMmInput}
                       keyboardType="decimal-pad"
                       accessibilityLabel="Най-дълга страна в милиметри"
                       selectTextOnFocus
@@ -534,9 +463,6 @@ export default function Viewer() {
                   </View>
                 </View>
                 {!mmValid && <Small style={s.danger}>Въведете размер от 1 до 2000 мм.</Small>}
-                {mmValid && !scan?.sizeSet && (
-                  <Small style={s.danger}>За копие 1:1 измерете предмета с линийка и въведете най-дългата му страна.</Small>
-                )}
                 {model && mmValid && (
                   <View style={s.measure}>
                     <Button title="Измери на модела" icon="resize-outline" variant="ghost" onPress={() => setMeasuring(true)} />
@@ -703,25 +629,10 @@ export default function Viewer() {
           title={title}
           wireframe={wireframe}
           onWireframe={() => setWireframe((w) => !w)}
-          plain={plain}
-          onPlain={() => setPlain((p) => !p)}
           onClose={() => setFull(false)}
         />
       )}
       <RenameDialog visible={renaming} initial={scan.title ?? ''} saving={busy === 'rename'} onClose={() => setRenaming(false)} onSave={rename} />
-      <SizeDialog
-        visible={askSize && !!report}
-        which={report ? longestSide(report.dimensions_mm) : ''}
-        onLater={() => {
-          setScan(updateScan(id, { sizeAsked: true }));
-          setAskSize(false);
-        }}
-        onSave={(value) => {
-          setMmInput(String(value));
-          setScan(updateScan(id, { longestMm: value, sizeSet: true, sizeAsked: true }));
-          setAskSize(false);
-        }}
-      />
       <PlateDialog visible={plating} saving={busy === 'plate'} error={plating ? error : null} onClose={() => setPlating(false)} onSave={nameplate} />
       {model && mmValid && (
         <MeasureTool
@@ -732,7 +643,7 @@ export default function Viewer() {
           onApply={(longest) => {
             const rounded = Math.round(longest * 10) / 10;
             setMmInput(String(rounded));
-            setScan(updateScan(id, { longestMm: rounded, sizeSet: true }));
+            setScan(updateScan(id, { longestMm: rounded }));
             setMeasuring(false);
           }}
         />
@@ -773,41 +684,6 @@ export default function Viewer() {
         />
       )}
     </View>
-  );
-}
-
-// Коя е най-дългата страна на предмета, за да знае потребителят какво да измери (z е височината).
-function longestSide(dims: readonly number[]): string {
-  const [x, y, z] = dims;
-  return z >= Math.max(x, y) ? 'височината му (отдолу догоре)' : 'дължината му (най-дългата страна)';
-}
-
-function SizeDialog(props: { visible: boolean; which: string; onLater: () => void; onSave: (mm: number) => void }) {
-  const s = useStyles();
-  const [value, setValue] = useState('');
-  const typed = Number(value.replace(',', '.'));
-  const valid = Number.isFinite(typed) && typed >= 1 && typed <= 2000;
-  return (
-    <Modal visible={props.visible} transparent animationType="fade" onRequestClose={props.onLater}>
-      <View style={s.backdrop}>
-        <Card style={s.dialog}>
-          <H2>Истински размер</H2>
-          <Small>{`За копие 1:1 измерете с линийка ${props.which} и въведете числото в милиметри.`}</Small>
-          <Field
-            value={value}
-            onChangeText={setValue}
-            autoFocus
-            keyboardType="decimal-pad"
-            placeholder="напр. 120"
-            accessibilityLabel="Най-дълга страна в милиметри"
-          />
-          <View style={s.buttons}>
-            <Button title="По-късно" variant="secondary" onPress={props.onLater} style={s.flex} />
-            <Button title="Запази" onPress={() => props.onSave(Math.round(typed * 10) / 10)} disabled={!valid} style={s.flex} />
-          </View>
-        </Card>
-      </View>
-    </Modal>
   );
 }
 
@@ -992,7 +868,6 @@ const useStyles = makeStyles((c) => ({
   preview: { height: '42%', backgroundColor: c.viewer[1], borderBottomWidth: 1, borderBottomColor: c.line },
   loading: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: space.md },
   loadingBlock: { width: 120, height: 120, borderRadius: radius.md },
-  loadingPicture: { width: 240, height: 240, borderRadius: radius.md },
   floatTop: {
     position: 'absolute',
     left: 0,
@@ -1003,7 +878,6 @@ const useStyles = makeStyles((c) => ({
     paddingHorizontal: space.lg,
     paddingTop: space.sm,
   },
-  floatButtons: { flexDirection: 'row', gap: space.sm },
   content: { paddingTop: space.xl, gap: 20 },
   titleRow: { flexDirection: 'row', alignItems: 'flex-start', gap: space.sm },
   pencil: { marginTop: 12 },

@@ -17,8 +17,8 @@ import Animated, {
 } from 'react-native-reanimated';
 
 import { Appear, CountUp, LiveDot } from '@/components/motion';
-import { Button, Card, ErrorText, H3, Header, Mono, Row, Screen, Small } from '@/components/ui';
-import { OLD_SCAN_INFO, PRO_INFO } from '@/lib/prefs';
+import { Button, Card, ErrorText, H3, Header, Mono, Row, Screen, Section, Segmented, Small } from '@/components/ui';
+import { aiAvailable, PRO_INFO, SCAN_INFO } from '@/lib/prefs';
 import { refreshProfile } from '@/lib/auth';
 import { checkProgress } from '@/lib/progress';
 import { setUpPush } from '@/lib/push';
@@ -64,15 +64,11 @@ const SUBSTEPS: Record<string, string> = {
   'dense matching': 'Измерване на повърхността',
   'sharpening the outlines': 'Уточняване на очертанията',
   'fusing depth': 'Изграждане на повърхността',
-  'adding detail': 'Добавяне на фините детайли',
   texturing: 'Оцветяване със снимките',
   'shape from motion sensors': 'Изграждане на формата',
   // AI модели (Pro)
   'claude designing': 'Проектиране на предмета',
   'claude checking': 'Проверка на модела',
-  'measuring the views': 'Измерване на частта от трите снимки',
-  'ai designing': 'Проектиране на предмета',
-  'ai checking': 'Сравняване със сканирането и поправяне',
   'choosing frames': 'Избор на най-добрите кадри',
   'ai modelling': 'AI изгражда модела',
   'downloading the model': 'Получаване на модела',
@@ -109,12 +105,6 @@ const PLAN: [string, number][] = [
 ];
 // Същото за методите на Pro: експресното е мащабирано от стъпките за 80 кадъра до 30 по-малки кадъра, а останалото е
 // приблизително.
-// Модел от една снимка: сървърът търси предмета и AI изгражда формата.
-const ONE_PHOTO_PLAN: [string, number][] = [
-  ['finding the object', 5],
-  ['ai modelling', 70],
-  ['cleaning', 10],
-];
 const PRO_PLANS: Record<ProMethod, [string, number][]> = {
   edit: [
     ['reconstructing', 3],
@@ -143,40 +133,24 @@ const PRO_PLANS: Record<ProMethod, [string, number][]> = {
   single: [
     ['reading video', 4],
     ['picking frames', 4],
-    ['finding the object', 40],
-    ['feature extraction', 8],
-    ['photo matching', 30],
-    ['camera solving', 12],
+    ['feature extraction', 10],
+    ['photo matching', 55],
+    ['camera solving', 10],
+    ['finding the object', 94],
     ['undistorting', 3],
-    ['sharpening the outlines', 30],
+    ['sharpening the outlines', 90],
     ['dense setup', 1],
-    ['dense matching', 90],
-    ['meshing', 10],
-    ['estimating depth', 15],
+    ['dense matching', 100],
+    ['meshing', 15],
+    ['estimating depth', 30],
     ['fusing depth', 40],
-    ['cleaning', 10],
-    ['adding detail', 45],
+    ['cleaning', 20],
     ['texturing', 20],
   ],
   claude: [
     ['reading video', 5],
     ['claude designing', 90],
     ['claude checking', 90],
-    ['cleaning', 5],
-  ],
-  part: [
-    ['finding the object', 60],
-    ['camera solving', 40],
-    ['dense matching', 90],
-    ['fusing depth', 40],
-    ['texturing', 20],
-    ['measuring the views', 60],
-    ['cleaning', 5],
-  ],
-  cad: [
-    ['reconstructing', 5],
-    ['ai designing', 60],
-    ['ai checking', 150],
     ['cleaning', 5],
   ],
   photo: [
@@ -242,7 +216,7 @@ export default function Processing() {
   const jobId = scan?.jobId;
   const method: Method = scan?.method ?? 'scan';
   const pro = method === 'scan' ? null : method;
-  const plan = scan?.photoCount === 1 ? ONE_PHOTO_PLAN : pro ? PRO_PLANS[pro] : PLAN;
+  const plan = pro ? PRO_PLANS[pro] : PLAN;
   const session = useSession();
   const user = session?.kind === 'account' ? session.user : null;
 
@@ -272,8 +246,6 @@ export default function Processing() {
             // AI модел носи името си и приблизителния реален размер, ако потребителят не е дал такъв.
             ...(r?.object && !was?.title && { title: r.object }),
             ...(r?.real_mm && !was?.longestMm && { longestMm: r.real_mm }),
-            // Точна част по мерките на потребителя: размерът е истинският, без въпрос след това.
-            ...(r?.real_mm && r.size_given && { longestMm: r.real_mm, sizeSet: true }),
           }),
         );
         if (job.state === 'done') {
@@ -351,18 +323,17 @@ export default function Processing() {
       }
       // Изборите в момента: могат да се променят, докато качването върви.
       const now = getScan(id) ?? scan!;
-      // AI моделът на сървъра; точната част (снимки и мерки, app/cadfit.py run_part) остава такава. И двете носят мерките,
-      // по които сървърът нагласява размера (app/truesize.py).
-      const way = now.method === 'part' ? 'part' : 'single';
-      update({ method: way, quality: undefined });
+      // Само предлаганите два начина: друг начин от по-старо сканиране (express, quick) се опитва отново като
+      // стандартно сканиране.
+      const chosen = now.method === 'single' && aiAvailable() ? 'single' : undefined;
+      update({ method: chosen, quality: undefined });
       const started = await retrying(() =>
         startJob(job.id, {
           flat_base: now.flatBase ?? true,
           quality: 'detailed',
           ...(hasVideo && { video_bytes: video.size }),
-          method: way,
+          ...(chosen && { method: chosen }),
           ...(now.extendFrom && { extend: now.extendFrom }),
-          ...(now.partSize && { size_mm: now.partSize }),
         }),
       ).catch((e) => {
         // Опит, който е минал, но е загубил отговора си, оставя задачата вече стартирана.
@@ -370,7 +341,7 @@ export default function Processing() {
         throw e;
       });
       update({ status: started.state, error: undefined });
-      refreshProfile().catch(() => {});
+      refreshProfile().catch(() => {}); // пробният AI модел на безплатния профил вече е използван
       setUpPush(true); // моментът, в който "кажи ми, когато е готово" има смисъл
     } catch (e) {
       setNetError(`Качването спря. ${errorText(e)}`);
@@ -383,6 +354,7 @@ export default function Processing() {
   // Дневникът на задачата на сървъра: само за собственика на приложението, за да види защо сканирането се е
   // провалило.
   const owner = !!user?.owner;
+  const canAi = !!user && aiAvailable();
   async function showLog() {
     if (!scan!.jobId) return setLog('Няма данни за това сканиране.');
     setLog('Зареждане…');
@@ -419,15 +391,15 @@ export default function Processing() {
     );
 
   if (active) {
-    const total = scan.photoCount === 1 ? 2 : pro ? PRO_INFO[pro].minutes : scan.quality === 'quick' ? 10 : OLD_SCAN_INFO.minutes;
+    const total = pro ? PRO_INFO[pro].minutes : scan.quality === 'quick' ? 10 : SCAN_INFO.minutes;
     const queued = scan.status === 'queued';
     const share = queued ? 0 : progress;
     const left = Math.max(1, Math.round(total * (1 - share)));
-    const steps = method === 'edit' || method === 'cad' ? EDIT_STEPS : STEPS;
+    const steps = method === 'edit' ? EDIT_STEPS : STEPS;
     const at = steps.findIndex(([st]) => st === scan.status);
     return (
       <Screen>
-        <Header kicker={pro ? PRO_INFO[pro].label : OLD_SCAN_INFO.label} title={scanTitle(scan)} />
+        <Header kicker={pro ? PRO_INFO[pro].label : canAi ? SCAN_INFO.label : undefined} title={scanTitle(scan)} />
         <Appear index={1}>
           <Card style={s.overall}>
             <View style={s.row}>
@@ -476,23 +448,13 @@ export default function Processing() {
   }
 
   // Текстовата промяна няма какво да качва или повтаря: оригиналът е непроменен и потребителят я описва отново там.
-  if (method === 'edit' || method === 'cad')
+  if (method === 'edit')
     return (
       <Screen>
-        <Header
-          title={
-            method === 'cad'
-              ? scan.status === 'failed'
-                ? 'CAD моделът не успя'
-                : 'CAD моделът е спрян'
-              : scan.status === 'failed'
-                ? 'Промяната не успя'
-                : 'Промяната е спряна'
-          }
-        />
+        <Header title={scan.status === 'failed' ? 'Промяната не успя' : 'Промяната е спряна'} />
         <Appear index={1} style={s.failed}>
           {scan.status === 'failed' && <ErrorText>{failureText(scan.error)}</ErrorText>}
-          <Small>{method === 'cad' ? 'Сканирането е непроменено. Опитайте отново по-късно.' : 'Оригиналът е непроменен. Опишете промяната по-просто.'}</Small>
+          <Small>Оригиналът е непроменен. Опишете промяната по-просто.</Small>
           {scan.status === 'failed' &&
             owner &&
             (log === null ? (
@@ -510,6 +472,7 @@ export default function Processing() {
     );
 
   const uploading = uploaded !== null;
+  const way = method === 'single' && canAi ? 'single' : 'scan';
   const failed = scan.status === 'failed';
   return (
     <Screen>
@@ -531,6 +494,21 @@ export default function Processing() {
         </Appear>
       )}
       {info && <Small>{info}</Small>}
+      {canAi && (
+        <Appear index={2}>
+          <Section label="Начин">
+            <Segmented<'scan' | 'single'>
+              value={way}
+              onChange={(m) => update({ method: m === 'single' ? 'single' : undefined })}
+              options={[
+                { value: 'scan', label: SCAN_INFO.label },
+                { value: 'single', label: PRO_INFO.single.label },
+              ]}
+            />
+            <Small>{way === 'single' ? PRO_INFO.single.time : SCAN_INFO.time}</Small>
+          </Section>
+        </Appear>
+      )}
       <Appear index={3}>
         <Card style={s.list}>
           <Row

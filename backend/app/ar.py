@@ -26,8 +26,6 @@ from . import mesh as M
 from . import texture as TX
 
 FACES = 60_000
-# Лекият файл за преглед на телефона (view_file): почти всичко във файла е геометрия, а изтеглянето през тунела е бавно.
-VIEW_FACES = 80_000
 TEXTURE = 2048
 log = logging.getLogger("uvicorn.error")
 
@@ -117,31 +115,6 @@ def _cached(job: Path, tenths: int) -> Path:
         tmp.write_bytes(content)
         tmp.replace(target)
     return path
-
-
-def view_file(job: Path) -> Path | None:
-    """Лекият GLB за преглед в приложението: същата текстура върху по-малко триъгълници, готов файл за всяка заявка.
-    Файловете за печат остават с пълните детайли. None без текстура или при проблем: тогава се използва пълният модел."""
-    with _making:
-        path = job / f"view_{VIEW_FACES // 1000}k.glb"
-        sources = [job / "model.ply", job / TX.NPZ]
-        newest = max((s.stat().st_mtime for s in sources if s.exists()), default=0)
-        if path.exists() and path.stat().st_mtime >= newest:
-            return path
-        textured = TX.load(job)
-        if not textured:
-            return None
-        try:
-            total = sum(len(p["faces"]) for p in textured)
-            parts = [textured_part(p, max(500, VIEW_FACES * len(p["faces"]) // total)) for p in textured]
-            data = M.export(trimesh.load(job / "model.ply", force="mesh"), "glb", None, parts)
-        except Exception as e:
-            log.warning("Viewing file for %s not made: %s", job.name, e)
-            return None
-        tmp = path.with_name(path.name + ".part")
-        tmp.write_bytes(data)
-        tmp.replace(path)
-        return path
 
 
 def zipped(path: Path) -> Path:

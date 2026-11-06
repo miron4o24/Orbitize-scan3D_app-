@@ -18,7 +18,6 @@ def client(tmp_path, monkeypatch):
     from app import jobs, main, pipeline
 
     monkeypatch.setattr(jobs, "DATA", tmp_path)
-    monkeypatch.setattr(main, "CLASSIC_SCAN", True)  # потокът на задачите се проверява с подправения pipeline.run
 
     def fake_run(job, flat_base, set_state, sh, quick=False):
         set_state("reconstructing")
