@@ -142,14 +142,14 @@ def dense_areas(views: M.Views, masks: list, cloud: M.Cloud) -> list[np.ndarray]
 def measured(job: Path, work: Path, dense: Path, views: M.Views, masks: list, cloud: M.Cloud, up: np.ndarray | None,
              agree: float, set_state: Callable[[str], None], sh: Callable[[str, list], None], side: int = SIDE,
              voxel: float = VOXEL, fixed: bool = False, table: bool = True, flap: float | None = None,
-             wide: bool = False, geometric: bool = True, passes: int | None = None):  # fmt: skip
+             wide: bool = False, geometric: bool = True, passes: int | None = None, debug: bool = False):  # fmt: skip
     """Повърхността на модела (координати на облака) и облакът, в който е: измерената между кадрите дълбочина
     (OpenMVS, в маските) и AI дълбочината, слети във формата от очертанията; самата форма, когато измерването или
     сливането се провали (dense: коригираните кадри, моделът на COLMAP в dense/sparse). side: размерът на кадрите;
     voxel: мрежата на сливането; fixed: формата точно при `agree`, без избор; table: използва масата на решаващия
     алгоритъм (на `cloud`, намерена сред точките му); flap: fuse.FLAP на сливането; wide: гъсто съпоставяне в
     областта на сканиране вместо около предмета; geometric: вторият му проверяващ проход; passes: fuse.PASSES на
-    сливането."""
+    сливането; debug: записва входа на сливането (pipeline.FUSE_DEBUG)."""
     solvers = cloud.ground_z if table else None
     mask_dir = work / "dense_masks"
     mask_dir.mkdir(exist_ok=True)
@@ -211,7 +211,7 @@ def measured(job: Path, work: Path, dense: Path, views: M.Views, masks: list, cl
     fused = None
     if dense_cloud:
         P.carved_hull(work, dense, views, masks, cloud, sh, found)  # AI дълбочината (app/depth.py) за сливането
-        fused = P.fused_surface(work, dense, views, cloud, outline, sh, voxel, flap, passes or P.F.PASSES)
+        fused = P.fused_surface(work, dense, views, cloud, outline, sh, voxel, flap, passes or P.F.PASSES, debug)
         for p in dense.glob("*.dmap"):
             p.unlink(missing_ok=True)
     if fused is None:

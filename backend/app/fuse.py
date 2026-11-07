@@ -10,11 +10,12 @@
 обвивката е съгласна (консенсусът на маските), така че фон, включен от една маска, остава извън, а всяка измерена
 дълбочина извън предмета (маса, стена) все така казва, че пространството пред нея е празно, което изрязва онова, което
 очертанията не могат (масата под ръба на предмета, процепа между дръжка и батерия). Работи като собствен процес
-(стъпка "fusing depth"): python fuse.py <папка dense> <inputs.npz> <crops.npz> <out.ply>. Папка dense: картите на
-дълбочината на OpenMVS (depth*.dmap). crops.npz: изрязванията с дълбочина от app/depth.py. inputs.npz: names (n,)
-имена на кадрите (изрязване i е кадър i), to_up (3,3) свят -> координати на мрежата, ground_z (nan: няма маса),
-hull_v, hull_f (обвивката от очертанията, неиздълбана, в координати на мрежата). Записва out.ply (координати на
-мрежата) и out.json (колко кадъра от колко са използвани)."""
+(стъпка "fusing depth"): python fuse.py <папка dense> <inputs.npz> <crops.npz> <out.ply> [запис.npz]. Папка dense:
+картите на дълбочината на OpenMVS (depth*.dmap). crops.npz: изрязванията с дълбочина от app/depth.py. inputs.npz:
+names (n,) имена на кадрите (изрязване i е кадър i), to_up (3,3) свят -> координати на мрежата, ground_z (nan: няма
+маса), hull_v, hull_f (обвивката от очертанията, неиздълбана, в координати на мрежата). Записва out.ply (координати
+на мрежата) и out.json (колко кадъра от колко са използвани). запис.npz (тестови задачи): всичко, което сливането
+чете, за да се повтори другаде: python fuse.py --replay <запис.npz> <out.ply>."""
 
 import json
 import struct
@@ -131,19 +132,32 @@ def at_image_size(dm: DepthMap) -> DepthMap:
     return DepthMap(dm.image, dm.image_size, K, dm.R, dm.C, dm.depth[np.ix_(rows, cols)], conf)
 
 
-def completed(dm: DepthMap, disp: np.ndarray, box, inner: np.ndarray, allowed: np.ndarray, core: np.ndarray):
+@dataclass
+class View:
+    """Един кадър за сливането: измерената дълбочина и увереността на OpenMVS върху изрязването на AI дълбочината."""
+
+    name: str
+    K: np.ndarray  # за разделителната способност на кадъра
+    R: np.ndarray  # свят -> камера
+    C: np.ndarray  # център на камерата
+    box: tuple[int, int, int, int]  # x0, y0, x1, y1 на изрязването в кадъра
+    dep: np.ndarray  # (h, w) измерена дълбочина, 0 = няма
+    conf: np.ndarray  # (h, w)
+    disp: np.ndarray  # (h, w) AI дълбочината (обратна, с неизвестен мащаб)
+    inner: np.ndarray  # (h, w) вътрешността на маската
+    allowed: np.ndarray  # (h, w) къде се вижда обвивката
+    core: np.ndarray  # (h, w) ядрото ѝ далеч от очертанието
+
+
+def completed(v: View):
     """Дълбочината на кадъра върху изрязването му: AI дълбочината, напасната към измерената, върху пикселите на
     предмета: вътрешността на маската и на обвивката (`core`: където маската е пропуснала тъмна част, черен спусък
     на дрелка), но само където обвивката се вижда (`allowed`). Връща (depth, weight, free), 0 където няма нищо, или
     None, ако двете не пасват. free: измерената дълбочина на другите пиксели, която показва само празно
     пространство (пред пропуснат пиксел от предмета пак е празно)."""
-    x0, y0, x1, y1 = box
-    dep = dm.depth[y0:y1, x0:x1]
-    if dep.shape != disp.shape:
-        return None
-    conf = dm.conf[y0:y1, x0:x1] if dm.conf is not None else np.ones_like(dep)
+    dep, conf, disp, box = v.dep, v.conf, v.disp, v.box
     measured = (dep > 0) & (conf >= MIN_CONF)
-    inner = (inner | core) & allowed
+    inner = (v.inner | v.core) & v.allowed
     on = inner & measured
     if on.sum() < 500:
         return None
@@ -166,7 +180,7 @@ def completed(dm: DepthMap, disp: np.ndarray, box, inner: np.ndarray, allowed: n
     depth = np.where(ok, 1 / np.maximum(full, 1e-12), 0).astype(np.float32)
     weight = np.where(on, 1.0, AI_WEIGHT).astype(np.float32) * ok
     if FACING_MIN > 0:
-        weight *= np.clip(facing(depth, dm.K, box), FACING_MIN, 1.0)
+        weight *= np.clip(facing(depth, v.K, box), FACING_MIN, 1.0)
     free = np.where(measured & ~ok, dep, 0).astype(np.float32)
     return depth, weight, free
 
@@ -283,14 +297,13 @@ def vote_block(frames: list, world: np.ndarray, cells: np.ndarray, tsdf: np.ndar
     return dropped
 
 
-def fuse(dense: Path, inputs: Path, crops_file: Path, out: Path) -> None:
-    z = np.load(inputs)
-    names = [str(n) for n in z["names"]]
-    to_up = z["to_up"].astype(np.float64)
-    ground_z = float(z["ground_z"])
-    hull = trimesh.Trimesh(z["hull_v"], z["hull_f"], process=False)
+GRID_KEYS = ("names", "to_up", "ground_z", "hull_v", "hull_f", "voxel", "flap", "passes")
+
+
+def grid(z: dict, hull: trimesh.Trimesh):
+    """Мрежата на обема около обвивката: (долен ъгъл, форма, клетка, размер на предмета)."""
     size = float(hull.extents.max())
-    step = (float(z["voxel"]) if "voxel" in z.files else VOXEL) * size  # експресни сканирания: по-груби клетки
+    step = (float(z["voxel"]) if "voxel" in z else VOXEL) * size  # експресни сканирания: по-груби клетки
     pad = max(OUTSIDE * size, TRUNC * step) + 3 * step
     lo = hull.bounds[0] - pad
     shape = np.ceil((hull.bounds[1] + pad - lo) / step).astype(int) + 1
@@ -298,25 +311,11 @@ def fuse(dense: Path, inputs: Path, crops_file: Path, out: Path) -> None:
         grow = (np.prod(shape) / MAX_VOXELS) ** (1 / 3)
         step *= grow
         shape = np.ceil(shape / grow).astype(int) + 1
-    trunc = TRUNC * step
-    note(f"grid {shape[0]}x{shape[1]}x{shape[2]}, cell {step / size:.2%} of the size")
+    return lo, shape, step, size
 
-    sdf = hull_distance(hull, lo, tuple(shape), step).ravel()
-    tsdf = np.clip(sdf / trunc, -1, 1)
-    weight = np.full(tsdf.shape, HULL_WEIGHT, np.float32)
-    active = np.flatnonzero(sdf <= OUTSIDE * size)
-    inside = np.flatnonzero(sdf < 0)
-    del sdf
-    pick = np.random.default_rng(0).choice(len(inside), min(len(inside), HULL_POINTS), replace=False)
-    spacing = step * (len(inside) / len(pick)) ** (1 / 3)
-    cells = np.stack(np.unravel_index(inside[pick], tuple(shape)), 1)
-    hull_points = (cells * step + lo) @ to_up
-    del inside, pick
-    cells = np.stack(np.unravel_index(active, tuple(shape)), 1).astype(np.float32)
-    world = (cells * np.float32(step) + lo.astype(np.float32)) @ to_up.astype(np.float32)
-    del cells
-    note(f"{len(active) / 1e6:.1f} million cells near the hull")
 
+def read_views(dense: Path, names: list[str], crops_file: Path, hull_points: np.ndarray, spacing: float) -> list[View]:
+    """Кадрите с карта на дълбочината на OpenMVS и изрязване с AI дълбочина."""
     maps = {}
     for p in dense.glob("depth*.dmap"):
         with open(p, "rb") as f:
@@ -328,18 +327,95 @@ def fuse(dense: Path, inputs: Path, crops_file: Path, out: Path) -> None:
         todo = [(name, crops[f"disp_{i}"], tuple(int(v) for v in crops[f"box_{i}"]), crops[f"inner_{i}"])
                 for i, name in enumerate(names) if f"disp_{i}" in crops and name in maps]  # fmt: skip
 
-    def prepare(item):
+    def one(item) -> View | None:
         name, disp, box, inner = item
         dm = at_image_size(read_dmap(maps[name]))
-        allowed, core = hull_view(hull_points, spacing, dm, box)
-        got = completed(dm, disp, box, inner, allowed, core)
-        if got is None:
-            note(f"{name}: AI depth does not fit the depth map, left out")
+        x0, y0, x1, y1 = box
+        dep = dm.depth[y0:y1, x0:x1]
+        if dep.shape != disp.shape:
             return None
-        return ((dm.R.astype(np.float32), dm.C.astype(np.float32), dm.K), box, *got)
+        conf = dm.conf[y0:y1, x0:x1] if dm.conf is not None else np.ones_like(dep)
+        allowed, core = hull_view(hull_points, spacing, dm, box)
+        return View(name, dm.K, dm.R, dm.C, box, dep, conf, disp, inner, allowed, core)
+
+    return [v for v in PAR.each(one, todo) if v is not None]
+
+
+def save(path: Path, z: dict, views: list[View]) -> None:
+    """Всичко, което сливането чете (тестови задачи), за повторение другаде с --replay."""
+    arrays = {k: z[k] for k in GRID_KEYS if k in z}
+    for i, v in enumerate(views):
+        arrays |= {f"name_{i}": np.array(v.name), f"K_{i}": v.K, f"R_{i}": v.R, f"C_{i}": v.C, f"box_{i}": np.array(v.box),
+                   f"dep_{i}": v.dep.astype(np.float32), f"conf_{i}": v.conf.astype(np.float16),
+                   f"disp_{i}": v.disp.astype(np.float32), f"inner_{i}": v.inner, f"allowed_{i}": v.allowed,
+                   f"core_{i}": v.core}  # fmt: skip
+    np.savez_compressed(path, **arrays)
+
+
+def load(path: Path) -> tuple[dict, list[View]]:
+    """Записаното от save."""
+    with np.load(path) as f:
+        z = {k: f[k] for k in GRID_KEYS if k in f.files}
+        views, i = [], 0
+        while f"name_{i}" in f.files:
+            views.append(View(str(f[f"name_{i}"]), f[f"K_{i}"], f[f"R_{i}"], f[f"C_{i}"],
+                              tuple(int(v) for v in f[f"box_{i}"]), f[f"dep_{i}"], f[f"conf_{i}"].astype(np.float32),
+                              f[f"disp_{i}"], f[f"inner_{i}"], f[f"allowed_{i}"], f[f"core_{i}"]))  # fmt: skip
+            i += 1
+    return z, views
+
+
+def fuse(dense: Path, inputs: Path, crops_file: Path, out: Path, dump: Path | None = None) -> None:
+    with np.load(inputs) as f:
+        z = {k: f[k] for k in f.files}
+    hull = trimesh.Trimesh(z["hull_v"], z["hull_f"], process=False)
+    lo, shape, step, _ = grid(z, hull)
+    sdf = hull_distance(hull, lo, tuple(shape), step).ravel()
+    inside = np.flatnonzero(sdf < 0)
+    pick = np.random.default_rng(0).choice(len(inside), min(len(inside), HULL_POINTS), replace=False)
+    spacing = step * (len(inside) / len(pick)) ** (1 / 3)
+    cells = np.stack(np.unravel_index(inside[pick], tuple(shape)), 1)
+    hull_points = (cells * step + lo) @ z["to_up"].astype(np.float64)
+    del inside, pick, cells
+    views = read_views(dense, [str(n) for n in z["names"]], crops_file, hull_points, spacing)
+    if dump is not None:
+        save(dump, z, views)
+    fuse_views(z, hull, views, out, sdf)
+
+
+def replay(dump: Path, out: Path) -> None:
+    z, views = load(dump)
+    fuse_views(z, trimesh.Trimesh(z["hull_v"], z["hull_f"], process=False), views, out)
+
+
+def fuse_views(z: dict, hull: trimesh.Trimesh, views: list[View], out: Path, sdf: np.ndarray | None = None) -> None:
+    names = [str(n) for n in z["names"]]
+    to_up = z["to_up"].astype(np.float64)
+    ground_z = float(z["ground_z"])
+    lo, shape, step, size = grid(z, hull)
+    trunc = TRUNC * step
+    note(f"grid {shape[0]}x{shape[1]}x{shape[2]}, cell {step / size:.2%} of the size")
+
+    if sdf is None:
+        sdf = hull_distance(hull, lo, tuple(shape), step).ravel()
+    tsdf = np.clip(sdf / trunc, -1, 1)
+    weight = np.full(tsdf.shape, HULL_WEIGHT, np.float32)
+    active = np.flatnonzero(sdf <= OUTSIDE * size)
+    del sdf
+    cells = np.stack(np.unravel_index(active, tuple(shape)), 1).astype(np.float32)
+    world = (cells * np.float32(step) + lo.astype(np.float32)) @ to_up.astype(np.float32)
+    del cells
+    note(f"{len(active) / 1e6:.1f} million cells near the hull")
+
+    def prepare(v: View):
+        got = completed(v)
+        if got is None:
+            note(f"{v.name}: AI depth does not fit the depth map, left out")
+            return None
+        return ((v.R.astype(np.float32), v.C.astype(np.float32), v.K), v.box, *got)
 
     # За всеки използваем кадър: (поза, кутия, дълбочина, тегло, празно), запазени за следващите проходи.
-    frames = [f for f in PAR.each(prepare, todo) if f is not None]
+    frames = [f for f in PAR.each(prepare, views) if f is not None]
     used = len(frames)
     note(f"{used} of {len(names)} frames have depth to fuse")
     if used < 3:
@@ -350,7 +426,7 @@ def fuse(dense: Path, inputs: Path, crops_file: Path, out: Path) -> None:
         return sum(PAR.each(lambda s: vote_block(frames, world[s : s + BLOCK], active[s : s + BLOCK], tsdf, weight, prev,
                                                  trunc), starts))  # fmt: skip
 
-    passes = (int(z["passes"]) if "passes" in z.files else PASSES) if OUTLIER > 0 else 1
+    passes = (int(z["passes"]) if "passes" in z else PASSES) if OUTLIER > 0 else 1
     empty_tsdf, empty_weight, prev = tsdf, weight, None
     for k in range(passes):
         tsdf, weight = empty_tsdf.copy(), empty_weight.copy()
@@ -366,7 +442,7 @@ def fuse(dense: Path, inputs: Path, crops_file: Path, out: Path) -> None:
     if np.isfinite(ground_z):  # нищо под масата: плоско затворено дъно
         zs = lo[2] + np.arange(shape[2]) * step
         vol[:, :, zs < ground_z] = 1.0
-        flap = float(z["flap"]) if "flap" in z.files else FLAP
+        flap = float(z["flap"]) if "flap" in z else FLAP
         sheet = floor_sheet(vol < 0, int(np.searchsorted(zs, ground_z + FLOOR_BAND * size)), flap * size / step)
         if sheet is not None:
             vol[:, :, : sheet.shape[2]][sheet] = 1.0
@@ -389,4 +465,8 @@ def fuse(dense: Path, inputs: Path, crops_file: Path, out: Path) -> None:
 
 
 if __name__ == "__main__":
-    fuse(Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4]))
+    if sys.argv[1] == "--replay":
+        replay(Path(sys.argv[2]), Path(sys.argv[3]))
+    else:
+        fuse(Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4]),
+             Path(sys.argv[5]) if len(sys.argv) > 5 else None)  # fmt: skip
