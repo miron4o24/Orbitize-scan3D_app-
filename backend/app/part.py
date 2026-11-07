@@ -29,16 +29,16 @@ MIN_HOLE = 0.0008  # праг за площ на дупките (по-малки
 DEPTH = 1.3  # коефициент на дълбочината на изтеглянето за чисто пресичане
 COLOUR_SIDE = 700  # размер за текстуриране/оцветяване
 OFF_VIEW = 0.35  # максимално log-отклонение за автоматично разпознаване на изглед
-GRID_MAX = 384  # висока резолюция за visual hull; размерът се нормализира обратно до mm
+# The 1:1 path is intentionally independent from the smoother video pipeline.
+# It keeps a fine, physical voxel pitch where the part is small, while bounding
+# memory for large parts with an anisotropic grid.
+DETAIL_VOXEL_MM = 0.12
+GRID_MIN_AXIS = 48
+GRID_MAX_AXIS = 512
+GRID_MAX_VOXELS = 24_000_000
+OPPOSITE_IOU_MIN = 0.55
 
 SIDES = ("top", "bottom", "front", "back", "left", "right")
-VIEW_MAP = {
-    "top": ("top", "bottom"),
-    "side": ("front", "back"),
-    "end": ("right", "left"),
-}
-
-
 def soft_mask(sess, image: Image.Image) -> tuple[np.ndarray, tuple[int, int]]:
     """Маската (0..1) на изрязване около предмета при пълната му разделителна способност и отместването в снимката."""
     W, H = image.size
@@ -286,21 +286,41 @@ def build_mesh(views: dict, dims: tuple[float, float, float]) -> "trimesh.Trimes
     if not top or not side or not end:
         raise ValueError("three orthogonal profiles are required")
 
-    def resolution(*sizes: float) -> int:
-        smallest = max(min(sizes), 0.1)
-        return max(96, min(GRID_MAX, int(round(max(sizes) / smallest * 160))))
+    def grid_shape() -> tuple[int, int, int]:
+        physical = np.array([L, W, H], dtype=float)
+        scale = min(
+            1.0 / DETAIL_VOXEL_MM,
+            GRID_MAX_AXIS / max(physical),
+            (GRID_MAX_VOXELS / max(float(np.prod(physical)), 1e-6)) ** (1 / 3),
+        )
+        counts = np.clip(np.ceil(physical * scale).astype(int) + 1, GRID_MIN_AXIS, GRID_MAX_AXIS)
+        # A very thin part can hit the per-axis minimum before its total grid
+        # fits the memory budget. Only reduce axes that still have room.
+        while int(np.prod(counts)) > GRID_MAX_VOXELS:
+            movable = counts > GRID_MIN_AXIS
+            if not movable.any():
+                break
+            factor = (GRID_MAX_VOXELS / float(np.prod(counts))) ** (1 / movable.sum())
+            next_counts = counts.copy()
+            next_counts[movable] = np.maximum(GRID_MIN_AXIS, np.floor(counts[movable] * factor).astype(int))
+            if np.array_equal(next_counts, counts):
+                next_counts[np.argmax(counts)] -= 1
+            counts = next_counts
+        return tuple(int(v) for v in counts)
 
-    n = resolution(L, W, H)
+    nx, ny, nz = grid_shape()
 
-    def raster(shape, width: float, height: float) -> np.ndarray:
-        mask = np.zeros((n, n), dtype=bool)
+    def raster(shape, width: float, height: float, nx: int, ny: int) -> np.ndarray:
+        mask = np.zeros((ny, nx), dtype=bool)
         polygons = list(shape.geoms) if shape.geom_type == "MultiPolygon" else [shape]
+
         def paint(ring, value: bool):
             points = np.asarray(ring.coords)
-            xs = np.clip(points[:, 0] / width * (n - 1), 0, n - 1)
-            ys = np.clip((height - points[:, 1]) / height * (n - 1), 0, n - 1)
+            xs = np.clip(points[:, 0] / width * (nx - 1), 0, nx - 1)
+            ys = np.clip((height - points[:, 1]) / height * (ny - 1), 0, ny - 1)
             rr, cc = draw_polygon(ys, xs, mask.shape)
             mask[rr, cc] = value
+
         for poly in polygons:
             paint(poly.exterior, True)
             for hole in poly.interiors:
@@ -311,16 +331,38 @@ def build_mesh(views: dict, dims: tuple[float, float, float]) -> "trimesh.Trimes
         shape = view.get("shape_mm")
         return shape if shape is not None else polygon_shapely(view, width, height)
 
-    top_mask = raster(profile_shape(top, L, W), L, W)
-    side_mask = raster(profile_shape(side, L, H), L, H)
-    end_mask = raster(profile_shape(end, W, H), W, H)
+    top_mask = raster(profile_shape(top, L, W), L, W, nx, ny)
+    side_mask = raster(profile_shape(side, L, H), L, H, nx, nz)
+    end_mask = raster(profile_shape(end, W, H), W, H, ny, nz)
     occupied = top_mask[None, :, :] & side_mask[:, None, :] & end_mask[:, :, None]
     if int(occupied.sum()) < 16:
         raise ValueError("the profiles do not contain a common solid")
 
+    # A binary visual hull turns every image pixel into a stair-step. Convert
+    # each orthographic silhouette to a signed distance field in millimetres,
+    # then intersect the three fields. Its zero surface retains genuine small
+    # profile detail while producing CAD-clean edges instead of voxel terraces.
+    def sdf(mask: np.ndarray, row_mm: float, col_mm: float) -> np.ndarray:
+        padded = np.pad(mask, 1)
+        outside = ndimage.distance_transform_edt(~padded, sampling=(row_mm, col_mm))
+        inside = ndimage.distance_transform_edt(padded, sampling=(row_mm, col_mm))
+        return (outside - inside)[1:-1, 1:-1].astype(np.float32)
+
+    dx = L / max(nx - 1, 1)
+    dy = W / max(ny - 1, 1)
+    dz = H / max(nz - 1, 1)
+    top_sdf = sdf(top_mask, dy, dx)
+    side_sdf = sdf(side_mask, dz, dx)
+    end_sdf = sdf(end_mask, dz, dy)
+    field = np.maximum(top_sdf[None, :, :], side_sdf[:, None, :])
+    np.maximum(field, end_sdf[:, :, None], out=field)
+    margin = max(dx, dy, dz) * 2
+    field = np.pad(field, 1, constant_values=margin)
+
     vertices, faces, _, _ = measure.marching_cubes(
-        occupied.astype(np.float32), level=0.5, spacing=(H / n, W / n, L / n)
+        field, level=0.0, spacing=(dz, dy, dx)
     )
+    vertices -= np.array([dz, dy, dx])
     vertices = vertices[:, [2, 1, 0]]
     mesh = trimesh.Trimesh(vertices, faces, process=True)
     bounds = mesh.bounds
@@ -343,21 +385,27 @@ def paint_mesh(mesh, views: dict, dims: tuple[float, float, float]) -> None:
     colours = np.full((len(v), 4), 215, np.uint8)
     colours[:, 3] = 255
 
-    for name, (a, b, wa, wb) in plan.items():
-        source = name if name in views else "top"
-        rows = want == name
-        if not rows.any() or source not in views:
-            continue
-        sv = views[source]
-        sa, sb, swa, swb = plan[source]
+    def paint(rows: np.ndarray, sv: dict, a: int, b: int, wa: float, wb: float) -> None:
+        if not rows.any():
+            return
         x0, y0, x1, y1 = sv["box"]
         k = sv["rgb_scale"]
-        px = (x0 + v[rows, sa] / max(swa, 1e-6) * (x1 - x0)) * k
-        py = (y1 - v[rows, sb] / max(swb, 1e-6) * (y1 - y0)) * k
+        px = (x0 + v[rows, a] / max(wa, 1e-6) * (x1 - x0)) * k
+        py = (y1 - v[rows, b] / max(wb, 1e-6) * (y1 - y0)) * k
         img = sv["rgb"]
         px = np.clip(np.round(px).astype(int), 0, img.shape[1] - 1)
         py = np.clip(np.round(py).astype(int), 0, img.shape[0] - 1)
         colours[rows, :3] = img[py, px]
+
+    normal_axis = {"top": 2, "side": 1, "end": 0}
+    for name, (a, b, wa, wb) in plan.items():
+        rows = want == name
+        primary = views.get(name)
+        if not rows.any() or primary is None:
+            continue
+        facing_camera = rows & (n[:, normal_axis[name]] >= 0)
+        paint(facing_camera, primary, a, b, wa, wb)
+        paint(rows & ~facing_camera, primary.get("opposite_view", primary), a, b, wa, wb)
 
     mesh.visual.vertex_colors = colours
 
@@ -369,6 +417,7 @@ def choose_profiles(named_views: dict[str, dict], size: list[float]) -> tuple[di
     hold a small part in a different orientation while taking the six photos.
     """
     from itertools import permutations
+    from shapely import affinity
     from shapely.ops import unary_union
 
     measures = [float(v) for v in size[:3]]
@@ -405,14 +454,44 @@ def choose_profiles(named_views: dict[str, dict], size: list[float]) -> tuple[di
         "side": (measures[0], measures[2]),
         "end": (measures[1], measures[2]),
     }
+
+    def align_opposite(reference, candidate, width: float, height: float):
+        """Match an opposite view's camera orientation before combining it."""
+        variants = []
+        for flip_x, flip_y in ((False, False), (True, False), (False, True), (True, True)):
+            trial = affinity.scale(
+                candidate,
+                xfact=-1 if flip_x else 1,
+                yfact=-1 if flip_y else 1,
+                origin=(width / 2, height / 2),
+            )
+            union = reference.union(trial)
+            score = reference.intersection(trial).area / max(union.area, 1e-9)
+            variants.append((float(score), trial, flip_x, flip_y))
+        return max(variants, key=lambda item: item[0])
+
     out = {}
     mapping = {}
     for role, group_name in zip(roles, assignment):
         candidates = [named_views[side] for side in groups[group_name]]
+        width, height = profile_sizes[role]
+        shapes = [polygon_shapely(candidate, width, height) for candidate in candidates]
+        agreement, aligned, flip_x, flip_y = align_opposite(shapes[0], shapes[1], width, height)
+        if agreement < OPPOSITE_IOU_MIN:
+            raise ValueError(
+                f"{role} opposite views disagree ({agreement:.0%}); keep the camera perpendicular and retake both photos"
+            )
         out[role] = dict(candidates[0])
-        out[role]["shape_mm"] = unary_union([
-            polygon_shapely(candidate, *profile_sizes[role]) for candidate in candidates
-        ])
+        out[role]["shape_mm"] = unary_union([shapes[0], aligned])
+        out[role]["opposite_agreement"] = agreement
+        opposite = dict(candidates[1])
+        image = opposite["rgb"]
+        if flip_y:
+            image = image[::-1, :, :]
+        if flip_x:
+            image = image[:, ::-1, :]
+        opposite["rgb"] = image
+        out[role]["opposite_view"] = opposite
         mapping[role] = group_name
     return out, mapping
 

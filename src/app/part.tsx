@@ -46,12 +46,12 @@ async function choose(source: 'camera' | 'gallery', many: boolean): Promise<stri
       Alert.alert('Камера', 'Разрешете достъпа до камерата от настройките на телефона.');
       return [];
     }
-    const shot = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 0.95 });
+    const shot = await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 1 });
     return shot.canceled ? [] : shot.assets.map((a) => a.uri);
   }
   const got = await ImagePicker.launchImageLibraryAsync({
     mediaTypes: ['images'],
-    quality: 0.95,
+    quality: 1,
     allowsMultipleSelection: many,
     selectionLimit: many ? MAX_EXTRA : 1,
   });
@@ -123,7 +123,7 @@ export default function Part() {
     <Screen>
       <Header kicker={`${PRO_INFO.part.label} · ${PRO_INFO.part.time}`} title="Точна част 1:1" sub="Копие за 3D печат по снимки и мерки с шублер." />
 
-      <Note>Поставете детайла на еднородна повърхност без отблясъци. За инженерно копие без догадки са нужни всички шест страни и трите мерки с линийка или шублер.</Note>
+      <Note>Поставете детайла на матова еднородна повърхност. Снимайте всяка страна точно от 90°: камерата успоредна на страната, детайлът в центъра и без перспектива. За инженерно копие са нужни всички шест страни и трите мерки с шублер.</Note>
 
       <Section label={`Задължителни страни · ${sideCount} от ${SIDES.length}`}>
         <View style={s.grid}>
@@ -169,7 +169,7 @@ export default function Part() {
           <Button title="Снимай още" icon="camera-outline" variant="secondary" onPress={() => addExtra('camera')} style={s.flex} />
           <Button title="От галерията" icon="images-outline" variant="secondary" onPress={() => addExtra('gallery')} style={s.flex} />
         </View>
-        <Small>Снимки под ъгъл или отблизо за още по-висока точност на сложни контури.</Small>
+        <Small>Допълнителните снимки се пазят към сканирането. Формата 1:1 се определя от шестте перпендикулярни снимки и трите мерки.</Small>
       </Section>
 
       <Section label="Мерки с линийка или шублер (мм)">
