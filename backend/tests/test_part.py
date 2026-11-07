@@ -78,6 +78,7 @@ def test_build_mesh_preserves_measured_bounds_and_profile_hole():
     }, (60.0, 30.0, 12.0))
     np.testing.assert_allclose(mesh.bounds[0], [0.0, 0.0, 0.0], atol=0.1)
     np.testing.assert_allclose(mesh.bounds[1], [60.0, 30.0, 12.0], atol=0.1)
+    assert mesh.is_watertight
     assert mesh.volume < 60.0 * 30.0 * 12.0
 
 
@@ -94,3 +95,21 @@ def test_choose_profiles_recovers_mislabeled_physical_axes():
     }
     _, mapping = part.choose_profiles(named, [100.0, 30.0, 10.0])
     assert mapping == {"top": "top", "side": "end", "end": "side"}
+
+
+def test_choose_profiles_rejects_inconsistent_opposite_views():
+    def l_shape(width: float, height: float):
+        view = _profile(width, height)
+        view["outers"] = [np.array([
+            [0, 0], [width, 0], [width, height * 0.2], [width * 0.2, height * 0.2],
+            [width * 0.2, height], [0, height], [0, 0],
+        ], dtype=float)]
+        return view
+
+    named = {
+        "top": _profile(250, 100), "bottom": l_shape(250, 100),
+        "front": _profile(250, 25), "back": _profile(250, 25),
+        "left": _profile(100, 25), "right": _profile(100, 25),
+    }
+    with pytest.raises(ValueError, match="opposite views disagree"):
+        part.choose_profiles(named, [100.0, 40.0, 10.0])
