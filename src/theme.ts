@@ -123,7 +123,6 @@ export const text = {
   h2: { fontFamily: font.semibold, fontSize: 22, lineHeight: 27, letterSpacing: -0.6 },
   h3: { fontFamily: font.semibold, fontSize: 16, lineHeight: 21, letterSpacing: -0.25 },
   lead: { fontFamily: font.regular, fontSize: 16.5, lineHeight: 25 },
-  body: { fontFamily: font.regular, fontSize: 15, lineHeight: 22 },
   small: { fontFamily: font.regular, fontSize: 13.5, lineHeight: 19 },
   label: { fontFamily: font.mono, fontSize: 11, lineHeight: 14, letterSpacing: 1, textTransform: 'uppercase' },
   mono: { fontFamily: font.mono, fontSize: 13, lineHeight: 18 },
