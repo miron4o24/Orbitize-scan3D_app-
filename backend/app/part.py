@@ -369,10 +369,8 @@ def build_mesh(views: dict, dims: tuple[float, float, float]) -> "trimesh.Trimes
     span = np.maximum(bounds[1] - bounds[0], 1e-9)
     target = np.array([L, W, H], dtype=float)
     mesh.vertices = (mesh.vertices - bounds[0]) * (target / span)
-    # Trimesh 5.1 exposes face cleanup through update_faces; the older
-    # remove_degenerate_faces() method was removed in newer releases.
-    mesh.update_faces(mesh.nondegenerate_faces())
-    mesh.remove_unreferenced_vertices()
+    # marching_cubes emits valid triangles; avoid Trimesh cleanup helpers here
+    # because their API differs between the server's installed versions.
     return mesh
 
 
