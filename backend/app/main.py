@@ -105,7 +105,7 @@ def list_jobs():
 def get_job(job_id: str, p: Principal = Depends(principal)):
     s = existing(job_id, p)
     # ahead: чака реда си, колко са преди него (включително обработваната задача).
-    return jobs.public(job_id) | {"ahead": worker.ahead(job_id, s.get("params")) if s["state"] == "queued" else None}
+    return jobs.public(job_id) | {"ahead": worker.ahead(job_id) if s["state"] == "queued" else None}
 
 
 @app.get("/jobs/{job_id}/log")
@@ -233,10 +233,9 @@ class Tune(BaseModel):
 class StartParams(BaseModel):
     flat_base: bool = True
     video_bytes: int | None = None  # размерът на файла в приложението, за да не се обработва никога наполовина качено видео
-    quality: Literal["detailed", "quick"] = "detailed"  # quick: по-малко и по-малки кадри (pipeline.run)
-    # scan: сканирането за около 35 минути (за всички). Pro: single, AI моделът (claude, photo: AI моделите, изискващи
-    # платени ключове; app/ai.py). quick или express от по-старо приложение е scan (start_job).
-    method: Literal["scan", "express", "single", "claude", "photo"] = "scan"
+    # single: AI моделът от видео (за всички). Pro: claude, photo (AI моделите, изискващи платени ключове; app/ai.py).
+    # scan или express от по-старо приложение е single (start_job).
+    method: Literal["single", "claude", "photo", "scan", "express"] = "single"
     tune: Tune | None = None
     extend: str | None = Field(None, pattern=r"^[0-9a-f]{32}$")  # това видео добавя липсваща страна към този модел
 
@@ -254,31 +253,22 @@ def start_job(job_id: str, params: StartParams, p: Principal = Depends(principal
     if params.video_bytes is not None and params.video_bytes != status["video_bytes"]:
         raise HTTPException(400, "Видеото не се качи докрай. Опитайте отново.")
     n = len(status["received"])
-    params.quality = "detailed"
     if not p.admin:
         params.tune = None
-    if params.method == "express":
-        params.method = "scan"
-    pro = params.method != "scan"
-    trial = False
-    if pro:
-        if not A.is_pro(p):
-            if params.method != "single":
-                raise HTTPException(403, "Това е само за Pro профили.")
-            PL.check(p, "ai", job_id)  # единственият AI модел на безплатен профил; 402, когато е използван
-            trial = True
-        if not AI.available()[params.method]:
-            raise HTTPException(503, "Тази AI услуга още не е включена.")
-    if not status["video_bytes"] and n < (1 if params.method in AI.METHODS else MIN_PHOTOS):
+    if params.method in ("scan", "express"):
+        params.method = "single"
+    if params.method != "single" and not A.is_pro(p):
+        raise HTTPException(403, "Това е само за Pro профили.")
+    if not AI.available()[params.method]:
+        raise HTTPException(503, "Тази AI услуга още не е включена.")
+    if not status["video_bytes"] and n < 1:
         raise HTTPException(400, f"Нужно е видео или поне {MIN_PHOTOS} снимки.")
-    if (worker.ai_q if pro else worker.q).qsize() >= MAX_QUEUED:
+    if worker.q.qsize() >= MAX_QUEUED:
         raise HTTPException(503, "Твърде много сканирания чакат в момента. Опитайте по-късно.")
     if params.extend:
         if not status["video_bytes"] or params.extend == job_id:
             raise HTTPException(400, "За допълнение е нужно ново видео.")
         add_frames_of(existing(params.extend, p), params.extend, job_id)
-    if trial:
-        PL.record(p, "ai", job_id)
     worker.submit(job_id, params.model_dump(exclude={"extend"}))
     return jobs.public(job_id)
 

@@ -37,7 +37,7 @@ import { exportForPrint } from '@/lib/exportModel';
 import { badgeOf, deleteEntry } from '@/lib/library';
 import { parseGlb } from '@/lib/model';
 import { allowance, allowanceNote, blocked } from '@/lib/plan';
-import { PRO_INFO, SCAN_INFO } from '@/lib/prefs';
+import { PRO_INFO } from '@/lib/prefs';
 import { estimate, euro, getPrices, printTime, setPrice } from '@/lib/printEstimate';
 import { checkProgress } from '@/lib/progress';
 import { createScan, getScan, modelFile, scanTitle, updateScan } from '@/lib/scans';
@@ -342,8 +342,8 @@ export default function Viewer() {
   const title = scanTitle(scan);
   const done = scan.status === 'done';
   const kind = badgeOf(scan.status);
-  // Кой от двата начина го е създал; безплатният профил има само един, затова няма какво да се различава.
-  const way = report?.ai ? PRO_INFO[report.ai].label : report && !report.edit && user?.pro ? SCAN_INFO.label : null;
+  // AI модел (по-старите сканирания без AI нямат надпис).
+  const way = report?.ai ? PRO_INFO[report.ai].label : null;
   const tabs: { value: Tab; label: string }[] = [
     { value: 'size', label: 'Размер' },
     { value: 'files', label: 'Файлове' },
