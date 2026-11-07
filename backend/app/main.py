@@ -265,6 +265,7 @@ class StartParams(BaseModel):
     # single: AI моделът от видео (за всички). Pro: claude, photo (AI моделите, изискващи платени ключове; app/ai.py).
     # scan или express от по-старо приложение е single (start_job).
     method: Literal["single", "claude", "photo", "scan", "express"] = "single"
+    classic: bool = False  # AI моделът по предишния начин: без посоките на повърхността (app/normals.py)
     tune: Tune | None = None
     extend: str | None = Field(None, pattern=r"^[0-9a-f]{32}$")  # това видео добавя липсваща страна към този модел
 

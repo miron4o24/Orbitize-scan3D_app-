@@ -11,6 +11,7 @@
 Координати: световни (на камерите, COLMAP) и на облака (света, завъртян с to_up, z нагоре, като Cloud от
 app/mesh.py)."""
 
+import sys
 from dataclasses import replace
 from pathlib import Path
 from typing import Callable
@@ -21,6 +22,7 @@ from PIL import Image
 from scipy import ndimage
 
 from . import mesh as M
+from . import normals as NO
 from . import parallel as PAR
 from . import pipeline as P
 from . import segment as S
@@ -139,17 +141,38 @@ def dense_areas(views: M.Views, masks: list, cloud: M.Cloud) -> list[np.ndarray]
     return PAR.each(area, zip(views.R, views.t, views.K, masks))
 
 
+def surface_directions(job: Path, work: Path, dense: Path, views: M.Views, sh) -> Path | None:
+    """Посоките на повърхността във всяко изрязване (app/normals.py) или None: няма модел, няма изрязвания или
+    стъпката се е провалила (тогава сливането е като преди)."""
+    crops = work / P.CROPS
+    if not NO.ready():
+        P.note(job, f"AI model: surface directions skipped, model missing ({NO.MODEL})")
+        return None
+    if not crops.exists():
+        return None
+    names, out = work / "normals_names.txt", work / "normals.npz"
+    names.write_text("\n".join(views.names), encoding="utf-8")
+    try:
+        sh("estimating detail", [sys.executable, NO.__file__, dense / "images", crops, names, out])
+    except P.Failed as e:
+        P.note(job, f"AI model: surface directions failed ({e}); fitted AI depth only")
+        return None
+    return out if out.exists() else None
+
+
 def measured(job: Path, work: Path, dense: Path, views: M.Views, masks: list, cloud: M.Cloud, up: np.ndarray | None,
              agree: float, set_state: Callable[[str], None], sh: Callable[[str, list], None], side: int = SIDE,
              voxel: float = VOXEL, fixed: bool = False, table: bool = True, flap: float | None = None,
-             wide: bool = False, geometric: bool = True, passes: int | None = None, debug: bool = False):  # fmt: skip
+             wide: bool = False, geometric: bool = True, passes: int | None = None, debug: bool = False,
+             detail: bool = True):  # fmt: skip
     """Повърхността на модела (координати на облака) и облакът, в който е: измерената между кадрите дълбочина
     (OpenMVS, в маските) и AI дълбочината, слети във формата от очертанията; самата форма, когато измерването или
     сливането се провали (dense: коригираните кадри, моделът на COLMAP в dense/sparse). side: размерът на кадрите;
     voxel: мрежата на сливането; fixed: формата точно при `agree`, без избор; table: използва масата на решаващия
     алгоритъм (на `cloud`, намерена сред точките му); flap: fuse.FLAP на сливането; wide: гъсто съпоставяне в
     областта на сканиране вместо около предмета; geometric: вторият му проверяващ проход; passes: fuse.PASSES на
-    сливането; debug: записва входа на сливането (pipeline.FUSE_DEBUG)."""
+    сливането; debug: записва входа на сливането (pipeline.FUSE_DEBUG); detail: формата отблизо от посоките на
+    повърхността (app/normals.py), иначе само от напасната AI дълбочина (предишният начин)."""
     solvers = cloud.ground_z if table else None
     mask_dir = work / "dense_masks"
     mask_dir.mkdir(exist_ok=True)
@@ -211,7 +234,9 @@ def measured(job: Path, work: Path, dense: Path, views: M.Views, masks: list, cl
     fused = None
     if dense_cloud:
         P.carved_hull(work, dense, views, masks, cloud, sh, found)  # AI дълбочината (app/depth.py) за сливането
-        fused = P.fused_surface(work, dense, views, cloud, outline, sh, voxel, flap, passes or P.F.PASSES, debug)
+        normals = surface_directions(job, work, dense, views, sh) if detail else None
+        fused = P.fused_surface(work, dense, views, cloud, outline, sh, voxel, flap, passes or P.F.PASSES, debug,
+                                normals)  # fmt: skip
         for p in dense.glob("*.dmap"):
             p.unlink(missing_ok=True)
     if fused is None:

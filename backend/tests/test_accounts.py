@@ -40,7 +40,7 @@ def client(tmp_path, monkeypatch):
 
     monkeypatch.setattr(accounts, "verify_google", fake_verify)
 
-    def fake_run(job, method, flat_base, set_state, sh, step, tune=None):
+    def fake_run(job, method, flat_base, set_state, sh, step, tune=None, classic=False):
         set_state("reconstructing")
         trimesh.creation.box(extents=[1, 2, 4]).apply_translation([0, 0, 2]).export(job / "model.ply")
         return {"dimensions_mm": [25, 50, 100], "triangles": 12, "watertight": True}
