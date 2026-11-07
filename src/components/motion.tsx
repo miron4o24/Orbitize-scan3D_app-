@@ -29,7 +29,7 @@ import Animated, {
   type SharedValue,
 } from 'react-native-reanimated';
 
-import { font, makeStyles, useColors } from '@/theme';
+import { useColors } from '@/theme';
 
 // Движението от сайта (assets/style.css): една спокойна крива, елементите се вдигат с 12px, докато се появяват,
 // заглавията излизат ред по ред, по-долните части се появяват при превъртане, числата се броят нагоре. Всичко следва
@@ -102,15 +102,11 @@ export function RiseLines({ lines, style, softColor, delay = 0 }: { lines: Line[
 // -------------------------------------------------------------------------------------------
 
 const ScrollContext = createContext<SharedValue<number> | null>(null);
-const RevealContext = createContext<SharedValue<number> | null>(null);
 
 /* Около съдържанието на превъртащ се изглед: съобщава на всеки Reveal вътре кога влиза в изгледа. */
 export function RevealScroll({ y, children }: { y: SharedValue<number>; children: ReactNode }) {
   return <ScrollContext.Provider value={y}>{children}</ScrollContext.Provider>;
 }
-
-/* 0 → 1, докато най-близкият Reveal влиза в изгледа, за рисунки, които се изпълняват тогава. */
-export const useReveal = () => useContext(RevealContext);
 
 /* Появява се (избледнява навътре и се вдига с 18px), щом се превърти в изгледа, като разделите на сайта. */
 export function Reveal({ children, style, delay = 0 }: { children: ReactNode; style?: StyleProp<ViewStyle>; delay?: number }) {
@@ -133,11 +129,9 @@ export function Reveal({ children, style, delay = 0 }: { children: ReactNode; st
   );
   const style2 = useAnimatedStyle(() => ({ opacity: progress.value, transform: [{ translateY: 18 * (1 - progress.value) }] }));
   return (
-    <RevealContext.Provider value={progress}>
-      <Animated.View ref={ref} style={[style, style2]} onLayout={() => laidOut.set(1)}>
-        {children}
-      </Animated.View>
-    </RevealContext.Provider>
+    <Animated.View ref={ref} style={[style, style2]} onLayout={() => laidOut.set(1)}>
+      {children}
+    </Animated.View>
   );
 }
 
@@ -265,48 +259,6 @@ export function CountUp({
     </Text>
   );
 }
-
-/* Думи, които бавно се движат настрани безкрайно (лентата от сайта). */
-export function Ticker({ items, style }: { items: string[]; style?: StyleProp<ViewStyle> }) {
-  const s = useTickerStyles();
-  const reduce = useReducedMotion();
-  const [w, setW] = useState(0); // едно копие на думите
-  const x = useSharedValue(0);
-  useEffect(() => {
-    if (!w || reduce) return;
-    x.set(0);
-    x.set(withRepeat(withTiming(-w, { duration: w * 28, easing: Easing.linear }), -1, false));
-    return () => cancelAnimation(x);
-  }, [w, reduce, x]);
-  const track = useAnimatedStyle(() => ({ transform: [{ translateX: x.value }] }));
-  const copy = (key: string, measureIt?: boolean) => (
-    <View key={key} style={s.copy} onLayout={measureIt ? (e) => setW(e.nativeEvent.layout.width) : undefined}>
-      {items.map((t) => (
-        <View key={t} style={s.item}>
-          <Text style={s.star}>✦</Text>
-          <Text style={s.word}>{t}</Text>
-        </View>
-      ))}
-    </View>
-  );
-  return (
-    <View style={[s.ticker, style]} accessibilityLabel={items.join(', ')}>
-      <Animated.View style={[s.track, track]}>
-        {copy('a', true)}
-        {copy('b')}
-      </Animated.View>
-    </View>
-  );
-}
-
-const useTickerStyles = makeStyles((c) => ({
-  ticker: { overflow: 'hidden', borderTopWidth: 1, borderBottomWidth: 1, borderColor: c.line, paddingVertical: 16 },
-  track: { flexDirection: 'row', width: 10000 },
-  copy: { flexDirection: 'row' },
-  item: { flexDirection: 'row', alignItems: 'center' },
-  star: { fontSize: 10, color: c.lineStrong, marginHorizontal: 20 },
-  word: { fontFamily: font.medium, fontSize: 19, letterSpacing: -0.6, color: c.muted },
-}));
 
 // --- Превъртане
 // -----------------------------------------------------------------------------------------------------

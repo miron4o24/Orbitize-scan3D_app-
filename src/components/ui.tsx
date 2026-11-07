@@ -16,7 +16,6 @@ import {
   type ViewStyle,
 } from 'react-native';
 import Animated, {
-  LinearTransition,
   useAnimatedScrollHandler,
   useAnimatedStyle,
   useReducedMotion,
@@ -26,7 +25,7 @@ import Animated, {
 } from 'react-native-reanimated';
 
 import { brandDeep, font, makeStyles, radius, space, text, useColors, type Palette } from '@/theme';
-import { Appear, CountUp, ease, haptic, LiveDot, PressScale, swap, useBarStyle, useBarTitleStyle } from './motion';
+import { Appear, CountUp, ease, haptic, LiveDot, PressScale, useBarStyle, useBarTitleStyle } from './motion';
 
 export type IconName = ComponentProps<typeof Ionicons>['name'];
 
@@ -40,12 +39,10 @@ function styledText(base: TextStyle, color: keyof Palette) {
   };
 }
 
-export const Display = styledText(text.display, 'text');
 export const Title = styledText(text.title, 'text');
 export const H2 = styledText(text.h2, 'text');
 export const H3 = styledText(text.h3, 'text');
 export const Lead = styledText(text.lead, 'text2');
-export const Body = styledText(text.body, 'text2');
 export const Small = styledText(text.small, 'muted');
 /** Small UPPERCASE mono label ("РАЗМЕР"). */
 export const Label = styledText(text.label, 'muted');
@@ -277,43 +274,6 @@ export function Row({
   );
 }
 
-/* Ред с въпрос и отговор като ЧЗВ на сайта: плюс, който става минус, и отговор, който се вдига при появата. */
-export function Fold({ title, number, children, last }: { title: string; number?: string; children: ReactNode; last?: boolean }) {
-  const s = useStyles();
-  const reduce = useReducedMotion();
-  const [open, setOpen] = useState(false);
-  const turn = useSharedValue(90);
-  useEffect(() => {
-    turn.set(reduce ? (open ? 0 : 90) : withTiming(open ? 0 : 90, { duration: 300, easing: ease }));
-  }, [open, reduce, turn]);
-  const bar = useAnimatedStyle(() => ({ transform: [{ rotate: `${turn.value}deg` }] }));
-  return (
-    <Animated.View layout={LinearTransition.duration(300).easing(ease)} style={[s.fold, !last && s.rowLine]}>
-      <Pressable
-        onPress={() => {
-          haptic();
-          setOpen((o) => !o);
-        }}
-        style={s.foldHead}
-        accessibilityRole="button"
-        accessibilityState={{ expanded: open }}
-      >
-        {number && <Text style={s.foldNumber}>{number}</Text>}
-        <Text style={s.foldTitle}>{title}</Text>
-        <View style={s.plus}>
-          <View style={s.plusBar} />
-          <Animated.View style={[s.plusBar, s.plusAbs, bar]} />
-        </View>
-      </Pressable>
-      {open && (
-        <Animated.View entering={swap} style={[s.foldBody, number != null && s.foldIndent]}>
-          {children}
-        </Animated.View>
-      )}
-    </Animated.View>
-  );
-}
-
 /* Два до четири избора един до друг (тема, раздел, качество); повдигнатото парче се плъзга към избрания. */
 export function Segmented<T extends string>({
   options,
@@ -536,15 +496,6 @@ const useStyles = makeStyles((c) => ({
   rowLine: { borderBottomWidth: 1, borderBottomColor: c.line },
   rowPressed: { backgroundColor: c.surface2 },
   rowValue: { maxWidth: '45%', color: c.muted },
-  fold: { overflow: 'hidden' },
-  foldHead: { flexDirection: 'row', alignItems: 'center', gap: space.md, paddingVertical: 18 },
-  foldNumber: { fontFamily: font.mono, fontSize: 12, color: c.muted, width: 28 },
-  foldTitle: { flex: 1, fontFamily: font.medium, fontSize: 16, letterSpacing: -0.25, color: c.text },
-  foldBody: { paddingBottom: 20, paddingRight: 36 },
-  foldIndent: { paddingLeft: 40 },
-  plus: { width: 13, height: 13, alignItems: 'center', justifyContent: 'center' },
-  plusBar: { width: 13, height: 1.5, backgroundColor: c.text2 },
-  plusAbs: { position: 'absolute' },
   segmented: { flexDirection: 'row', backgroundColor: c.surface2, borderRadius: 13, padding: 3, borderWidth: 1, borderColor: c.line },
   segment: { flex: 1, minHeight: 38, borderRadius: 10, alignItems: 'center', justifyContent: 'center', paddingHorizontal: space.sm },
   segmentOn: { position: 'absolute', left: 3, top: 3, bottom: 3, borderRadius: 10, backgroundColor: c.surface3 },

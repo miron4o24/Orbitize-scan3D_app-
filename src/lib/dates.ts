@@ -1,6 +1,5 @@
 // Дати на български, еднакви на всеки телефон (езикът на самия телефон може да е друг).
 const MONTHS = ['яну', 'фев', 'мар', 'апр', 'май', 'юни', 'юли', 'авг', 'сеп', 'окт', 'ное', 'дек'];
-const MONTHS_LONG = ['януари', 'февруари', 'март', 'април', 'май', 'юни', 'юли', 'август', 'септември', 'октомври', 'ноември', 'декември'];
 
 const pad = (n: number) => String(n).padStart(2, '0');
 
@@ -14,12 +13,6 @@ export function shortDate(ms: number) {
 export function dayMonth(ms: number) {
   const d = new Date(ms);
   return `${d.getDate()} ${MONTHS[d.getMonth()]}`;
-}
-
-/** октомври 2026 */
-export function monthYear(ms: number) {
-  const d = new Date(ms);
-  return `${MONTHS_LONG[d.getMonth()]} ${d.getFullYear()}`;
 }
 
 /** 7 мин, 1 ч 05 мин */

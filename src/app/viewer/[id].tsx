@@ -886,7 +886,6 @@ const useStyles = makeStyles((c) => ({
   cellLine: { borderLeftWidth: 1, borderLeftColor: c.line },
   tab: { gap: space.xl },
   list: { paddingVertical: 0 },
-  line: { borderBottomWidth: 1, borderBottomColor: c.line },
   lineTop: { borderTopWidth: 1, borderTopColor: c.line },
   mmRow: { flexDirection: 'row', alignItems: 'center', gap: space.md, paddingVertical: space.md },
   mmBox: {
