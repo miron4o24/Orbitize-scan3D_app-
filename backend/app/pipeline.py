@@ -376,6 +376,7 @@ def carved_hull(work: Path, dense: Path, views: M.Views, masks: list, cloud: M.C
 
 
 CROPS = "depth_crops.npz"  # в work/: изрязванията с дълбочина от app/depth.py, за app/fuse.py
+FUSE_DEBUG = "fuse_debug.npz"  # в папката на тестова задача: входът на сливането (fuse.py --replay)
 LOOSE_AGREE = 0.5  # по-свободната обвивка за app/refine.py: маските на половината кадри са съгласни
 PROMPT_MARGIN = 0.04  # от размера: колко извън по-свободната обвивка измерена точка казва "не е предмет" и колко дълбоко
 # в обвивката точка казва "предмет" (app/refine.py)
@@ -429,9 +430,10 @@ def sharpened_masks(work: Path, dense: Path, views: M.Views, masks: list, cloud:
 
 
 def fused_surface(work: Path, dense: Path, views: M.Views, cloud: M.Cloud, hull: trimesh.Trimesh | None, sh,
-                  voxel: float = F.VOXEL, flap: float | None = None, passes: int = F.PASSES):  # fmt: skip
+                  voxel: float = F.VOXEL, flap: float | None = None, passes: int = F.PASSES, debug: bool = False):  # fmt: skip
     """Повърхността, слята от картите на дълбочината на кадрите (app/fuse.py), или None: няма обвивка или изрязвания с
-    AI дълбочина, стъпката се е провалила или гъстите точки не са съгласни с нея (тогава формата от очертанията)."""
+    AI дълбочина, стъпката се е провалила или гъстите точки не са съгласни с нея (тогава формата от очертанията).
+    debug: входът на сливането се записва в папката на задачата (FUSE_DEBUG)."""
     crops = work / CROPS
     if hull is None or not crops.exists():
         return None
@@ -440,7 +442,8 @@ def fused_surface(work: Path, dense: Path, views: M.Views, cloud: M.Cloud, hull:
              passes=passes,
              ground_z=np.nan if cloud.ground_z is None else cloud.ground_z, hull_v=hull.vertices, hull_f=hull.faces)  # fmt: skip
     try:
-        sh("fusing depth", [sys.executable, F.__file__, dense, inputs, crops, out])
+        sh("fusing depth", [sys.executable, F.__file__, dense, inputs, crops, out,
+                            *([work.parent / FUSE_DEBUG] if debug else [])])  # fmt: skip
         info = json.loads(out.with_suffix(".json").read_text())
         mesh = trimesh.load(out, force="mesh")
     except (Failed, OSError, ValueError, KeyError) as e:

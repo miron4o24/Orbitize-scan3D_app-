@@ -609,7 +609,8 @@ def model_from_solved(job: Path, work: Path, photos: Path, flat_base: bool, set_
     surface, cloud = OL.measured(job, work, dense, views, masks, cloud, up, agree, set_state, sh, side=side,
                                  voxel=tune.get("voxel", OL.VOXEL), fixed="agree" in tune,
                                  table=not tune.get("no_table"), flap=tune.get("flap"), wide=tune.get("wide_dense", False),
-                                 geometric=not tune.get("no_geo"), passes=tune.get("passes"))  # fmt: skip
+                                 geometric=not tune.get("no_geo"), passes=tune.get("passes"),
+                                 debug=bool(tune.get("debug")))  # fmt: skip
     set_state("cleaning")
     M.paint(surface, views, images, cloud.to_up)
     out = M.make_printable(surface, M.floor_z(cloud), flat_base)

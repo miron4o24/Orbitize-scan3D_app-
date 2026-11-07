@@ -13,6 +13,7 @@ from typing import Annotated, Literal
 
 import trimesh
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from . import accounts as A
@@ -143,6 +144,33 @@ def get_frames(job_id: str, p: Principal = Depends(principal)):
     )
 
 
+@app.get("/jobs/{job_id}/fuse_debug.npz", dependencies=[Depends(admin_only)])
+def get_fuse_debug(job_id: str):
+    """Входът на сливането на тестова задача (Tune.debug): python app/fuse.py --replay <файл> <out.ply>."""
+    path = jobs.job_dir(job_id) / PI.FUSE_DEBUG if ID_RE.match(job_id) else None
+    if path is None or not path.exists():
+        raise HTTPException(404, "Няма запис на сливането.")
+    return FileResponse(path, media_type="application/octet-stream", filename=f"fuse-{job_id[:8]}.npz")
+
+
+@app.post("/jobs/{job_id}/copy", dependencies=[Depends(admin_only)])
+def copy_job(job_id: str, p: Principal = Depends(principal)):
+    """Нова задача (на администратора) с кадрите и дневника на положението на тази: за тестова обработка, без да се
+    променя моделът на потребителя."""
+    source = existing(job_id, p)
+    frames = sorted((jobs.job_dir(job_id) / "photos").glob("*.jp*g"))
+    if source["state"] not in ("done", "failed") or not frames:
+        raise HTTPException(409, "Тази задача няма запазени кадри.")
+    copy = jobs.create()
+    d = jobs.job_dir(copy)
+    for f in frames:
+        shutil.copy(f, d / "photos" / f.name)
+    for name in (MO.MOTION, MO.FRAME_TIMES):
+        if (jobs.job_dir(job_id) / name).exists():
+            shutil.copy(jobs.job_dir(job_id) / name, d / name)
+    return jobs.public(copy)
+
+
 @app.put("/jobs/{job_id}/photos/{name}")
 async def upload_photo(job_id: str, name: str, request: Request, p: Principal = Depends(principal)):
     if existing(job_id, p)["state"] not in ("uploading", "failed"):
@@ -228,6 +256,7 @@ class Tune(BaseModel):
     no_geo: bool = False  # гъсто съпоставяне без втория, проверяващ проход
     passes: int | None = Field(None, ge=1, le=3)  # проходите за гласуване при сливането
     features: int | None = Field(None, ge=2000, le=8192)  # най-много особености на кадър за решаващия алгоритъм
+    debug: bool = False  # записва входа на сливането (GET /jobs/{id}/fuse_debug.npz), за да се повтори другаде
 
 
 class StartParams(BaseModel):

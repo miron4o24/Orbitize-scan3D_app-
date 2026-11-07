@@ -1,6 +1,9 @@
-"""Части от сливането на дълбочината (app/fuse.py)."""
+"""Части от сливането на дълбочината (app/fuse.py) и цялото сливане върху изкуствено сканиране: кълбо (по желание с
+проход през него) върху маса, заснето в кръг с точни карти на дълбочината."""
 
 import numpy as np
+import pytest
+import trimesh
 
 from app import fuse as F
 
@@ -22,3 +25,98 @@ def test_facing_is_the_cosine_to_the_surface():
     holes = flat.copy()
     holes[10:20, 10:20] = 0
     assert (F.facing(holes, K, box)[9:21, 9:21] == 1.0).all()
+
+
+W = H = 160
+FOCAL = 200.0
+RADIUS, CENTRE = 1.0, np.array([0.0, 0.0, 1.0])  # кълбото стои върху масата z = 0
+HOLE = 0.3  # радиусът на прохода по оста x (scene(hole=True))
+
+
+def look_at(c: np.ndarray, target: np.ndarray):
+    """(R свят -> камера, център): камерата гледа към target, x надясно, y надолу."""
+    fwd = (target - c) / np.linalg.norm(target - c)
+    right = np.cross(fwd, [0, 0, 1.0])
+    right /= np.linalg.norm(right)
+    return np.stack([right, np.cross(fwd, right), fwd]), c
+
+
+def trace(R, C, K, hole: bool):
+    """Точната дълбочина (по оста на камерата) и маската на предмета: кълбото (без прохода) и масата."""
+    u, v = np.meshgrid(np.arange(W) + 0.5, np.arange(H) + 0.5)
+    d = np.stack([(u - K[0, 2]) / K[0, 0], (v - K[1, 2]) / K[1, 1], np.ones_like(u)], -1)  # z = 1 в камерата
+    d_world = d @ R  # (R^T d)
+    oc = C - CENTRE
+    a = (d_world**2).sum(-1)
+    b = 2 * (d_world * oc).sum(-1)
+    c = (oc**2).sum() - RADIUS**2
+    disc = b * b - 4 * a * c
+    t_near = (-b - np.sqrt(np.maximum(disc, 0))) / (2 * a)
+    t_far = (-b + np.sqrt(np.maximum(disc, 0))) / (2 * a)
+    t = np.where(disc > 0, t_near, np.inf)
+    if hole:  # проход по x: точките от кълбото в цилиндъра y^2 + (z-1)^2 < HOLE^2 липсват
+        def in_hole(tt):
+            p = C + tt[..., None] * d_world
+            return (p[..., 1] ** 2 + (p[..., 2] - 1) ** 2) < HOLE**2
+
+        # Лъч, влизащ в прохода: удря стената му (цилиндъра) или излиза от другата страна.
+        dy, dz, oy, oz = d_world[..., 1], d_world[..., 2], C[1], C[2] - 1
+        ca = dy * dy + dz * dz
+        cb = 2 * (dy * oy + dz * oz)
+        cc = oy * oy + oz * oz - HOLE**2
+        cd = cb * cb - 4 * ca * cc
+        t_wall = (-cb + np.sqrt(np.maximum(cd, 0))) / (2 * np.maximum(ca, 1e-12))  # излизане от цилиндъра
+        wall = C + t_wall[..., None] * d_world
+        wall_ok = (cd > 0) & (((wall - CENTRE) ** 2).sum(-1) < RADIUS**2) & (t_wall > 0)
+        enters = (disc > 0) & in_hole(t_near)
+        t = np.where(enters, np.where(wall_ok, t_wall, np.where(in_hole(t_far), np.inf, t_far)), t)
+    obj = np.isfinite(t)
+    t_table = np.where(d_world[..., 2] < 0, -C[2] / np.minimum(d_world[..., 2], -1e-12), np.inf)
+    table = ~obj & np.isfinite(t_table)
+    depth = np.where(obj, t, np.where(table, t_table, 0)).astype(np.float32)  # t по d с z = 1: дълбочина
+    return depth, obj
+
+
+def scene(hole=False, n=24):
+    """Входът на fuse_views: обвивката е кълбото, без прохода (очертанията не го показват)."""
+    K = np.array([[FOCAL, 0, W / 2], [0, FOCAL, H / 2], [0, 0, 1]])
+    views = []
+    for i in range(n):
+        az = 2 * np.pi * i / n
+        el = np.radians(10 if i % 2 else 35)
+        c = CENTRE + 4.0 * np.array([np.cos(el) * np.cos(az), np.cos(el) * np.sin(az), np.sin(el)])
+        R, C = look_at(c, CENTRE)
+        depth, obj = trace(R, C, K, hole)
+        disp = np.where(depth > 0, 1 / np.maximum(depth, 1e-6), 0).astype(np.float32)
+        full, _ = trace(R, C, K, False)
+        sphere = full > 0
+        _, outline = trace(R, C, K, False)
+        views.append(F.View(f"img_{i:04d}.jpg", K, R, C, (0, 0, W, H), depth, np.ones_like(depth), disp, obj,
+                            np.ones_like(obj), outline & sphere))  # fmt: skip
+    hull = trimesh.creation.icosphere(subdivisions=4, radius=RADIUS).apply_translation(CENTRE)
+    z = {"names": np.array([v.name for v in views]), "to_up": np.eye(3), "ground_z": 0.0, "hull_v": hull.vertices,
+         "hull_f": hull.faces, "voxel": 0.02, "flap": F.FLAP, "passes": F.PASSES}  # fmt: skip
+    return z, hull, views
+
+
+def test_fuses_the_sphere(tmp_path):
+    z, hull, views = scene()
+    out = tmp_path / "fused.ply"
+    F.fuse_views(z, hull, views, out)
+    mesh = trimesh.load(out, force="mesh")
+    r = np.linalg.norm(mesh.vertices - CENTRE, axis=1)
+    upper = mesh.vertices[:, 2] > 0.3  # над срязаното при масата дъно
+    assert np.median(np.abs(r[upper] - RADIUS)) < 0.02
+
+
+@pytest.mark.parametrize("dump", [False, True])
+def test_save_and_replay(tmp_path, dump):
+    z, hull, views = scene()
+    path = tmp_path / "debug.npz"
+    F.save(path, z, views)
+    z2, views2 = F.load(path)
+    assert [v.name for v in views2] == [v.name for v in views]
+    assert np.array_equal(views2[3].dep, views[3].dep) and np.array_equal(views2[3].core, views[3].core)
+    if dump:
+        F.replay(path, tmp_path / "r.ply")
+        assert trimesh.load(tmp_path / "r.ply", force="mesh").is_watertight
