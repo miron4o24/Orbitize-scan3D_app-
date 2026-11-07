@@ -661,7 +661,7 @@ def decimate(mesh: trimesh.Trimesh, faces: int, keep_closed: bool = True) -> tri
 # повече.
 SMOOTH_ANGLE = 20.0
 SMOOTH_NORMALS = 5
-LIGHT = 3
+LIGHT = 5
 MAX_SMOOTH = 3
 
 
