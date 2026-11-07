@@ -55,3 +55,6 @@ __pycache__/
 
 # Лични бележки извън проекта
 /VIDEOS/
+debug_*.zip
+debug_*.glb
+/scratch/
