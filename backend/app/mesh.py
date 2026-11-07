@@ -8,7 +8,6 @@ numpy/trimesh/pymeshlab без зависимост от COLMAP/OpenMVS, за д
 import json
 import struct
 from dataclasses import dataclass
-from typing import Callable
 
 import numpy as np
 import pymeshlab
@@ -300,30 +299,6 @@ def _hull_fraction(views: Views, masks, scale: int, to_up: np.ndarray, axes: lis
     return frac.reshape([len(a) for a in axes])
 
 
-def visual_hull(
-    views: Views,
-    masks,
-    scale: int,
-    cloud: Cloud,
-    cells: int = 160,
-    agree: float = HULL_AGREE,
-    limit: Callable[[np.ndarray], np.ndarray] | None = None,
-) -> trimesh.Trimesh | None:
-    """Затворена мрежа на обема в очертанието на предмета в (почти) всички кадри, стояща върху масата. agree: делът от
-    кадрите, в които вокселът трябва да е вътре. Под 1 прощава лоши маски и положения, но разширява каквото само
-    няколко кадъра виждат тясно: късата страна на овал, заснет отвсякъде, излизаше с 17% по-широка при 0,75. limit: за
-    световни точки в очертанията, най-големият дял на воксела им от друго доказателство (AI дълбочина: под `agree`,
-    където не вижда нищо). Гладко, така че и отрязаната повърхност е гладка."""
-    found = hull_volume(views, masks, scale, cloud, cells, agree)
-    if found is None:
-        return None
-    frac, axes, step = found
-    if limit is not None:
-        inside, points = voxels_inside(frac, axes, agree)
-        frac = limited(frac, inside, limit(points @ cloud.to_up))  # обратно към света
-    return hull_mesh(frac, axes, step, agree)
-
-
 def hull_volume(
     views: Views, masks, scale: int, cloud: Cloud, cells: int = 160, agree: float = HULL_AGREE
 ) -> tuple[np.ndarray, list[np.ndarray], float] | None:
@@ -356,7 +331,7 @@ def voxels_inside(frac: np.ndarray, axes: list[np.ndarray], agree: float = HULL_
 
 
 def limited(frac: np.ndarray, inside: np.ndarray, limit: np.ndarray) -> np.ndarray:
-    """Дяловете, най-много `limit` при вокселите `inside` (вижте visual_hull)."""
+    """Дяловете, най-много `limit` при вокселите `inside`."""
     out = frac.copy()
     i, j, k = inside.T
     out[i, j, k] = np.minimum(out[i, j, k], limit)
@@ -365,7 +340,7 @@ def limited(frac: np.ndarray, inside: np.ndarray, limit: np.ndarray) -> np.ndarr
 
 def free_space_limit(views: Views, points: np.ndarray, normals: np.ndarray, probes: np.ndarray, margin: float,
                      agree: float = HULL_AGREE, cell: int = 4) -> np.ndarray:  # fmt: skip
-    """За световни точки в обвивката (проби): най-големият им дял в нея (вижте visual_hull), от измерените точки на
+    """За световни точки в обвивката (проби): най-големият им дял в нея (вижте hull_volume), от измерените точки на
     повърхността (свят, нормали към страната, от която са видени). Кадър, измерил точка от повърхността, е видял през
     всичко между него и точката: вътрешността на чаша отгоре и отворът на дръжка са празни, макар очертание да не го
     показва (обвивката ги запълва; чаша излизаше плътна). За всеки кадър обърнатите към него точки дават карта на
@@ -447,67 +422,11 @@ def hull_samples(hull: trimesh.Trimesh, pts: np.ndarray, nrm: np.ndarray, n: int
     return samples, normals, near, over
 
 
-def poisson(
-    cloud: Cloud,
-    hull: trimesh.Trimesh | None = None,
-    depth: int = 8,
-    target_faces: int = 200_000,
-    samples_per_node: float = 1.5,
-    smooth: int = 5,
-    point_weight: float = 4.0,
-) -> trimesh.Trimesh:
-    """Затворена повърхност през точките на предмета. Където те оставят празнини (еднообразни, тъмни или невидени
-    части), ги запълва повърхността на обвивката с по-малко тегло, така че истинските точки печелят, където има и
-    двете. Поасон трябва да затвори обем: само върху точките предмет с празнини или отворена долна страна става
-    петно, запълващо цялата кутия. Дълбочина 8 (клетки 1/256 от размера, около двойно разстоянието между гъстите
-    точки): при 9 клетките съвпадаха с разстоянието и повърхността следваше шума на точките (дрелка: двойно
-    по-неравна)."""
-    pts, nrm = cloud.points, cloud.normals
-    conf = cloud.weights if cloud.weights is not None else np.ones(len(pts))
-    if hull is not None:
-        samples, normals, near, over = hull_samples(hull, pts, nrm)
-        gap = ~near & ~over
-        pts = np.vstack([pts, samples[gap]])
-        nrm = np.vstack([nrm, normals[gap]])
-        conf = np.concatenate([conf, np.full(int(gap.sum()), 0.3)])
-    ms = pymeshlab.MeshSet()
-    ms.add_mesh(pymeshlab.Mesh(vertex_matrix=pts, v_normals_matrix=nrm, v_scalar_array=conf))
-    ms.generate_surface_reconstruction_screened_poisson(
-        depth=depth, preclean=True, confidence=True, samplespernode=samples_per_node, pointweight=point_weight
-    )
-    if smooth:
-        ms.apply_coord_taubin_smoothing(stepsmoothnum=smooth)  # гъстите точки по тъмни или еднообразни повърхности са шумни
-    if ms.current_mesh().face_number() > target_faces:
-        ms.meshing_decimation_quadric_edge_collapse(
-            targetfacenum=target_faces, preservenormal=True, preservetopology=True
-        )
-    m = ms.current_mesh()
-    verts, faces = m.vertex_matrix(), m.face_matrix()
-    # Изрязва повърхност без опора от входни точки: през незаснет участък Поасон се разлива като лист до ръба на
-    # мрежата си. make_printable затваря оставената дупка. Не близо до дъното: там затворената повърхност, измислена
-    # от Поасон под невидяната долна страна, е това, което срязването при пода превръща в плоска основа.
-    tree = cKDTree(pts)
-    dist, _ = tree.query(verts)
-    sample = pts[np.random.default_rng(0).choice(len(pts), min(len(pts), 20_000), replace=False)]
-    spacing = float(np.median(tree.query(sample, k=2)[0][:, 1]))  # типична празнина между входните точки
-    reach = max(0.06 * float(np.ptp(pts, axis=0).max()), 4 * spacing)  # разлетите листове стигат доста над 10%
-    low, high = np.percentile(pts[:, 2], [2, 98])
-    supported = (dist <= reach) | (verts[:, 2] < low + 0.15 * (high - low))
-    faces = faces[supported[faces].all(axis=1)]
-    # Цвят от най-близката точка на предмета (областите само от обвивката взимат цвета на най-близката видяна
-    # повърхност).
-    _, idx = cKDTree(cloud.points).query(verts)
-    colors = (np.clip(cloud.colors[idx], 0, 1) * 255).astype(np.uint8)
-    out = trimesh.Trimesh(verts, faces, vertex_colors=colors)
-    out.remove_unreferenced_vertices()
-    return out
-
-
 def clip_to_outline(
     mesh: trimesh.Trimesh, views: Views, masks: list[np.ndarray], scale: int, cloud: Cloud, agree: float = 0.6
 ) -> trimesh.Trimesh:
-    """Премахва повърхност извън очертанието на предмета: Поасон може да се разлее като листове, където никой кадър не
-    е видял предмета (например незаснет участък от кръга). Истинската повърхност никога не е извън обвивката. Всяка
+    """Премахва повърхност извън очертанието на предмета: сливането може да остави листове, където никой кадър не е
+    видял предмета (например незаснет участък от кръга). Истинската повърхност никога не е извън обвивката. Всяка
     стена се проверява малко навътре в себе си (1% от размера по вътрешната ѝ нормала), така че стените точно върху
     обвивката, като страните на цилиндър, остават. make_printable затваря оставените дупки."""
     if mesh.is_empty:

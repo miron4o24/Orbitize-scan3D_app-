@@ -76,10 +76,10 @@ def key_status() -> dict:
 
 
 def available() -> dict:
-    """Какво може да използва Pro на този сървър; express: сканирането за около 5 минути (app/pipeline.py), edit:
-    текстови промени (app/edit.py; простите заявки работят без езиковия му модел), и двете винаги са налични."""
+    """Кои AI модели работят на този сървър; edit: текстови промени (app/edit.py; простите заявки работят без езиковия
+    му модел), винаги налични."""
     paid = {method: bool(key(service)) for method, service in NEEDS.items()}
-    return {"express": True, "edit": True, "single": single3d.ready()} | paid
+    return {"edit": True, "single": single3d.ready()} | paid
 
 
 # --- Кадри ----------------------------------------------------------------------------------------------------------

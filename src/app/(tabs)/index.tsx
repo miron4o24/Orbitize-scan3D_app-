@@ -12,10 +12,10 @@ import { ScanCard, ScanCardSkeleton } from '@/components/ScanCard';
 import { Stage, type Journey } from '@/components/Stage';
 import { ScanChoice } from '@/components/ScanChoice';
 import { ArrowLink, IconButton, Kicker, ScrollBar, Section, useScrollY } from '@/components/ui';
-import { errorText, type Method } from '@/lib/api';
+import { errorText } from '@/lib/api';
 import { refreshProfile } from '@/lib/auth';
 import { importVideo } from '@/lib/importVideo';
-import { aiAvailable, aiTrial, PRO_INFO, SCAN_INFO } from '@/lib/prefs';
+import { PRO_INFO } from '@/lib/prefs';
 import { openEntry, useLibrary } from '@/lib/library';
 import { checkProgress, useProgress } from '@/lib/progress';
 import { useSession } from '@/lib/session';
@@ -43,10 +43,6 @@ export default function Home() {
   const firstTime = !loading && !hasScans;
   const progress = useProgress();
 
-  const canAi = !!user && aiAvailable(); // прочита се отново при всяка промяна на сесията (профила)
-  const aiTitle = `${PRO_INFO.single.label} · ${PRO_INFO.single.time}`;
-  const scanTitle = `${SCAN_INFO.label} · ${SCAN_INFO.time}`;
-
   useFocusEffect(
     useCallback(() => {
       checkProgress();
@@ -54,11 +50,11 @@ export default function Home() {
     }, []),
   );
 
-  async function pickVideo(method: Method = 'scan') {
+  async function upload() {
     if (importing) return;
     setImporting(true);
     try {
-      await importVideo(method);
+      await importVideo();
     } catch (e) {
       Alert.alert('Видеото не може да се използва', errorText(e));
     } finally {
@@ -67,17 +63,6 @@ export default function Home() {
   }
 
   const scan = () => router.push('/capture');
-  const filmAi = () => router.push({ pathname: '/capture', params: { ai: '1' } });
-
-  // Видео, заснето по-рано: при наличие на двата начина потребителят казва кой.
-  const upload = () => {
-    if (!canAi) return pickVideo();
-    Alert.alert('Какъв модел?', undefined, [
-      { text: 'Отказ', style: 'cancel' },
-      { text: scanTitle, onPress: () => pickVideo('scan') },
-      { text: aiTitle, onPress: () => pickVideo('single') },
-    ]);
-  };
 
   return (
     <SafeAreaView style={s.fill} edges={['top']}>
@@ -110,14 +95,7 @@ export default function Home() {
               delay={60}
             />
             <Appear index={5} style={s.cta}>
-              {canAi ? (
-                <>
-                  <ScanChoice highlight title={PRO_INFO.single.label} time={PRO_INFO.single.time} sub={aiTrial() ? 'Един безплатен опит' : 'Най-бързият начин'} icon="sparkles" onPress={filmAi} />
-                  <ScanChoice title={SCAN_INFO.label} time={SCAN_INFO.time} sub="Може да е малко по-добър от AI модела" icon="videocam-outline" onPress={scan} />
-                </>
-              ) : (
-                <ScanChoice highlight title="Започни сканиране" time={SCAN_INFO.time} icon="videocam" onPress={scan} />
-              )}
+              <ScanChoice highlight title="Започни сканиране" time={PRO_INFO.single.time} sub={PRO_INFO.single.label} icon="sparkles" onPress={scan} />
               <ArrowLink label={importing ? 'Отваряне…' : 'Качи готово видео'} onPress={upload} style={s.ctaLink} />
               {!!user && !user.pro && <ArrowLink label="Виж Orbitize Pro" onPress={() => router.push('/pro')} style={s.ctaLink} />}
             </Appear>

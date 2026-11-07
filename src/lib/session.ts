@@ -2,7 +2,7 @@ import { File, Paths } from 'expo-file-system';
 import * as SecureStore from 'expo-secure-store';
 import { useSyncExternalStore } from 'react';
 
-import type { ProMethod } from './api';
+import type { Method } from './api';
 
 // Кой използва приложението: влязъл профил (сесийният ключ е в защитено хранилище, а профилът във файл, за да се
 // отваря приложението влязло и без мрежа) или все още никой (екран за вход).
@@ -21,13 +21,13 @@ export type Profile = {
   billing?: boolean; // Pro може да се купи в приложението (сървърът е настроен за това)
   pro_product?: string; // продуктът му в магазина
   owner?: boolean;
-  ai?: Partial<Record<ProMethod, boolean>>;
+  ai?: Partial<Record<Method, boolean>>;
   // Броените използвания от безплатния план (сървър app/plans.py): limit е null при Pro; refs: вече преброените
   // модели
   limits?: Record<LimitKind, { used: number; limit: number | null; refs: string[] }>;
 };
 
-export type LimitKind = 'stress' | 'ar' | 'ai';
+export type LimitKind = 'stress' | 'ar';
 
 export type Session = { kind: 'account'; token: string; user: Profile } | null;
 

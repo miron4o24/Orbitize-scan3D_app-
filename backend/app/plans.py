@@ -1,7 +1,6 @@
-"""Безплатен план и Pro (accounts.is_pro). Безплатните профили тестват за здравина FREE_LIMITS["stress"] модела,
-виждат в AR FREE_LIMITS["ar"] сканирания и пробват FREE_LIMITS["ai"] AI модел; Pro няма ограничения. Модел,
-използван отново, се брои веднъж (db.plan_uses: профил, вид, задача). Неуспешен AI модел не се брои: пробата е за
-модел, а не за опит. API ключът (администраторът; гостите на сървъри без профили) няма ограничения. check() отказва
+"""Безплатен план и Pro (accounts.is_pro). Безплатните профили тестват за здравина FREE_LIMITS["stress"] модела и
+виждат в AR FREE_LIMITS["ar"] сканирания; Pro няма ограничения. Модел, използван отново, се брои веднъж
+(db.plan_uses: профил, вид, задача). API ключът (администраторът; гостите на сървъри без профили) няма ограничения. check() отказва
 заявка рано, преди всякаква работа; record() я брои след успеха на работата и проверява отново под заключване, така
 че две едновременни заявки да не вземат последното безплатно използване."""
 
@@ -11,14 +10,13 @@ import time
 import sqlalchemy as sa
 from fastapi import HTTPException
 
-from . import db, jobs
+from . import db
 from .accounts import Principal, is_pro, need_db
 
-FREE_LIMITS = {"stress": 5, "ar": 3, "ai": 1}
+FREE_LIMITS = {"stress": 5, "ar": 3}
 FULL = {
     "stress": "Безплатният план включва тест за здравина на 5 модела и те са използвани. С Pro тестовете са неограничени.",
     "ar": "Безплатният план включва AR за 3 сканирания и те са използвани. С Pro AR е неограничен.",
-    "ai": "Безплатният опит с AI модел е използван. С Pro можете да правите AI модели без ограничение.",
 }
 _lock = threading.Lock()
 
@@ -26,8 +24,7 @@ _lock = threading.Lock()
 def _used(c, user_id: str, kind: str) -> list[str]:
     rows = c.execute(sa.select(db.plan_uses.c.ref).where(db.plan_uses.c.user_id == user_id, db.plan_uses.c.kind == kind)
                      .order_by(db.plan_uses.c.created))  # fmt: skip
-    refs = [r.ref for r in rows]
-    return [r for r in refs if (jobs.read(r) or {}).get("state") != "failed"] if kind == "ai" else refs
+    return [r.ref for r in rows]
 
 
 def _limited(p: Principal) -> bool:

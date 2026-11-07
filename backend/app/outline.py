@@ -171,7 +171,8 @@ def measured(job: Path, work: Path, dense: Path, views: M.Views, masks: list, cl
         neighbors = dense / "neighbors.txt"
         lines = P.neighbor_lines(views, P.mvs_indices(dense / "sparse" / "images.bin"))
         neighbors.write_text("\n".join(lines) + "\n")
-        # Като при експресно сканиране (app/pipeline.py run), с уточнените маски.
+        # Съседните видео кадри силно се припокриват: стигат 4 изгледа на карта. Картите на дълбочината остават за
+        # app/fuse.py (изтриват се след него).
         sh("dense matching", ["DensifyPointCloud", "-w", dense, "-i", dense / "scene.mvs", "-o", dense / "dense.mvs",
             "--view-neighbors-file", neighbors, "--mask-path", mask_dir, "--ignore-mask-label", "0",
             "--resolution-level", "0", "--max-resolution", str(side), "--number-views", "4",

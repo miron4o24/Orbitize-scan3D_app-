@@ -15,16 +15,17 @@ os.environ["API_TOKEN"] = "test-token-123"
 def client(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
 
-    from app import jobs, main, pipeline
+    from app import ai, jobs, main
 
     monkeypatch.setattr(jobs, "DATA", tmp_path)
 
-    def fake_run(job, flat_base, set_state, sh, quick=False):
+    def fake_run(job, method, flat_base, set_state, sh, step, tune=None):
         set_state("reconstructing")
         trimesh.creation.box(extents=[1, 2, 4]).apply_translation([0, 0, 2]).export(job / "model.ply")
         return {"dimensions_mm": [25, 50, 100], "triangles": 12, "watertight": True}
 
-    monkeypatch.setattr(pipeline, "run", fake_run)
+    monkeypatch.setattr(ai, "run", fake_run)
+    monkeypatch.setattr(ai, "available", lambda: {"edit": True, "single": True, "claude": False, "photo": False})
     with TestClient(main.app, headers={"Authorization": "Bearer test-token-123"}) as c:
         yield c
 
@@ -87,14 +88,14 @@ def test_full_lifecycle(client):
 def test_failed_job_log_and_list(client, monkeypatch):
     import sys
 
-    from app import pipeline
+    from app import ai, pipeline
 
-    def failing_run(job, flat_base, set_state, sh, quick=False):
+    def failing_run(job, method, flat_base, set_state, sh, step, tune=None):
         set_state("reconstructing")
         sh("camera solving", [sys.executable, "-c", "print('early' + chr(13) + 'final')"])
         raise pipeline.Failed("Only 3 of 90 frames could be placed in 3D.")
 
-    monkeypatch.setattr(pipeline, "run", failing_run)
+    monkeypatch.setattr(ai, "run", failing_run)
     job_id = client.post("/jobs").json()["id"]
     for i in range(8):
         client.put(f"/jobs/{job_id}/photos/img_{i:04d}.jpg", content=JPEG)
