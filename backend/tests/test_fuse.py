@@ -109,6 +109,35 @@ def test_fuses_the_sphere(tmp_path):
     assert np.median(np.abs(r[upper] - RADIUS)) < 0.02
 
 
+def with_normals(views):
+    """Кадрите с точните посоки на повърхността на кълбото (в координатите на камерата), като от app/normals.py."""
+    out = []
+    for v in views:
+        x0, y0, x1, y1 = v.box
+        xs = (np.arange(x0, x1) + 0.5 - v.K[0, 2]) / v.K[0, 0]
+        ys = (np.arange(y0, y1) + 0.5 - v.K[1, 2]) / v.K[1, 1]
+        cam = v.dep[..., None] * np.stack(np.broadcast_arrays(xs[None, :], ys[:, None], np.ones((1, 1))), -1)
+        world = cam @ v.R + v.C
+        n = (world - CENTRE) @ v.R.T
+        n /= np.maximum(np.linalg.norm(n, axis=-1, keepdims=True), 1e-9)
+        out.append(F.View(**{**v.__dict__, "normal": n.astype(np.float16)}))
+    return out
+
+
+def test_fuses_the_sphere_with_surface_directions(tmp_path):
+    """Детайлният начин: AI дълбочината е груба (размазана), а посоките на повърхността са точни."""
+    from scipy import ndimage
+
+    z, hull, views = scene()
+    rough = [F.View(**{**v.__dict__, "disp": ndimage.gaussian_filter(v.disp, 6).astype(np.float32)}) for v in views]
+    out = tmp_path / "fused.ply"
+    F.fuse_views(z, hull, with_normals(rough), out)
+    mesh = trimesh.load(out, force="mesh")
+    r = np.linalg.norm(mesh.vertices - CENTRE, axis=1)
+    upper = mesh.vertices[:, 2] > 0.3
+    assert np.median(np.abs(r[upper] - RADIUS)) < 0.02
+
+
 @pytest.mark.parametrize("dump", [False, True])
 def test_save_and_replay(tmp_path, dump):
     z, hull, views = scene()

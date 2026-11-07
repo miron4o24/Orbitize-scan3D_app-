@@ -28,6 +28,7 @@ import numpy as np
 import pymeshlab
 import trimesh
 from scipy import ndimage
+from scipy.fft import dctn, idctn
 from skimage import measure
 
 if __package__:
@@ -68,6 +69,18 @@ FACING_MIN = 0.15
 OUTLIER = 0.3
 PASSES = 2  # проходи за гласуване, всеки пропуска несъгласуваното с предишния (1: нищо не се пропуска)
 BLOCK = 500_000  # клетки, върху които една нишка работи наведнъж (вижте vote_block)
+# Детайлният начин (кадри с посоки на повърхността от app/normals.py). Измерената дълбочина я има почти само по ръбовете
+# на шарките и там е шумна: напасната към нея, AI дълбочината се огъваше по всеки ръб (пръстен около окото на фигура,
+# гънка по линията на косата), различно във всеки кадър, и слети, лицето и гладката глава на фигура излизаха груби. Тук
+# остатъкът се взима далеч от скоковете на дълбочината, с тегло по увереността, и се заглажда по-широко (FIELD_WIDE):
+# така напасването дава само размера и положението. Формата отблизо (под DETAIL от изрязването) идва от посоките на
+# повърхността, отдалеч от напасната дълбочина (уравнение на Поасон с привличане към нея). Всички пиксели на предмета
+# тежат еднакво: иначе измерените, т.е. ръбовете на шарките, отпечатваха шарката във формата. При Фродо, Скалата и
+# ролетка (2026-11-08): гладки лице и глава, нос и коса, без ями по основата.
+FIELD_WIDE = 0.03
+EDGE_PX = 6  # пиксели около скок в дълбочината или очертанието, където измерената дълбочина не се взима
+DETAIL = 0.03
+GRAZING = 0.25  # косинус: по-косо видени места (ръб на част пред друга) взимат наклона от напасната дълбочина
 
 
 def note(text: str) -> None:
@@ -147,6 +160,7 @@ class View:
     inner: np.ndarray  # (h, w) вътрешността на маската
     allowed: np.ndarray  # (h, w) къде се вижда обвивката
     core: np.ndarray  # (h, w) ядрото ѝ далеч от очертанието
+    normal: np.ndarray | None = None  # (h, w, 3) посоките на повърхността (app/normals.py): детайлният начин
 
 
 def completed(v: View):
@@ -154,7 +168,9 @@ def completed(v: View):
     предмета: вътрешността на маската и на обвивката (`core`: където маската е пропуснала тъмна част, черен спусък
     на дрелка), но само където обвивката се вижда (`allowed`). Връща (depth, weight, free), 0 където няма нищо, или
     None, ако двете не пасват. free: измерената дълбочина на другите пиксели, която показва само празно
-    пространство (пред пропуснат пиксел от предмета пак е празно)."""
+    пространство (пред пропуснат пиксел от предмета пак е празно). С посоки на повърхността: detailed."""
+    if v.normal is not None:
+        return detailed(v)
     dep, conf, disp, box = v.dep, v.conf, v.disp, v.box
     measured = (dep > 0) & (conf >= MIN_CONF)
     inner = (v.inner | v.core) & v.allowed
@@ -182,6 +198,91 @@ def completed(v: View):
     if FACING_MIN > 0:
         weight *= np.clip(facing(depth, v.K, box), FACING_MIN, 1.0)
     free = np.where(measured & ~ok, dep, 0).astype(np.float32)
+    return depth, weight, free
+
+
+def fitted_wide(v: View):
+    """AI дълбочината, напасната към измерената само по размер и положение (вижте FIELD_WIDE): (дълбочина, пиксели на
+    предмета с измерване, измерени пиксели) или None."""
+    dep, conf, disp = v.dep, v.conf, v.disp
+    measured = (dep > 0) & (conf >= MIN_CONF)
+    inner = (v.inner | v.core) & v.allowed
+    on = inner & measured
+    if on.sum() < 500:
+        return None
+    inv = np.where(dep > 0, 1 / np.maximum(dep, 1e-12), 0)
+    (a, b), err = D.fit_scale(disp[on], inv[on], np.ones(int(on.sum())))
+    if a <= 0 or err > D.MAX_ERROR:
+        return None
+    base = a * disp + b
+    r = np.where(on, inv - base, 0)
+    med = np.median(r[on])
+    mad = 1.4826 * np.median(np.abs(r[on] - med))
+    good = on & (np.abs(r - med) <= 3 * mad) if mad > 0 else on
+    # Далеч от очертанието и от скоковете на AI дълбочината (ръб на ръка, на основата): там измерената дълбочина се
+    # размазва между предния и задния план.
+    gy, gx = np.gradient(base)
+    slope = np.hypot(gx, gy)
+    jump = slope > 4 * np.median(slope[inner]) if inner.any() else np.zeros(inner.shape, bool)
+    good &= ~ndimage.binary_dilation(jump | ~inner, iterations=EDGE_PX)
+    w = np.where(good, np.clip((conf - MIN_CONF) / (1 - MIN_CONF), 0.05, 1) ** 2, 0).astype(np.float32)
+    sigma = max(3.0, FIELD_WIDE * max(disp.shape))
+    num = ndimage.gaussian_filter(w * r.astype(np.float32), sigma)
+    den = ndimage.gaussian_filter(w, sigma)
+    full = base + np.where(den > 1e-4, num / np.maximum(den, 1e-4), 0)
+    ok = inner & (full > 0)
+    return np.where(ok, 1 / np.maximum(full, 1e-12), 0), on, measured
+
+
+def screened_poisson(gx: np.ndarray, gy: np.ndarray, zc: np.ndarray, lam: float) -> np.ndarray:
+    """z, който най-добре следва наклоните (gx, gy) и, с тегло lam, z_c (косинусово преобразуване, гранично условие на
+    Нойман): (lam - Лапласиан) z = lam z_c - div g."""
+    h, w = zc.shape
+    div = np.zeros_like(zc)
+    div[:, :-1] += gx[:, :-1]
+    div[:, 1:] -= gx[:, :-1]
+    div[:-1, :] += gy[:-1, :]
+    div[1:, :] -= gy[:-1, :]
+    rhs = dctn(lam * zc - div, type=2, norm="ortho")
+    ky = 2 - 2 * np.cos(np.pi * np.arange(h) / h)
+    kx = 2 - 2 * np.cos(np.pi * np.arange(w) / w)
+    return idctn(rhs / (lam + ky[:, None] + kx[None, :]), type=2, norm="ortho")
+
+
+def detailed(v: View):
+    """Като completed, но формата отблизо идва от посоките на повърхността (вижте DETAIL), а всички пиксели на
+    предмета тежат еднакво."""
+    got = fitted_wide(v)
+    if got is None:
+        return None
+    zc, on, measured = got
+    ok = zc > 0
+    n = v.normal.astype(np.float32)
+    x0, y0, x1, y1 = v.box
+    K = v.K
+    xs = (np.arange(x0, x1, dtype=np.float32) - K[0, 2]) / K[0, 0]
+    ys = (np.arange(y0, y1, dtype=np.float32) - K[1, 2]) / K[1, 1]
+    nr = n[..., 0] * xs[None, :] + n[..., 1] * ys[:, None] + n[..., 2]  # n · лъча
+    ray = np.sqrt(xs[None, :] ** 2 + ys[:, None] ** 2 + 1)
+    # Извън предмета: най-близката стойност отвътре (без скокове към фона в уравнението).
+    iy, ix = ndimage.distance_transform_edt(~ok, return_distances=False, return_indices=True)
+    z = zc[iy, ix]
+    zgy, zgx = np.gradient(z)
+    # Наклонът на дълбочината по пикселите за равнина с нормала n през точка z * лъча.
+    with np.errstate(divide="ignore", invalid="ignore"):
+        gx = np.where(ok, -z * n[..., 0] / (K[0, 0] * nr), zgx)
+        gy = np.where(ok, -z * n[..., 1] / (K[1, 1] * nr), zgy)
+    slope = np.hypot(zgx, zgy)
+    jump = slope > 4 * np.median(slope[ok])
+    coarse = ndimage.binary_dilation((np.abs(nr) / ray < GRAZING) | jump, iterations=2) | ~np.isfinite(gx + gy)
+    gx, gy = np.where(coarse, zgx, gx), np.where(coarse, zgy, gy)
+    width = DETAIL * max(z.shape)
+    zz = screened_poisson(gx, gy, z, 1 / width**2)
+    depth = np.where(ok & (zz > 0), zz, 0).astype(np.float32)
+    weight = (depth > 0).astype(np.float32)
+    if FACING_MIN > 0:
+        weight *= np.clip(facing(depth, v.K, v.box), FACING_MIN, 1.0)
+    free = np.where(measured & ~(depth > 0), v.dep, 0).astype(np.float32)
     return depth, weight, free
 
 
@@ -314,8 +415,10 @@ def grid(z: dict, hull: trimesh.Trimesh):
     return lo, shape, step, size
 
 
-def read_views(dense: Path, names: list[str], crops_file: Path, hull_points: np.ndarray, spacing: float) -> list[View]:
-    """Кадрите с карта на дълбочината на OpenMVS и изрязване с AI дълбочина."""
+def read_views(dense: Path, names: list[str], crops_file: Path, hull_points: np.ndarray, spacing: float,
+               normals_file: Path | None = None) -> list[View]:  # fmt: skip
+    """Кадрите с карта на дълбочината на OpenMVS и изрязване с AI дълбочина (и посоките на повърхността от
+    app/normals.py, ако са дадени)."""
     maps = {}
     for p in dense.glob("depth*.dmap"):
         with open(p, "rb") as f:
@@ -323,12 +426,16 @@ def read_views(dense: Path, names: list[str], crops_file: Path, hull_points: np.
         o = struct.calcsize(HEADER)
         (n,) = struct.unpack_from("<H", head, o)
         maps[Path(head[o + 2 : o + 2 + n].decode("utf-8", "replace")).name] = p
+    normals = {}
+    if normals_file is not None:
+        with np.load(normals_file) as f:
+            normals = {k: f[k] for k in f.files}
     with np.load(crops_file) as crops:
-        todo = [(name, crops[f"disp_{i}"], tuple(int(v) for v in crops[f"box_{i}"]), crops[f"inner_{i}"])
-                for i, name in enumerate(names) if f"disp_{i}" in crops and name in maps]  # fmt: skip
+        todo = [(name, crops[f"disp_{i}"], tuple(int(v) for v in crops[f"box_{i}"]), crops[f"inner_{i}"],
+                 normals.get(f"normal_{i}")) for i, name in enumerate(names) if f"disp_{i}" in crops and name in maps]  # fmt: skip
 
     def one(item) -> View | None:
-        name, disp, box, inner = item
+        name, disp, box, inner, normal = item
         dm = at_image_size(read_dmap(maps[name]))
         x0, y0, x1, y1 = box
         dep = dm.depth[y0:y1, x0:x1]
@@ -336,7 +443,9 @@ def read_views(dense: Path, names: list[str], crops_file: Path, hull_points: np.
             return None
         conf = dm.conf[y0:y1, x0:x1] if dm.conf is not None else np.ones_like(dep)
         allowed, core = hull_view(hull_points, spacing, dm, box)
-        return View(name, dm.K, dm.R, dm.C, box, dep, conf, disp, inner, allowed, core)
+        if normal is not None and normal.shape[:2] != dep.shape:
+            normal = None
+        return View(name, dm.K, dm.R, dm.C, box, dep, conf, disp, inner, allowed, core, normal)
 
     return [v for v in PAR.each(one, todo) if v is not None]
 
@@ -349,6 +458,8 @@ def save(path: Path, z: dict, views: list[View]) -> None:
                    f"dep_{i}": v.dep.astype(np.float32), f"conf_{i}": v.conf.astype(np.float16),
                    f"disp_{i}": v.disp.astype(np.float32), f"inner_{i}": v.inner, f"allowed_{i}": v.allowed,
                    f"core_{i}": v.core}  # fmt: skip
+        if v.normal is not None:
+            arrays[f"normal_{i}"] = v.normal.astype(np.float16)
     np.savez_compressed(path, **arrays)
 
 
@@ -360,7 +471,8 @@ def load(path: Path) -> tuple[dict, list[View]]:
         while f"name_{i}" in f.files:
             views.append(View(str(f[f"name_{i}"]), f[f"K_{i}"], f[f"R_{i}"], f[f"C_{i}"],
                               tuple(int(v) for v in f[f"box_{i}"]), f[f"dep_{i}"], f[f"conf_{i}"].astype(np.float32),
-                              f[f"disp_{i}"], f[f"inner_{i}"], f[f"allowed_{i}"], f[f"core_{i}"]))  # fmt: skip
+                              f[f"disp_{i}"], f[f"inner_{i}"], f[f"allowed_{i}"], f[f"core_{i}"],
+                              f[f"normal_{i}"] if f"normal_{i}" in f.files else None))  # fmt: skip
             i += 1
     return z, views
 
@@ -377,7 +489,9 @@ def fuse(dense: Path, inputs: Path, crops_file: Path, out: Path, dump: Path | No
     cells = np.stack(np.unravel_index(inside[pick], tuple(shape)), 1)
     hull_points = (cells * step + lo) @ z["to_up"].astype(np.float64)
     del inside, pick, cells
-    views = read_views(dense, [str(n) for n in z["names"]], crops_file, hull_points, spacing)
+    normals = Path(str(z["normals"])) if "normals" in z and Path(str(z["normals"])).exists() else None
+    views = read_views(dense, [str(n) for n in z["names"]], crops_file, hull_points, spacing, normals)
+    note("detail from the surface directions" if normals else "fitted AI depth (no surface directions)")
     if dump is not None:
         save(dump, z, views)
     fuse_views(z, hull, views, out, sdf)

@@ -8,3 +8,7 @@ export const PRO_INFO: Record<Method, { label: string; time: string; minutes: nu
   claude: { label: 'Claude дизайн', time: '~3 мин', minutes: 3 },
   photo: { label: 'AI от снимки', time: '~3 мин', minutes: 3 },
 };
+
+// AI моделът по предишния начин (сървър: без посоките на повърхността от app/normals.py): по-бърз, но по-груб по
+// гладките части (лице, плешива глава).
+export const CLASSIC_INFO = { label: 'Предишен AI модел', time: '~12 мин', minutes: 12 };

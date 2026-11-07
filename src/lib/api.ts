@@ -43,6 +43,7 @@ export type Report = {
   volume_mm3?: number;
   area_mm2?: number;
   edit?: { prompt: string; changes: string[]; source: string | null }; // създаден чрез текстова промяна (Pro)
+  classic?: boolean; // AI моделът по предишния начин
 };
 
 export type Geometry = { dimensions_mm: [number, number, number]; volume_mm3: number; area_mm2: number };
@@ -150,7 +151,7 @@ export const createJob = () => call<Job>('POST', '/jobs');
 export const getJob = (id: string) => call<Job>('GET', `/jobs/${id}`);
 export const startJob = (
   id: string,
-  params: { flat_base: boolean; video_bytes?: number; method: 'single'; extend?: string },
+  params: { flat_base: boolean; video_bytes?: number; method: 'single'; classic?: boolean; extend?: string },
 ) => call<Job>('POST', `/jobs/${id}/start`, params);
 export const cancelJob = (id: string) => call<Job>('DELETE', `/jobs/${id}`);
 

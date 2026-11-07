@@ -32,6 +32,7 @@ export type Scan = {
   published?: boolean; // в общността
   imported?: boolean; // видеото е от галерията, а не от камерата на приложението
   method?: Method; // как е създаден (по-стари сканирания: липсва, "scan" или "express")
+  classic?: boolean; // AI моделът по предишния начин
   extendFrom?: string; // това видео добавя липсваща страна към този модел (номер на задачата му)
 };
 

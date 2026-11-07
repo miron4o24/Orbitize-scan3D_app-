@@ -270,7 +270,8 @@ class Worker:
                 report = edit.run(d, params, set_state, sh)
             else:  # задача отпреди AI модела ("scan", "express"), прекъсната от рестарт: AI модел
                 report = ai.run(d, method if method in ai.METHODS else "single", bool(params.get("flat_base", True)),
-                                set_state, sh, lambda step: self._step(job_id, step), params.get("tune"))  # fmt: skip
+                                set_state, sh, lambda step: self._step(job_id, step), params.get("tune"),
+                                bool(params.get("classic")))  # fmt: skip
             write(job_id, state="done", step=None, report=report | {"seconds": round(time.time() - started)})
             try:
                 (d / THUMB).unlink(missing_ok=True)  # повторно изпълнение може да е избрало други кадри
