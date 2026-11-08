@@ -68,6 +68,7 @@ export default function Home() {
 
   const scan = () => router.push('/capture');
   const filmAi = () => router.push({ pathname: '/capture', params: { ai: '1' } });
+  const engineer = () => router.push('/engineer');
 
   // Видео, заснето по-рано: при наличие на двата начина потребителят казва кой.
   const upload = () => {
@@ -118,6 +119,7 @@ export default function Home() {
               ) : (
                 <ScanChoice highlight title="Започни сканиране" time={SCAN_INFO.time} icon="videocam" onPress={scan} />
               )}
+              <ScanChoice title={PRO_INFO.cad.label} time={PRO_INFO.cad.time} sub="Детайл 1:1 от снимки и мерки: STEP за CAD" icon="construct-outline" onPress={engineer} />
               <ArrowLink label={importing ? 'Отваряне…' : 'Качи готово видео'} onPress={upload} style={s.ctaLink} />
               {!!user && !user.pro && <ArrowLink label="Виж Orbitize Pro" onPress={() => router.push('/pro')} style={s.ctaLink} />}
             </Appear>

@@ -1,6 +1,6 @@
 import { Directory, File, Paths } from 'expo-file-system';
 
-import type { Method, Report, ServerScan } from './api';
+import type { CadParams, Method, Report, ServerScan } from './api';
 import { dayMonth } from './dates';
 import type { Quality } from './prefs';
 
@@ -35,6 +35,7 @@ export type Scan = {
   imported?: boolean; // видеото е от галерията, а не от камерата на приложението
   method?: Method; // AI модел (Pro) вместо сканиране (липсва: сканиране)
   extendFrom?: string; // това видео добавя липсваща страна към този модел (номер на задачата му)
+  cad?: CadParams; // инженерният режим: мерките и кой прави модела
 };
 
 const root = new Directory(Paths.document, 'scans');
