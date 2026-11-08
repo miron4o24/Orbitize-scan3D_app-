@@ -257,6 +257,7 @@ class Tune(BaseModel):
     passes: int | None = Field(None, ge=1, le=3)  # проходите за гласуване при сливането
     features: int | None = Field(None, ge=2000, le=8192)  # най-много особености на кадър за решаващия алгоритъм
     normals_every: int | None = Field(None, ge=1, le=4)  # посоките на повърхността от всеки толкова кадър
+    rescue: bool | None = None  # дълбочината от DA3 за неподходящите кадри: True винаги, False никога (app/rescue.py)
     debug: bool = False  # записва входа на сливането (GET /jobs/{id}/fuse_debug.npz), за да се повтори другаде
 
 

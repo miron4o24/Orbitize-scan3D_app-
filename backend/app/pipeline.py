@@ -431,17 +431,18 @@ def sharpened_masks(work: Path, dense: Path, views: M.Views, masks: list, cloud:
 
 def fused_surface(work: Path, dense: Path, views: M.Views, cloud: M.Cloud, hull: trimesh.Trimesh | None, sh,
                   voxel: float = F.VOXEL, flap: float | None = None, passes: int = F.PASSES, debug: bool = False,
-                  normals: Path | None = None):  # fmt: skip
+                  normals: Path | None = None, rescue: Path | None = None):  # fmt: skip
     """Повърхността, слята от картите на дълбочината на кадрите (app/fuse.py), или None: няма обвивка или изрязвания с
     AI дълбочина, стъпката се е провалила или гъстите точки не са съгласни с нея (тогава формата от очертанията).
     debug: входът на сливането се записва в папката на задачата (FUSE_DEBUG); normals: посоките на повърхността от
-    app/normals.py (детайлният начин на сливане)."""
+    app/normals.py (детайлният начин на сливане); rescue: дълбочината от DA3 за неподходящите кадри (app/rescue.py)."""
     crops = work / CROPS
     if hull is None or not crops.exists():
         return None
     inputs, out = work / "fuse_inputs.npz", work / "fused.ply"
     np.savez(inputs, names=np.array(views.names), to_up=cloud.to_up, voxel=voxel, flap=F.FLAP if flap is None else flap,
              passes=passes, **({"normals": str(normals)} if normals is not None else {}),
+             **({"rescue": str(rescue)} if rescue is not None else {}),
              ground_z=np.nan if cloud.ground_z is None else cloud.ground_z, hull_v=hull.vertices, hull_f=hull.faces)  # fmt: skip
     try:
         sh("fusing depth", [sys.executable, F.__file__, dense, inputs, crops, out,

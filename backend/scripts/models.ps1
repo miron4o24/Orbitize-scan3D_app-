@@ -31,7 +31,30 @@ $QWEN_FILES = [ordered]@{
 $CLIPSEG_BASE = 'https://huggingface.co/Xenova/clipseg-rd64-refined/resolve/924dc94f85f58739f353f94258b33bc47eae4862'
 $CLIPSEG_MODEL_SHA256 = '25C50E9A236FA16F309AAFD54D363ADB7CEE9CC7EAD8D93CF31A2610F8AF4B37'
 $CLIPSEG_TOKENIZER_SHA256 = '342739D4A4B111D4B1BDA83A96F5C518E1B162CC597252AC89DED17681791D31'
+# Depth for the frames whose measured depth is noise (app/rescue.py): Depth Anything 3 Base (Apache-2.0), pinned.
+$DA3_COMMIT = '3d835ec1a5802d64a8b8b15f817a1ab54809bfe4'
+$DA3_BASE = 'https://huggingface.co/depth-anything/DA3-BASE/resolve/f4a6c9b3c95e41c82048423d3493a81ec3fa810e'
+$DA3_CONFIG_SHA256 = '5E34115EBC17BD2D8D43033C5F72E9446AC8833FD61D3FA160B7E67E0BB5B7B5'
+$DA3_MODEL_SHA256 = 'E01067DC1659613083D9145A9A2547CCDBE6CCBBF83C4FE7B3E8A4E2BDAE78B5'
 $modelDir = Join-Path (Split-Path $PSScriptRoot -Parent) 'tools'
+
+function Install-DA3Code {
+  $code = Join-Path $modelDir 'da3\code'
+  $mark = Join-Path $code "commit-$DA3_COMMIT"
+  if (Test-Path $mark) { Write-Host 'Already installed'; return }
+  $zip = Join-Path $modelDir 'da3\code.zip'
+  New-Item -ItemType Directory -Force (Split-Path $zip) | Out-Null
+  Write-Host "Downloading Depth Anything 3 code ($DA3_COMMIT)"
+  Invoke-WebRequest "https://github.com/ByteDance-Seed/Depth-Anything-3/archive/$DA3_COMMIT.zip" -OutFile $zip -UseBasicParsing
+  $tmp = Join-Path $modelDir 'da3\code.tmp'
+  Remove-Item $tmp, $code -Recurse -Force -ErrorAction SilentlyContinue
+  Expand-Archive $zip $tmp -Force
+  Move-Item (Join-Path $tmp "Depth-Anything-3-$DA3_COMMIT") $code
+  Remove-Item $tmp, $zip -Recurse -Force
+  if (-not (Test-Path (Join-Path $code 'src\depth_anything_3\api.py'))) { throw 'The Depth Anything 3 code download is incomplete. Run this again.' }
+  New-Item -ItemType File $mark | Out-Null
+  Write-Host 'OK'
+}
 
 function Install-TripoSRCode {
   $code = Join-Path $modelDir 'triposr\code'
@@ -68,6 +91,10 @@ function Install-Models {
   Install-Model (Join-Path $modelDir 'depth\depth_anything_v2_small.onnx') $DEPTH_URL $DEPTH_SHA256
   Write-Host "`n==> AI fine detail (141 MB, MoGe-2 small: the direction of every part of the surface)" -ForegroundColor Cyan
   Install-Model (Join-Path $modelDir 'depth\moge2_vits_normal.onnx') $NORMAL_URL $NORMAL_SHA256
+  Write-Host "`n==> AI depth for difficult frames (540 MB, Depth Anything 3 Base: shiny or badly lit sides)" -ForegroundColor Cyan
+  Install-Model (Join-Path $modelDir 'da3\DA3-BASE\config.json') "$DA3_BASE/config.json" $DA3_CONFIG_SHA256
+  Install-Model (Join-Path $modelDir 'da3\DA3-BASE\model.safetensors') "$DA3_BASE/model.safetensors" $DA3_MODEL_SHA256
+  Install-DA3Code
   Write-Host "`n==> AI outline sharpener (45 MB, MobileSAM: cuts the object out where the 3D shape points)" -ForegroundColor Cyan
   Install-Model (Join-Path $modelDir 'sam\mobile_sam_image_encoder.onnx') "$SAM_BASE/mobile_sam_image_encoder.onnx" $SAM_ENCODER_SHA256
   Install-Model (Join-Path $modelDir 'sam\sam_mask_decoder_multi.onnx') "$SAM_BASE/sam_mask_decoder_multi.onnx" $SAM_DECODER_SHA256

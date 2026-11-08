@@ -614,7 +614,7 @@ def model_from_solved(job: Path, work: Path, photos: Path, flat_base: bool, set_
                                  table=not tune.get("no_table"), flap=tune.get("flap"), wide=tune.get("wide_dense", False),
                                  geometric=not tune.get("no_geo"), passes=tune.get("passes"),
                                  debug=bool(tune.get("debug")), detail=not classic,
-                                 normals_every=tune.get("normals_every"))  # fmt: skip
+                                 normals_every=tune.get("normals_every"), rescue=tune.get("rescue"))  # fmt: skip
     set_state("cleaning")
     M.paint(surface, views, images, cloud.to_up)
     out = M.make_printable(surface, M.floor_z(cloud), flat_base)
