@@ -80,10 +80,19 @@ BLOCK = 500_000  # клетки, върху които една нишка ра�
 FIELD_WIDE = 0.03
 EDGE_PX = 6  # пиксели около скок в дълбочината или очертанието, където измерената дълбочина не се взима
 DETAIL = 0.03
+JUMP = 4.0  # скок в напасната дълбочина: наклонът ѝ над толкова пъти медианата (там наклонът се взима от нея)
 GRAZING = 0.25  # косинус: по-косо видени места (ръб на част пред друга) взимат наклона от напасната дълбочина
 # Дупка през предмета (ролетка): маската и AI дълбочината я запълват, но измерената дълбочина вижда през нея, далеч зад
 # повърхността. Пикселите, уверено измерени повече от SEE_THROUGH (от дълбочината на предмета в кадъра) зад нея, на
 # петна от поне SEE_THROUGH_PX от изрязването, гласуват само за празно пространство. 0: изключено.
+# Слети, кадрите се разминават с части от милиметъра (поза, напасване) и средното им заглажда фините неща (вълните на
+# косата), които всеки сам има. Затова накрая мрежата се доближава до средната посока на повърхността от кадрите, които
+# виждат всяко място (вижте refined): REFINE е привличането към слятото място (по-малко: повече детайл, но и шум).
+REFINE = 0.1
+REFINE_ITER = 300
+NORMAL_FACING = 0.3  # косинус: по-косо видяно място не дава посока
+NORMAL_TOL = 3.0  # от разстоянието на пресичане: докъде от дълбочината на кадъра мястото се брои за видяно
+NORMAL_SMOOTH = 3  # стъпки заглаждане на посоките по съседните върхове
 SEE_THROUGH = 0.2
 SEE_THROUGH_CONF = 0.7
 SEE_THROUGH_PX = 1e-4
@@ -279,7 +288,7 @@ def detailed(v: View):
         gx = np.where(ok, -z * n[..., 0] / (K[0, 0] * nr), zgx)
         gy = np.where(ok, -z * n[..., 1] / (K[1, 1] * nr), zgy)
     slope = np.hypot(zgx, zgy)
-    jump = slope > 4 * np.median(slope[ok])
+    jump = slope > JUMP * np.median(slope[ok])
     coarse = ndimage.binary_dilation((np.abs(nr) / ray < GRAZING) | jump, iterations=2) | ~np.isfinite(gx + gy)
     gx, gy = np.where(coarse, zgx, gx), np.where(coarse, zgy, gy)
     width = DETAIL * max(z.shape)
@@ -517,6 +526,83 @@ def replay(dump: Path, out: Path) -> None:
     fuse_views(z, trimesh.Trimesh(z["hull_v"], z["hull_f"], process=False), views, out)
 
 
+def observed_normals(V: np.ndarray, Fc: np.ndarray, frames: list, normals: list, to_up: np.ndarray, tol: float):
+    """За всеки връх на мрежата (координати на мрежата): средната посока на повърхността от кадрите, които го виждат
+    (дълбочината на кадъра е до него), с тегло косинуса на ъгъла на гледане на квадрат; None за невидените."""
+    world = PAR.turned(V, to_up.T)
+    mesh_n = PAR.turned(trimesh.Trimesh(V, Fc, process=False).vertex_normals, to_up.T)
+    acc = np.zeros_like(V)
+    for ((R, C, K), box, depth, _, _), normal in zip(frames, normals):
+        if normal is None:
+            continue
+        R = R.astype(np.float64)
+        x = PAR.turned(world - C, R)
+        z = x[:, 2]
+        x0, y0, x1, y1 = box
+        ok = z > 1e-9
+        u = np.full(len(x), -1, np.int64)
+        v = np.full(len(x), -1, np.int64)
+        u[ok] = np.round(K[0, 0] * x[ok, 0] / z[ok] + K[0, 2]).astype(np.int64) - x0
+        v[ok] = np.round(K[1, 1] * x[ok, 1] / z[ok] + K[1, 2]).astype(np.int64) - y0
+        ok &= (u >= 0) & (v >= 0) & (u < x1 - x0) & (v < y1 - y0)
+        idx = np.flatnonzero(ok)
+        d = depth[v[idx], u[idx]]
+        near = 1 - np.abs(d - z[idx]) / tol  # 1 върху дълбочината на кадъра, 0 на разстояние tol
+        seen = (d > 0) & (near > 0)
+        idx, near = idx[seen], near[seen]
+        ray = x[idx] / np.linalg.norm(x[idx], axis=1, keepdims=True)
+        cos = -(PAR.turned(mesh_n[idx], R) * ray).sum(1)  # мрежата гледа към камерата
+        keep = cos > NORMAL_FACING
+        idx, cos, near = idx[keep], cos[keep], near[keep]
+        n = normal[v[idx], u[idx]].astype(np.float64)
+        n = PAR.turned(n, R.T)  # камера -> свят
+        w = (cos - NORMAL_FACING) / (1 - NORMAL_FACING) * near  # плавно до 0 при косото и далечното
+        acc[idx] += w[:, None] * n
+    length = np.linalg.norm(acc, axis=1)
+    target = PAR.turned(acc / np.maximum(length, 1e-12)[:, None], to_up)  # world -> grid
+    return target, length > 0
+
+
+def refined(V: np.ndarray, Fc: np.ndarray, target: np.ndarray, seen: np.ndarray) -> np.ndarray:
+    """Върховете, преместени така, че мрежата да следва посоките target (Nehab и др., 2005: всеки ръб на триъгълник
+    перпендикулярен на посоката му), с привличане REFINE към мястото им. Невидените върхове следват своята."""
+    from scipy import sparse
+    from scipy.sparse.linalg import lsqr
+
+    own = trimesh.Trimesh(V, Fc, process=False).vertex_normals
+    t = np.where(seen[:, None], target, own)
+    # Леко заглаждане по съседите: където кадър спира да вижда, средното скача (стъпала като изохипси).
+    e = np.concatenate([Fc[:, [0, 1]], Fc[:, [1, 2]], Fc[:, [2, 0]]])
+    adj = sparse.csr_matrix((np.ones(len(e) * 2), (np.r_[e[:, 0], e[:, 1]], np.r_[e[:, 1], e[:, 0]])),
+                            shape=(len(V), len(V)))  # fmt: skip
+    for _ in range(NORMAL_SMOOTH):
+        t = t + adj @ t
+        t /= np.maximum(np.linalg.norm(t, axis=1, keepdims=True), 1e-12)
+    fn = t[Fc].sum(1)
+    fn /= np.maximum(np.linalg.norm(fn, axis=1, keepdims=True), 1e-12)
+    rows, cols, vals, rhs = [], [], [], []
+    nv, nf = len(V), len(Fc)
+    for k, (a, b) in enumerate(((0, 1), (1, 2), (2, 0))):
+        i, j = Fc[:, a], Fc[:, b]
+        r = k * nf + np.arange(nf)
+        for c in range(3):  # n · (d_j - d_i) = -n · (x_j - x_i)
+            rows += [r, r]
+            cols += [3 * j + c, 3 * i + c]
+            vals += [fn[:, c], -fn[:, c]]
+        rhs.append(-(fn * (V[j] - V[i])).sum(1))
+    edge = np.linalg.norm(V[Fc[:, 0]] - V[Fc[:, 1]], axis=1).mean()
+    r = 3 * nf + np.arange(3 * nv)
+    rows.append(r)
+    cols.append(np.arange(3 * nv))
+    vals.append(np.full(3 * nv, REFINE))
+    rhs.append(np.zeros(3 * nv))
+    A = sparse.csr_matrix((np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))),
+                          shape=(3 * nf + 3 * nv, 3 * nv))  # fmt: skip
+    d = lsqr(A, np.concatenate(rhs), atol=1e-6, btol=1e-6, iter_lim=REFINE_ITER)[0].reshape(-1, 3)
+    note(f"surface directions: moved the surface by {np.median(np.linalg.norm(d, axis=1)) / edge:.2f} edges (median)")
+    return V + d
+
+
 def fuse_views(z: dict, hull: trimesh.Trimesh, views: list[View], out: Path, sdf: np.ndarray | None = None) -> None:
     names = [str(n) for n in z["names"]]
     to_up = z["to_up"].astype(np.float64)
@@ -541,10 +627,12 @@ def fuse_views(z: dict, hull: trimesh.Trimesh, views: list[View], out: Path, sdf
         if got is None:
             note(f"{v.name}: AI depth does not fit the depth map, left out")
             return None
-        return ((v.R.astype(np.float32), v.C.astype(np.float32), v.K), v.box, *got)
+        return ((v.R.astype(np.float32), v.C.astype(np.float32), v.K), v.box, *got), v.normal
 
     # За всеки използваем кадър: (поза, кутия, дълбочина, тегло, празно), запазени за следващите проходи.
-    frames = [f for f in PAR.each(prepare, views) if f is not None]
+    pairs = [f for f in PAR.each(prepare, views) if f is not None]
+    frames, normals = [f for f, _ in pairs], [n for _, n in pairs]
+    del pairs
     used = len(frames)
     note(f"{used} of {len(names)} frames have depth to fuse")
     if used < 3:
@@ -589,7 +677,12 @@ def fuse_views(z: dict, hull: trimesh.Trimesh, views: list[View], out: Path, sdf
     if ms.current_mesh().face_number() > FACES:
         ms.meshing_decimation_quadric_edge_collapse(targetfacenum=FACES, preservenormal=True, preservetopology=True)
     m = ms.current_mesh()
-    trimesh.Trimesh(m.vertex_matrix(), m.face_matrix()).export(out)
+    V, Fc = m.vertex_matrix(), m.face_matrix()
+    if REFINE > 0 and any(n is not None for n in normals):
+        target, seen = observed_normals(V, Fc, frames, normals, to_up, NORMAL_TOL * trunc)
+        note(f"surface directions: {seen.mean():.0%} of the surface seen")
+        V = refined(V, Fc, target, seen)
+    trimesh.Trimesh(V, Fc).export(out)
     out.with_suffix(".json").write_text(json.dumps({"frames": used, "total": len(names)}))
 
 
