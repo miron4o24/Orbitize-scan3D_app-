@@ -5,7 +5,7 @@
 очи и нос. MoGe-2 вижда изрязването с около 3600 части и дава посоките на повърхността: косата, носа, очите и гладкото
 лице, както са заснети. Сливането ги превръща в дълбочина за кадъра, която следва тях отблизо и измерената дълбочина
 отдалеч. Работи като собствен процес (стъпка "estimating detail"): python normals.py <папка с изображения>
-<crops.npz> <names.txt> <out.npz>. crops.npz: изрязванията от app/depth.py (box_i, inner_i); names.txt: имената на
+<crops.npz> <names.txt> <out.npz> [през колко кадъра]. crops.npz: изрязванията от app/depth.py (box_i, inner_i); names.txt: имената на
 кадрите (кадър i е изрязване i). out.npz: normal_i (h, w, 3) float16 за изрязване i, в координатите на камерата (x
 надясно, y надолу, z напред; повърхността гледа към камерата: z < 0)."""
 
@@ -31,6 +31,9 @@ PATCH = 14  # стъпката на мрежата; входът е кратен
 PIXELS = 705_600  # колко пиксела вижда мрежата от изрязването (квадрат 840 x 840 по площ)
 MOST_UP = 2.0  # малък в кадъра предмет се увеличава най-много толкова пъти
 MIN_TOKENS, MAX_TOKENS = 1200, 3600  # колко части от изрязването гледа MoGe-2
+# Посоките само от всеки толкова кадър: съседните видео кадри виждат почти едно и също, а сливането ги взима от всички
+# кадри, виждащи мястото (при Фродо през кадър: същият детайл за половината време, около 2 минути по-малко).
+EVERY = 2
 
 
 def ready() -> bool:
@@ -65,11 +68,12 @@ def object_normals(sess, crop: np.ndarray, inside: np.ndarray) -> np.ndarray:
     return n / np.maximum(np.linalg.norm(n, axis=-1, keepdims=True), 1e-6)
 
 
-def main(images: Path, crops_file: Path, names_file: Path, out: Path) -> None:
+def main(images: Path, crops_file: Path, names_file: Path, out: Path, every: int = EVERY) -> None:
     names = names_file.read_text(encoding="utf-8").split("\n")
     with np.load(crops_file) as crops:
         todo = [(i, names[i], tuple(int(v) for v in crops[f"box_{i}"]), crops[f"inner_{i}"])
                 for i in range(len(names)) if f"box_{i}" in crops]  # fmt: skip
+    todo = todo[:: max(1, every)]
     started = time.time()
 
     def one(sess, item):
@@ -90,4 +94,5 @@ def main(images: Path, crops_file: Path, names_file: Path, out: Path) -> None:
 
 
 if __name__ == "__main__":
-    main(Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4]))
+    main(Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4]),
+         int(sys.argv[5]) if len(sys.argv) > 5 else EVERY)  # fmt: skip
