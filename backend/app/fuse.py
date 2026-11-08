@@ -77,6 +77,12 @@ BLOCK = 500_000  # клетки, върху които една нишка ра�
 # повърхността, отдалеч от напасната дълбочина (уравнение на Поасон с привличане към нея). Всички пиксели на предмета
 # тежат еднакво: иначе измерените, т.е. ръбовете на шарките, отпечатваха шарката във формата. При Фродо, Скалата и
 # ролетка (2026-11-08): гладки лице и глава, нос и коса, без ями по основата.
+# Сравнено с измерената дълбочина на кадри, които не са слети (Фродо, всеки четвърти кадър настрана), този начин е
+# по-далеч от истинската форма (медиана 0,61% от размера) от напасването по-горе (0,36%): гладък е, но не толкова верен.
+# Затова по подразбиране (DETAIL_DEPTH = False) кадрите се сливат както преди, а посоките на повърхността дават само
+# фините неща накрая (refined): 0,44%, без грапавината и пръстените около очите.
+DETAIL_DEPTH = False
+DETAIL_FROM_NORMALS = True  # детайлният начин: формата отблизо в кадъра от посоките (иначе само напасната дълбочина)
 FIELD_WIDE = 0.03
 EDGE_PX = 6  # пиксели около скок в дълбочината или очертанието, където измерената дълбочина не се взима
 DETAIL = 0.03
@@ -90,6 +96,7 @@ GRAZING = 0.25  # косинус: по-косо видени места (ръб 
 # виждат всяко място (вижте refined): REFINE е привличането към слятото място (по-малко: повече детайл, но и шум).
 REFINE = 0.1
 REFINE_ITER = 300
+REFINE_KEEP = 30  # стъпки заглаждане на преместването: по-едрото от това се маха (вижте refined)
 NORMAL_FACING = 0.3  # косинус: по-косо видяно място не дава посока
 NORMAL_AGREE = 0.8  # косинус: кадър, чиито посоки средно се разминават повече с мрежата (37°), не се взима
 NORMAL_TOL = 3.0  # от разстоянието на пресичане: докъде от дълбочината на кадъра мястото се брои за видяно
@@ -185,9 +192,9 @@ def completed(v: View, detail: bool | None = None):
     предмета: вътрешността на маската и на обвивката (`core`: където маската е пропуснала тъмна част, черен спусък
     на дрелка), но само където обвивката се вижда (`allowed`). Връща (depth, weight, free), 0 където няма нищо, или
     None, ако двете не пасват. free: измерената дълбочина на другите пиксели, която показва само празно
-    пространство (пред пропуснат пиксел от предмета пак е празно). С посоки на повърхността (или detail при
-    детайлния начин, когато кадърът е без тях): detailed."""
-    if v.normal is not None or detail:
+    пространство (пред пропуснат пиксел от предмета пак е празно). При DETAIL_DEPTH и посоки на повърхността (или
+    detail, когато кадърът е без тях): detailed. Иначе посоките дават само фините неща накрая (refined)."""
+    if DETAIL_DEPTH and (v.normal is not None or detail):
         return detailed(v)
     dep, conf, disp, box = v.dep, v.conf, v.disp, v.box
     measured = (dep > 0) & (conf >= MIN_CONF)
@@ -212,6 +219,9 @@ def completed(v: View, detail: bool | None = None):
     full = base + np.where(den > 1e-3, num / np.maximum(den, 1e-3), 0)
     ok = inner & (full > 0)
     depth = np.where(ok, 1 / np.maximum(full, 1e-12), 0).astype(np.float32)
+    hole = seen_through(v, depth, measured)
+    depth[hole] = 0
+    ok &= ~hole
     weight = np.where(on, 1.0, AI_WEIGHT).astype(np.float32) * ok
     if FACING_MIN > 0:
         weight *= np.clip(facing(depth, v.K, box), FACING_MIN, 1.0)
@@ -275,7 +285,7 @@ def detailed(v: View):
         return None
     zc, on, measured = got
     ok = zc > 0
-    if v.normal is None:  # без посоки: само напасната дълбочина (детайлът идва от другите кадри накрая)
+    if v.normal is None or not DETAIL_FROM_NORMALS:  # само напасната дълбочина (детайлът идва накрая, refined)
         return see_through(v, np.where(ok, zc, 0).astype(np.float32), measured)
     n = v.normal.astype(np.float32)
     x0, y0, x1, y1 = v.box
@@ -301,8 +311,9 @@ def detailed(v: View):
     return see_through(v, np.where(ok & (zz > 0), zz, 0).astype(np.float32), measured)
 
 
-def see_through(v: View, depth: np.ndarray, measured: np.ndarray):
-    """(depth, weight, free) на детайлния начин: дупките, през които измерената дълбочина вижда, стават празни."""
+def seen_through(v: View, depth: np.ndarray, measured: np.ndarray) -> np.ndarray:
+    """Пикселите на дупка, през която измерената дълбочина уверено вижда далеч зад повърхността (вижте SEE_THROUGH)."""
+    hole = np.zeros(depth.shape, bool)
     if SEE_THROUGH > 0 and (depth > 0).any():
         span = np.ptp(depth[depth > 0])
         far = measured & (v.conf >= SEE_THROUGH_CONF) & (depth > 0) & (v.dep - depth > SEE_THROUGH * span)
@@ -311,7 +322,13 @@ def see_through(v: View, depth: np.ndarray, measured: np.ndarray):
         if count:
             sizes = ndimage.sum(far, lab, np.arange(1, count + 1))
             far = np.isin(lab, 1 + np.flatnonzero(sizes >= max(20, SEE_THROUGH_PX * far.size)))
-            depth[ndimage.binary_dilation(far, iterations=2) & (depth > 0)] = 0
+            hole = ndimage.binary_dilation(far, iterations=2) & (depth > 0)
+    return hole
+
+
+def see_through(v: View, depth: np.ndarray, measured: np.ndarray):
+    """(depth, weight, free) на детайлния начин: дупките, през които измерената дълбочина вижда, стават празни."""
+    depth[seen_through(v, depth, measured)] = 0
     weight = (depth > 0).astype(np.float32)
     if FACING_MIN > 0:
         weight *= np.clip(facing(depth, v.K, v.box), FACING_MIN, 1.0)
@@ -581,25 +598,32 @@ def observed_normals(V: np.ndarray, Fc: np.ndarray, frames: list, normals: list,
 
 
 def mesh_depth(world: np.ndarray, Fc: np.ndarray, R: np.ndarray, C: np.ndarray, K: np.ndarray, box) -> np.ndarray:
-    """Дълбочината на мрежата (върхове в света) в изрязването на кадър, 0 където не се вижда: точки по триъгълниците,
-    най-близката на пиксел."""
+    """Дълбочината на мрежата (върхове в света) в изрязването на кадър, 0 където не се вижда: точки по триъгълниците
+    (по-гъсто от пиксел според размера им в кадъра), най-близката на пиксел."""
     x0, y0, x1, y1 = box
     h, w = y1 - y0, x1 - x0
     X = PAR.turned(world - C, R)
-    k = 4
-    ab = np.array([(a, b) for a in range(k + 1) for b in range(k + 1 - a)], np.float64) / k
+    z = np.maximum(X[:, 2], 1e-9)
+    uv = np.stack([K[0, 0] * X[:, 0] / z + K[0, 2] - x0, K[1, 1] * X[:, 1] / z + K[1, 2] - y0], 1)
+    front = (X[Fc, 2] > 1e-9).all(1)
+    t = uv[Fc]
+    lo, hi = t.min(1), t.max(1)
+    near = front & (hi[:, 0] >= 0) & (hi[:, 1] >= 0) & (lo[:, 0] < w) & (lo[:, 1] < h)
+    side = np.linalg.norm(t - t[:, [1, 2, 0]], axis=2).max(1)  # най-дългата страна в пиксели
+    steps = np.clip(np.ceil(side * 1.5), 1, 64).astype(np.int64)
     out = np.full(h * w, np.inf)
-    for s in range(0, len(Fc), 50_000):
-        f = Fc[s : s + 50_000]
-        P = (X[f[:, 0], None] * ab[None, :, :1] + X[f[:, 1], None] * ab[None, :, 1:]
-             + X[f[:, 2], None] * (1 - ab.sum(1))[None, :, None]).reshape(-1, 3)  # fmt: skip
-        z = P[:, 2]
-        ok = z > 1e-9
-        u = np.round(K[0, 0] * P[ok, 0] / z[ok] + K[0, 2]).astype(np.int64) - x0
-        v = np.round(K[1, 1] * P[ok, 1] / z[ok] + K[1, 2]).astype(np.int64) - y0
-        z = z[ok]
-        inside = (u >= 0) & (v >= 0) & (u < w) & (v < h)
-        np.minimum.at(out, v[inside] * w + u[inside], z[inside])
+    for k in np.unique(steps[near]):
+        ab = np.array([(a, b) for a in range(k + 1) for b in range(k + 1 - a)], np.float64) / k
+        idx = np.flatnonzero(near & (steps == k))
+        for s in range(0, len(idx), max(1, 2_000_000 // len(ab))):
+            f = Fc[idx[s : s + max(1, 2_000_000 // len(ab))]]
+            P = (X[f[:, 0], None] * ab[None, :, :1] + X[f[:, 1], None] * ab[None, :, 1:]
+                 + X[f[:, 2], None] * (1 - ab.sum(1))[None, :, None]).reshape(-1, 3)  # fmt: skip
+            pz = P[:, 2]
+            u = np.round(K[0, 0] * P[:, 0] / pz + K[0, 2]).astype(np.int64) - x0
+            v = np.round(K[1, 1] * P[:, 1] / pz + K[1, 2]).astype(np.int64) - y0
+            inside = (u >= 0) & (v >= 0) & (u < w) & (v < h)
+            np.minimum.at(out, v[inside] * w + u[inside], pz[inside])
     out = out.reshape(h, w)
     return np.where(np.isfinite(out), out, 0).astype(np.float32)
 
@@ -640,6 +664,14 @@ def refined(V: np.ndarray, Fc: np.ndarray, target: np.ndarray, seen: np.ndarray)
     A = sparse.csr_matrix((np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))),
                           shape=(3 * nf + 3 * nv, 3 * nv))  # fmt: skip
     d = lsqr(A, np.concatenate(rhs), atol=1e-6, btol=1e-6, iter_lim=REFINE_ITER)[0].reshape(-1, 3)
+    # Само фината част от преместването: посоките на AI имат обща грешка (сравнено с измерената дълбочина при Фродо
+    # цялата повърхност потъваше с 0,3% от размера), а общата форма вече е от сливането.
+    if REFINE_KEEP > 0:
+        deg = np.asarray(adj.sum(1)).ravel()
+        low = d.copy()
+        for _ in range(REFINE_KEEP):
+            low = (low + adj @ low) / (1 + deg)[:, None]
+        d = d - low
     note(f"surface directions: moved the surface by {np.median(np.linalg.norm(d, axis=1)) / edge:.2f} edges (median)")
     return V + d
 
