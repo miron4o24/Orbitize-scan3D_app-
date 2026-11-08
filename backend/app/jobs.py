@@ -68,11 +68,13 @@ def kill(proc: subprocess.Popen):
         os.killpg(proc.pid, signal.SIGKILL)
 
 
-def create(owner: str | None = None) -> str:
-    """owner: идентификаторът на потребителя (app/accounts.py); None за споделения API ключ."""
+def create(owner: str | None = None, test: bool = False) -> str:
+    """owner: идентификаторът на потребителя (app/accounts.py); None за споделения API ключ. test: тестово копие на
+    администратора (POST /jobs/{id}/copy), което завършено не заема място от MAX_JOBS."""
     job_id = uuid.uuid4().hex
     (job_dir(job_id) / "photos").mkdir(parents=True)
-    write(job_id, id=job_id, state="uploading", created=time.time(), error=None, report=None, owner=owner)
+    write(job_id, id=job_id, state="uploading", created=time.time(), error=None, report=None, owner=owner,
+          **({"test": True} if test else {}))  # fmt: skip
     return job_id
 
 
@@ -165,11 +167,11 @@ def summaries() -> list[dict]:
 
 def count() -> int:
     """Задачи, които се броят към MAX_JOBS: всички освен завършените сканирания в профили (те имат собствено
-    ограничение)."""
+    ограничение) и завършените тестови копия (иначе тестовете на администратора спират качването на потребителите)."""
     n = 0
     for d in DATA.iterdir():
         s = read(d.name) or {}
-        n += not s.get("owner") or s.get("state") in ACTIVE | {"uploading"}
+        n += (not s.get("owner") and not s.get("test")) or s.get("state") in ACTIVE | {"uploading"}
     return n
 
 

@@ -169,6 +169,17 @@ def test_limits(client, monkeypatch):
     assert client.post("/jobs").status_code == 503
 
 
+def test_finished_test_copies_do_not_fill_the_limit(client, monkeypatch):
+    from app import jobs, main
+
+    monkeypatch.setattr(main, "MAX_JOBS", 2)
+    for _ in range(3):
+        jobs.write(jobs.create(test=True), state="done")
+    assert client.post("/jobs").status_code == 200
+    jobs.create(test=True)  # still uploading: counts
+    assert client.post("/jobs").status_code == 503
+
+
 def test_cleanup_removes_abandoned_uploads(client):
     from app import jobs
 

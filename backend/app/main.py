@@ -161,7 +161,7 @@ def copy_job(job_id: str, p: Principal = Depends(principal)):
     frames = sorted((jobs.job_dir(job_id) / "photos").glob("*.jp*g"))
     if source["state"] not in ("done", "failed") or not frames:
         raise HTTPException(409, "Тази задача няма запазени кадри.")
-    copy = jobs.create()
+    copy = jobs.create(test=True)
     d = jobs.job_dir(copy)
     for f in frames:
         shutil.copy(f, d / "photos" / f.name)
