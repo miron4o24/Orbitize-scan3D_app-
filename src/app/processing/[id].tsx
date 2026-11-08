@@ -17,8 +17,9 @@ import Animated, {
 } from 'react-native-reanimated';
 
 import { Appear, CountUp, LiveDot } from '@/components/motion';
-import { Button, Card, ErrorText, H3, Header, Mono, Row, Screen, Small } from '@/components/ui';
-import { PRO_INFO } from '@/lib/prefs';
+import { Button, Card, ErrorText, H3, Header, Mono, Row, Screen, Section, Segmented, Small } from '@/components/ui';
+import { aiAvailable, PRO_INFO, SCAN_INFO } from '@/lib/prefs';
+import { refreshProfile } from '@/lib/auth';
 import { checkProgress } from '@/lib/progress';
 import { setUpPush } from '@/lib/push';
 import { useSession } from '@/lib/session';
@@ -38,6 +39,7 @@ import {
   uploadPhoto,
   uploadVideo,
   type Method,
+  type ProMethod,
 } from '@/lib/api';
 import { deleteScan, getScan, motionFile, photosDir, scanTitle, updateScan, videoFile, type Scan } from '@/lib/scans';
 
@@ -58,8 +60,6 @@ const SUBSTEPS: Record<string, string> = {
   undistorting: 'Подготовка на кадрите',
   'finding the object': 'Отделяне на предмета от фона',
   'estimating depth': 'Измерване на формата',
-  'estimating detail': 'Измерване на детайлите',
-  'rescuing depth': 'Дълбочина за трудните кадри',
   'dense setup': 'Подготовка на кадрите',
   'dense matching': 'Измерване на повърхността',
   'sharpening the outlines': 'Уточняване на очертанията',
@@ -84,34 +84,68 @@ const EDIT_STEPS: [string, string][] = [
 
 const pop = ZoomIn.duration(240).easing(Easing.out(Easing.back(2))).reduceMotion(ReduceMotion.System); // отметка на стъпка
 
-// Секундите на всяка стъпка на сървъра за всеки начин (приблизително): общата лента за напредък минава през тях.
-const PLANS: Record<Method, [string, number][]> = {
+// Секундите на всяка стъпка на сървъра при сканиране на дрелка с 80 кадъра и пълни детайли (общо 24 мин): общата
+// лента за напредък минава през тях. Бързото сканиране заема приблизително същите дялове от по-кратко време.
+const PLAN: [string, number][] = [
+  ['reading video', 4],
+  ['picking frames', 2],
+  ['feature extraction', 15],
+  ['photo matching', 311],
+  ['camera solving', 100],
+  ['finding the object', 156],
+  ['undistorting', 2],
+  ['dense setup', 2],
+  ['dense matching', 525],
+  ['meshing', 22],
+  ['sharpening the outlines', 98],
+  ['estimating depth', 57],
+  ['fusing depth', 146],
+  ['cleaning', 6],
+  ['texturing', 25],
+];
+// Същото за методите на Pro: експресното е мащабирано от стъпките за 80 кадъра до 30 по-малки кадъра, а останалото е
+// приблизително.
+const PRO_PLANS: Record<ProMethod, [string, number][]> = {
   edit: [
     ['reconstructing', 3],
     ['understanding the request', 45],
     ['cleaning', 10],
     ['finding the part', 40],
   ],
+  express: [
+    ['reading video', 3],
+    ['picking frames', 2],
+    ['feature extraction', 6],
+    ['photo matching', 37],
+    ['camera solving', 12],
+    ['finding the object', 58],
+    ['undistorting', 2],
+    ['dense setup', 1],
+    ['dense matching', 45],
+    ['meshing', 10],
+    ['estimating depth', 30],
+    ['fusing depth', 60],
+    ['cleaning', 4],
+    ['texturing', 20],
+  ],
   // 48 разположени кадъра, предметът е изрязан от всичките 48, а дълбочините им са слети в очертанията му (сървър
   // app/ai.py, outline.py).
   single: [
     ['reading video', 4],
     ['picking frames', 4],
-    ['feature extraction', 8],
-    ['photo matching', 30],
+    ['feature extraction', 10],
+    ['photo matching', 55],
     ['camera solving', 10],
-    ['finding the object', 85],
+    ['finding the object', 94],
     ['undistorting', 3],
-    ['sharpening the outlines', 60],
+    ['sharpening the outlines', 90],
     ['dense setup', 1],
-    ['dense matching', 150],
+    ['dense matching', 100],
     ['meshing', 15],
-    ['estimating depth', 27],
-    ['estimating detail', 75],
-    ['rescuing depth', 10],
-    ['fusing depth', 100],
+    ['estimating depth', 30],
+    ['fusing depth', 40],
     ['cleaning', 20],
-    ['texturing', 22],
+    ['texturing', 20],
   ],
   claude: [
     ['reading video', 5],
@@ -180,9 +214,9 @@ export default function Processing() {
 
   const active = !!scan && ACTIVE.includes(scan.status);
   const jobId = scan?.jobId;
-  // По-старо сканиране без AI ("scan", "express" или без начин) се обработва отново като AI модел.
-  const method: Method = scan?.method && scan.method in PRO_INFO ? scan.method : 'single';
-  const plan = PLANS[method];
+  const method: Method = scan?.method ?? 'scan';
+  const pro = method === 'scan' ? null : method;
+  const plan = pro ? PRO_PLANS[pro] : PLAN;
   const session = useSession();
   const user = session?.kind === 'account' ? session.user : null;
 
@@ -289,12 +323,16 @@ export default function Processing() {
       }
       // Изборите в момента: могат да се променят, докато качването върви.
       const now = getScan(id) ?? scan!;
-      update({ method: 'single' });
+      // Само предлаганите два начина: друг начин от по-старо сканиране (express, quick) се опитва отново като
+      // стандартно сканиране.
+      const chosen = now.method === 'single' && aiAvailable() ? 'single' : undefined;
+      update({ method: chosen, quality: undefined });
       const started = await retrying(() =>
         startJob(job.id, {
           flat_base: now.flatBase ?? true,
-          method: 'single',
+          quality: 'detailed',
           ...(hasVideo && { video_bytes: video.size }),
+          ...(chosen && { method: chosen }),
           ...(now.extendFrom && { extend: now.extendFrom }),
         }),
       ).catch((e) => {
@@ -303,6 +341,7 @@ export default function Processing() {
         throw e;
       });
       update({ status: started.state, error: undefined });
+      refreshProfile().catch(() => {}); // пробният AI модел на безплатния профил вече е използван
       setUpPush(true); // моментът, в който "кажи ми, когато е готово" има смисъл
     } catch (e) {
       setNetError(`Качването спря. ${errorText(e)}`);
@@ -315,6 +354,7 @@ export default function Processing() {
   // Дневникът на задачата на сървъра: само за собственика на приложението, за да види защо сканирането се е
   // провалило.
   const owner = !!user?.owner;
+  const canAi = !!user && aiAvailable();
   async function showLog() {
     if (!scan!.jobId) return setLog('Няма данни за това сканиране.');
     setLog('Зареждане…');
@@ -351,7 +391,7 @@ export default function Processing() {
     );
 
   if (active) {
-    const total = PRO_INFO[method].minutes;
+    const total = pro ? PRO_INFO[pro].minutes : scan.quality === 'quick' ? 10 : SCAN_INFO.minutes;
     const queued = scan.status === 'queued';
     const share = queued ? 0 : progress;
     const left = Math.max(1, Math.round(total * (1 - share)));
@@ -359,7 +399,7 @@ export default function Processing() {
     const at = steps.findIndex(([st]) => st === scan.status);
     return (
       <Screen>
-        <Header kicker={PRO_INFO[method].label} title={scanTitle(scan)} />
+        <Header kicker={pro ? PRO_INFO[pro].label : canAi ? SCAN_INFO.label : undefined} title={scanTitle(scan)} />
         <Appear index={1}>
           <Card style={s.overall}>
             <View style={s.row}>
@@ -432,6 +472,7 @@ export default function Processing() {
     );
 
   const uploading = uploaded !== null;
+  const way = method === 'single' && canAi ? 'single' : 'scan';
   const failed = scan.status === 'failed';
   return (
     <Screen>
@@ -453,6 +494,21 @@ export default function Processing() {
         </Appear>
       )}
       {info && <Small>{info}</Small>}
+      {canAi && (
+        <Appear index={2}>
+          <Section label="Начин">
+            <Segmented<'scan' | 'single'>
+              value={way}
+              onChange={(m) => update({ method: m === 'single' ? 'single' : undefined })}
+              options={[
+                { value: 'scan', label: SCAN_INFO.label },
+                { value: 'single', label: PRO_INFO.single.label },
+              ]}
+            />
+            <Small>{way === 'single' ? PRO_INFO.single.time : SCAN_INFO.time}</Small>
+          </Section>
+        </Appear>
+      )}
       <Appear index={3}>
         <Card style={s.list}>
           <Row

@@ -76,10 +76,10 @@ def key_status() -> dict:
 
 
 def available() -> dict:
-    """Кои AI модели работят на този сървър; edit: текстови промени (app/edit.py; простите заявки работят без езиковия
-    му модел), винаги налични."""
+    """Какво може да използва Pro на този сървър; express: сканирането за около 5 минути (app/pipeline.py), edit:
+    текстови промени (app/edit.py; простите заявки работят без езиковия му модел), и двете винаги са налични."""
     paid = {method: bool(key(service)) for method, service in NEEDS.items()}
-    return {"edit": True, "single": single3d.ready()} | paid
+    return {"express": True, "edit": True, "single": single3d.ready()} | paid
 
 
 # --- Кадри ----------------------------------------------------------------------------------------------------------
@@ -495,10 +495,9 @@ SINGLE_CANDIDATES = 8  # (само един кадър) кадри, в коит�
 
 
 def single(job: Path, work: Path, flat_base: bool, set_state: Callable[[str], None],
-           sh: Callable[[str, list], None], tune: dict | None = None, classic: bool = False) -> dict:  # fmt: skip
+           sh: Callable[[str, list], None], tune: dict | None = None) -> dict:  # fmt: skip
     """AI моделът от цялото видео; TripoSR от един кадър, когато кадрите не могат да се разположат в 3D (много кратко
-    или размазано видео, едноцветен предмет върху едноцветна маса). classic: предишният начин на сливане, без
-    посоките на повърхността (app/normals.py)."""
+    или размазано видео, едноцветен предмет върху едноцветна маса)."""
     photos, video = job / "photos", job / P.VIDEO
     if video.exists():
         try:
@@ -509,7 +508,7 @@ def single(job: Path, work: Path, flat_base: bool, set_state: Callable[[str], No
     found = sorted(photos.glob("*.jp*g"))
     if len(found) >= MIN_FRAMES:
         try:
-            report = from_video(job, work, photos, len(found), flat_base, set_state, sh, tune, classic)
+            report = from_video(job, work, photos, len(found), flat_base, set_state, sh, tune)
             if report is not None:
                 return report
         except Exception as e:  # каквото и да се е объркало, моделът от един кадър пак си заслужава
@@ -528,15 +527,14 @@ def single(job: Path, work: Path, flat_base: bool, set_state: Callable[[str], No
 
 def from_video(job: Path, work: Path, photos: Path, n_photos: int, flat_base: bool,
                set_state: Callable[[str], None], sh: Callable[[str, list], None],
-               tune: dict | None = None, classic: bool = False) -> dict | None:  # fmt: skip
+               tune: dict | None = None) -> dict | None:  # fmt: skip
     """Кадрите, разположени в 3D; предметът, изрязан от тях с AI и уточнен с MobileSAM; формата вътре във всички тези
     очертания; измерената между кадрите дълбочина (OpenMVS) с AI дълбочина (app/depth.py), слети върху нея
     (app/fuse.py): релефът, който очертанията не показват (ръб на основа, ръце, гънки, коса); текстурата от снимки
     върху него (app/outline.py). None, когато твърде малко кадри могат да се разположат."""
     best, placed, stray, all_masks, _ = P.solve_cameras(job, work, photos, n_photos, sh, paired=True,
                                                         mask_every=MASK_EVERY, features=(tune or {}).get("features"))  # fmt: skip
-    return model_from_solved(job, work, photos, flat_base, set_state, sh, best, placed, stray, all_masks, tune,
-                             classic)  # fmt: skip
+    return model_from_solved(job, work, photos, flat_base, set_state, sh, best, placed, stray, all_masks, tune)
 
 
 ROUNDS = 2  # проходи на MobileSAM, всеки с подсказки от формата на очертанията от предишния
@@ -544,8 +542,7 @@ ROUNDS = 2  # проходи на MobileSAM, всеки с подсказки о
 
 def model_from_solved(job: Path, work: Path, photos: Path, flat_base: bool, set_state: Callable[[str], None],
                       sh: Callable[[str, list], None], best: Path | None, placed: int, stray: list[str],
-                      all_masks: dict[str, np.ndarray], tune: dict | None = None,
-                      classic: bool = False) -> dict | None:  # fmt: skip
+                      all_masks: dict[str, np.ndarray], tune: dict | None = None) -> dict | None:  # fmt: skip
     """from_video след камерите: разположени кадри (`placed` от тях съгласувани с очертанията на търсача на предмета,
     `stray` несъгласувани) и маските на търсача. Те решават само откъде да се започне. При дрелка върху куфар той
     включваше куфара, дръжката му, стол или кутия отзад или пропускаше дръжката или патронника в 26 от 48 кадъра с
@@ -612,9 +609,7 @@ def model_from_solved(job: Path, work: Path, photos: Path, flat_base: bool, set_
     surface, cloud = OL.measured(job, work, dense, views, masks, cloud, up, agree, set_state, sh, side=side,
                                  voxel=tune.get("voxel", OL.VOXEL), fixed="agree" in tune,
                                  table=not tune.get("no_table"), flap=tune.get("flap"), wide=tune.get("wide_dense", False),
-                                 geometric=not tune.get("no_geo"), passes=tune.get("passes"),
-                                 debug=bool(tune.get("debug")), detail=not classic,
-                                 normals_every=tune.get("normals_every"), rescue=tune.get("rescue"))  # fmt: skip
+                                 geometric=not tune.get("no_geo"), passes=tune.get("passes"))  # fmt: skip
     set_state("cleaning")
     M.paint(surface, views, images, cloud.to_up)
     out = M.make_printable(surface, M.floor_z(cloud), flat_base)
@@ -624,7 +619,7 @@ def model_from_solved(job: Path, work: Path, photos: Path, flat_base: bool, set_
     width = float(np.median([S.object_width(m) for m in masks]))
     return P.finish(job, out) | {"photos_used": len(views), "photos_total": len(all_masks),
                                  "object_width": round(width, 3), "ai": "single", "object": "", "suitable": True,
-                                 "real_mm": None} | ({"classic": True} if classic else {})  # fmt: skip
+                                 "real_mm": None}  # fmt: skip
 
 
 def outlines_from_3d(job: Path, work: Path, dense: Path, views: M.Views, masks: list[np.ndarray], agreed: np.ndarray,
@@ -704,7 +699,7 @@ def by_single(job: Path, work: Path, found: list[Path], sh: Callable[[str, list]
 
 
 def run(job: Path, method: str, flat_base: bool, set_state: Callable[[str], None], sh: Callable[[str, list], None],
-        step: Callable[[str], None], tune: dict | None = None, classic: bool = False) -> dict:  # fmt: skip
+        step: Callable[[str], None], tune: dict | None = None) -> dict:  # fmt: skip
     """step(name): какво показва приложението в момента (хвърля грешка, ако задачата е отказана). Връща отчета за
     печата."""
     if not available().get(method):
@@ -715,7 +710,7 @@ def run(job: Path, method: str, flat_base: bool, set_state: Callable[[str], None
     TX.clear(job)  # текстура от снимки от сканиране, ако задачата преди е била сканиране
     set_state("reconstructing")
     if method == "single":
-        return single(job, work, flat_base, set_state, sh, tune, classic)
+        return single(job, work, flat_base, set_state, sh, tune)
     found = frames(job, sh)
     P.note(job, f"ai ({method}): {len(found)} frames")
     if method == "claude":

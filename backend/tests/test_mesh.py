@@ -120,6 +120,30 @@ def test_ground_rejects_plane_with_points_below():
     assert M.find_ground(np.vstack([ledge, column]), thresh=0.01) is None
 
 
+def test_visual_hull_is_the_sphere_down_to_the_table():
+    s = scene()
+    c = M.clean_cloud(**s)
+    hull = M.visual_hull(s["views"], s["masks"], 1, c, cells=64)
+    assert hull.is_watertight
+    lo, hi = hull.bounds
+    assert lo[2] == pytest.approx(c.ground_z, abs=0.1)  # стои върху масата
+    assert hi[2] - c.ground_z == pytest.approx(2, abs=0.15)
+    assert 1.9 < hull.extents[0] < 2.4 and 1.9 < hull.extents[1] < 2.4
+
+
+def test_hull_fills_parts_without_points():
+    # Гъстото съпоставяне не е намерило нищо по половината кълбо (например еднообразна черна страна): формата трябва
+    # да остане кръгла.
+    s = scene()
+    c = M.clean_cloud(**s)
+    half = c.points[:, 0] < np.median(c.points[:, 0])
+    c.points, c.normals, c.colors = c.points[half], c.normals[half], c.colors[half]
+    mesh = M.poisson(c, M.visual_hull(s["views"], s["masks"], 1, c, cells=64), depth=7)
+    out = M.make_printable(mesh, M.floor_z(c), flat_base=True)
+    x, y, z = out.extents
+    assert x == pytest.approx(y, rel=0.1)  # кръгло, не половин кълбо или петно
+
+
 def test_object_not_found_is_a_clear_error():
     s = scene()
     s["masks"] = [m * 0 for m in s["masks"]]
@@ -127,10 +151,8 @@ def test_object_not_found_is_a_clear_error():
         M.clean_cloud(**s)
 
 
-def test_make_printable(cloud):
-    # Кълбото на сцената (радиус 1, центърът му на 1 над масата), слято леко под масата, както от сливането.
-    centre = [*cloud.points[:, :2].mean(0), cloud.ground_z + 0.95]
-    mesh = trimesh.creation.icosphere(subdivisions=4).apply_translation(centre)
+def test_poisson_and_make_printable(cloud):
+    mesh = M.poisson(cloud, depth=7)
     # Отделен носещ се фрагмент, който трябва да отпадне.
     junk = trimesh.creation.icosphere(radius=0.1).apply_translation([3, 3, cloud.ground_z + 2])
     mesh = trimesh.util.concatenate([mesh, junk])

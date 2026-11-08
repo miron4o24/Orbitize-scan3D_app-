@@ -43,17 +43,18 @@ export type Report = {
   volume_mm3?: number;
   area_mm2?: number;
   edit?: { prompt: string; changes: string[]; source: string | null }; // създаден чрез текстова промяна (Pro)
-  classic?: boolean; // AI моделът по предишния начин
 };
 
 export type Geometry = { dimensions_mm: [number, number, number]; volume_mm3: number; area_mm2: number };
 
-// AI моделите (сървър app/ai.py): single (за всички, на сървъра: очертанията на предмета, изрязани с AI във всеки
-// кадър, в които се сливат измерената и AI дълбочината, със снимките като текстура; TripoSR от един кадър е резервен
-// вариант), claude и photo (платени услуги, изключени, докато сървърът няма ключове за тях). edit: текстова промяна на
-// модел (сървър app/edit.py), направена от екрана за преглед.
+// Pro (сървър app/ai.py): експресното сканиране за около 5 минути и AI моделите: single (безплатен, на сървъра:
+// очертанията на предмета, изрязани с AI във всеки кадър, в които се сливат измерената и AI дълбочината, със снимките
+// като текстура; TripoSR от един кадър е резервен вариант), claude и photo (платени услуги, изключени, докато
+// сървърът няма ключове за тях). edit: текстова промяна на модел (сървър app/edit.py), направена от екрана за
+// преглед.
 export type AiMethod = 'single' | 'claude' | 'photo';
-export type Method = 'edit' | AiMethod;
+export type ProMethod = 'express' | 'edit' | AiMethod;
+export type Method = 'scan' | ProMethod;
 
 export type ResultFormat = 'glb' | 'stl' | 'obj' | '3mf';
 
@@ -149,9 +150,10 @@ export type Health = { ok: boolean; accounts?: boolean; database?: string; googl
 export const health = () => call<Health>('GET', '/health');
 export const createJob = () => call<Job>('POST', '/jobs');
 export const getJob = (id: string) => call<Job>('GET', `/jobs/${id}`);
+// quality: сървъри отпреди бързите сканирания го пренебрегват и обработват с пълни детайли. method: AI модел (Pro).
 export const startJob = (
   id: string,
-  params: { flat_base: boolean; video_bytes?: number; method: 'single'; extend?: string },
+  params: { flat_base: boolean; video_bytes?: number; quality?: 'quick' | 'detailed'; method?: Method; extend?: string },
 ) => call<Job>('POST', `/jobs/${id}/start`, params);
 export const cancelJob = (id: string) => call<Job>('DELETE', `/jobs/${id}`);
 
