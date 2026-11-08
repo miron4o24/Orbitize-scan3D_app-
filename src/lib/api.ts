@@ -36,14 +36,40 @@ export type Report = {
   photos_total?: number;
   seconds?: number;
   object_width?: number; // медианният дял от ширината на кадъра, който заема предметът
-  ai?: AiMethod; // създаден от AI (Pro), а не сканиран
+  ai?: AiMethod | 'cad'; // създаден от AI (Pro) или в инженерния режим, а не сканиран
   object?: string; // какво е видял AI, на български
   real_mm?: number | null; // реалната най-дълга страна: оценка на AI или резултат от текстова промяна
   // при размер 100 мм, за оценката на печата (lib/printEstimate.ts); за по-стари сканирания: getGeometry
   volume_mm3?: number;
   area_mm2?: number;
   edit?: { prompt: string; changes: string[]; source: string | null }; // създаден чрез текстова промяна (Pro)
+  cad?: CadReport; // инженерният режим: CAD модел от елементи (сървър app/engineer.py)
 };
+
+// Инженерният режим (сървър app/engineer.py): снимки и мерки с шублер -> CAD модел 1:1 от елементи (STEP, код на
+// CadQuery). local: безплатно на сървъра; claude: само собственикът, по абонамента му в Claude Code.
+export type CadFeatureKind = 'hole' | 'diameter' | 'thickness' | 'other';
+export type CadFeature = { kind: CadFeatureKind; value: number; label?: string };
+export type CadEngine = 'local' | 'claude';
+export type CadParams = { length?: number; width?: number; height?: number; features: CadFeature[]; engine: CadEngine };
+export type CadCheck = {
+  size_mm: { length: number; width: number; height: number };
+  off_from_measured_mm: Record<string, number>;
+  deviation_from_scan_mm: { mean: number; p90: number };
+};
+export type CadReport = {
+  engine: CadEngine; // кой направи модела накрая (claude може да е паднал обратно на local)
+  claude_failed?: boolean;
+  rounds?: number;
+  claude?: CadCheck;
+  local: {
+    size_mm: [number, number, number];
+    elements: string[]; // на български, по реда в кода
+    deviation_mm: { mean: number; p90: number };
+    notes: string[];
+  };
+};
+export type CadFile = 'part.step' | 'part.py' | 'part.stl' | 'compare.png';
 
 export type Geometry = { dimensions_mm: [number, number, number]; volume_mm3: number; area_mm2: number };
 
@@ -53,7 +79,7 @@ export type Geometry = { dimensions_mm: [number, number, number]; volume_mm3: nu
 // сървърът няма ключове за тях). edit: текстова промяна на модел (сървър app/edit.py), направена от екрана за
 // преглед.
 export type AiMethod = 'single' | 'claude' | 'photo';
-export type ProMethod = 'express' | 'edit' | AiMethod;
+export type ProMethod = 'express' | 'edit' | 'cad' | AiMethod;
 export type Method = 'scan' | ProMethod;
 
 export type ResultFormat = 'glb' | 'stl' | 'obj' | '3mf';
@@ -153,7 +179,14 @@ export const getJob = (id: string) => call<Job>('GET', `/jobs/${id}`);
 // quality: сървъри отпреди бързите сканирания го пренебрегват и обработват с пълни детайли. method: AI модел (Pro).
 export const startJob = (
   id: string,
-  params: { flat_base: boolean; video_bytes?: number; quality?: 'quick' | 'detailed'; method?: Method; extend?: string },
+  params: {
+    flat_base: boolean;
+    video_bytes?: number;
+    quality?: 'quick' | 'detailed';
+    method?: Method;
+    extend?: string;
+    cad?: CadParams;
+  },
 ) => call<Job>('POST', `/jobs/${id}/start`, params);
 export const cancelJob = (id: string) => call<Job>('DELETE', `/jobs/${id}`);
 
@@ -235,6 +268,10 @@ export const downloadResult = (jobId: string, format: ResultFormat, dest: File, 
   retrying(() =>
     File.downloadFileAsync(resultUrl(jobId, format, longestMm, smooth), dest, { headers: headers(), idempotent: true }),
   );
+
+// Файловете на инженерния режим (сървър GET /jobs/{id}/cad/{name}).
+export const downloadCadFile = (jobId: string, name: CadFile, dest: File) =>
+  retrying(() => File.downloadFileAsync(`${API_URL}/jobs/${jobId}/cad/${name}`, dest, { headers: headers(), idempotent: true }));
 
 // Подписани линкове към модела в реален размер за AR (lib/ar.ts), които браузърът отваря без нашия ключ: `page`
 // (сървъри отпреди него изпращат само `url`, тоест GLB). Сървърът първо създава файла, затова това отнема няколко

@@ -74,6 +74,9 @@ const SUBSTEPS: Record<string, string> = {
   'downloading the model': 'Получаване на модела',
   'understanding the request': 'Разчитане на промяната',
   'finding the part': 'Намиране на частта от модела',
+  // Инженерният режим
+  'CAD model': 'Изграждане на CAD модела от елементи',
+  'CAD by Claude': 'Claude проектира детайла',
 };
 // Текстовата промяна (Pro) минава през тези вместо това.
 const EDIT_STEPS: [string, string][] = [
@@ -146,6 +149,23 @@ const PRO_PLANS: Record<ProMethod, [string, number][]> = {
     ['fusing depth', 40],
     ['cleaning', 20],
     ['texturing', 20],
+  ],
+  // 8 до 20 снимки: сканирането, после CAD моделът (с Claude още няколко минути).
+  cad: [
+    ['feature extraction', 8],
+    ['photo matching', 15],
+    ['camera solving', 10],
+    ['finding the object', 30],
+    ['undistorting', 2],
+    ['sharpening the outlines', 40],
+    ['dense setup', 1],
+    ['dense matching', 60],
+    ['estimating depth', 20],
+    ['fusing depth', 30],
+    ['texturing', 15],
+    ['CAD model', 75],
+    ['CAD by Claude', 300],
+    ['cleaning', 5],
   ],
   claude: [
     ['reading video', 5],
@@ -325,7 +345,8 @@ export default function Processing() {
       const now = getScan(id) ?? scan!;
       // Само предлаганите два начина: друг начин от по-старо сканиране (express, quick) се опитва отново като
       // стандартно сканиране.
-      const chosen = now.method === 'single' && aiAvailable() ? 'single' : undefined;
+      // Инженерният режим остава такъв: снимките и мерките са за него.
+      const chosen = now.method === 'cad' ? 'cad' : now.method === 'single' && aiAvailable() ? 'single' : undefined;
       update({ method: chosen, quality: undefined });
       const started = await retrying(() =>
         startJob(job.id, {
@@ -333,6 +354,7 @@ export default function Processing() {
           quality: 'detailed',
           ...(hasVideo && { video_bytes: video.size }),
           ...(chosen && { method: chosen }),
+          ...(chosen === 'cad' && now.cad && { cad: now.cad }),
           ...(now.extendFrom && { extend: now.extendFrom }),
         }),
       ).catch((e) => {
@@ -474,13 +496,18 @@ export default function Processing() {
   const uploading = uploaded !== null;
   const way = method === 'single' && canAi ? 'single' : 'scan';
   const failed = scan.status === 'failed';
+  const engineering = method === 'cad';
   return (
     <Screen>
       <Header title={failed ? 'Сканирането не успя' : 'Готово за качване'} />
       {failed && (
         <Appear index={1} style={s.failed}>
           <ErrorText>{failureText(scan.error)}</ErrorText>
-          <Small>Опитайте с ново видео: бавно, отблизо и на светло.</Small>
+          <Small>
+            {engineering
+              ? 'Снимайте отново: 10 до 20 снимки в кръг, детайлът върху шарена подложка, на светло.'
+              : 'Опитайте с ново видео: бавно, отблизо и на светло.'}
+          </Small>
           {owner &&
             (log === null ? (
               <Button title="Данни от сървъра" variant="secondary" onPress={showLog} />
@@ -494,7 +521,18 @@ export default function Processing() {
         </Appear>
       )}
       {info && <Small>{info}</Small>}
-      {canAi && (
+      {engineering && scan.cad && (
+        <Appear index={2}>
+          <Section label={PRO_INFO.cad.label}>
+            <Small>
+              {`${photos.length} снимки · ${[scan.cad.length, scan.cad.width, scan.cad.height].filter(Boolean).join(' × ')} мм` +
+                (scan.cad.features.length ? ` · мерки: ${scan.cad.features.length}` : '') +
+                (scan.cad.engine === 'claude' ? ' · Claude' : '')}
+            </Small>
+          </Section>
+        </Appear>
+      )}
+      {canAi && !engineering && (
         <Appear index={2}>
           <Section label="Начин">
             <Segmented<'scan' | 'single'>
@@ -509,7 +547,7 @@ export default function Processing() {
           </Section>
         </Appear>
       )}
-      <Appear index={3}>
+      <Appear index={3} style={engineering && s.hidden}>
         <Card style={s.list}>
           <Row
             label="Равна основа"
@@ -552,6 +590,7 @@ export default function Processing() {
 
 const useStyles = makeStyles((c) => ({
   flex: { flex: 1 },
+  hidden: { display: 'none' },
   muted: { color: c.muted },
   row: { flexDirection: 'row', alignItems: 'center', gap: space.md },
   overall: { gap: space.md },

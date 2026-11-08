@@ -21,7 +21,7 @@ export type Profile = {
   billing?: boolean; // Pro може да се купи в приложението (сървърът е настроен за това)
   pro_product?: string; // продуктът му в магазина
   owner?: boolean;
-  ai?: Partial<Record<ProMethod, boolean>>;
+  ai?: Partial<Record<ProMethod | 'cad_claude', boolean>>; // cad_claude: Claude Code е настроен за инженерния режим
   // Броените използвания от безплатния план (сървър app/plans.py): limit е null при Pro; refs: вече преброените
   // модели
   limits?: Record<LimitKind, { used: number; limit: number | null; refs: string[] }>;
