@@ -40,7 +40,7 @@ export function badgeOf(status: ScanStatus): BadgeKind {
 /* Създаден от AI: AI модел или текстова промяна на модел. */
 export function isAi(entry: Entry): boolean {
   const report = entry.server?.report ?? entry.scan?.report;
-  const method: string | undefined = entry.scan?.method; // по-стари сканирания: "scan" или "express"
+  const method = entry.scan?.method;
   return !!report?.ai || !!report?.edit || (!!method && method !== 'scan' && method !== 'express');
 }
 

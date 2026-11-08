@@ -13,7 +13,6 @@ from typing import Annotated, Literal
 
 import trimesh
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
-from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from . import accounts as A
@@ -106,7 +105,7 @@ def list_jobs():
 def get_job(job_id: str, p: Principal = Depends(principal)):
     s = existing(job_id, p)
     # ahead: чака реда си, колко са преди него (включително обработваната задача).
-    return jobs.public(job_id) | {"ahead": worker.ahead(job_id) if s["state"] == "queued" else None}
+    return jobs.public(job_id) | {"ahead": worker.ahead(job_id, s.get("params")) if s["state"] == "queued" else None}
 
 
 @app.get("/jobs/{job_id}/log")
@@ -142,33 +141,6 @@ def get_frames(job_id: str, p: Principal = Depends(principal)):
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="frames-{job_id[:8]}.zip"'},
     )
-
-
-@app.get("/jobs/{job_id}/fuse_debug.npz", dependencies=[Depends(admin_only)])
-def get_fuse_debug(job_id: str):
-    """Входът на сливането на тестова задача (Tune.debug): python app/fuse.py --replay <файл> <out.ply>."""
-    path = jobs.job_dir(job_id) / PI.FUSE_DEBUG if ID_RE.match(job_id) else None
-    if path is None or not path.exists():
-        raise HTTPException(404, "Няма запис на сливането.")
-    return FileResponse(path, media_type="application/octet-stream", filename=f"fuse-{job_id[:8]}.npz")
-
-
-@app.post("/jobs/{job_id}/copy", dependencies=[Depends(admin_only)])
-def copy_job(job_id: str, p: Principal = Depends(principal)):
-    """Нова задача (на администратора) с кадрите и дневника на положението на тази: за тестова обработка, без да се
-    променя моделът на потребителя."""
-    source = existing(job_id, p)
-    frames = sorted((jobs.job_dir(job_id) / "photos").glob("*.jp*g"))
-    if source["state"] not in ("done", "failed") or not frames:
-        raise HTTPException(409, "Тази задача няма запазени кадри.")
-    copy = jobs.create(test=True)
-    d = jobs.job_dir(copy)
-    for f in frames:
-        shutil.copy(f, d / "photos" / f.name)
-    for name in (MO.MOTION, MO.FRAME_TIMES):
-        if (jobs.job_dir(job_id) / name).exists():
-            shutil.copy(jobs.job_dir(job_id) / name, d / name)
-    return jobs.public(copy)
 
 
 @app.put("/jobs/{job_id}/photos/{name}")
@@ -256,18 +228,15 @@ class Tune(BaseModel):
     no_geo: bool = False  # гъсто съпоставяне без втория, проверяващ проход
     passes: int | None = Field(None, ge=1, le=3)  # проходите за гласуване при сливането
     features: int | None = Field(None, ge=2000, le=8192)  # най-много особености на кадър за решаващия алгоритъм
-    normals_every: int | None = Field(None, ge=1, le=4)  # посоките на повърхността от всеки толкова кадър
-    rescue: bool | None = None  # дълбочината от DA3 за неподходящите кадри: True винаги, False никога (app/rescue.py)
-    debug: bool = False  # записва входа на сливането (GET /jobs/{id}/fuse_debug.npz), за да се повтори другаде
 
 
 class StartParams(BaseModel):
     flat_base: bool = True
     video_bytes: int | None = None  # размерът на файла в приложението, за да не се обработва никога наполовина качено видео
-    # single: AI моделът от видео (за всички). Pro: claude, photo (AI моделите, изискващи платени ключове; app/ai.py).
-    # scan или express от по-старо приложение е single (start_job).
-    method: Literal["single", "claude", "photo", "scan", "express"] = "single"
-    classic: bool = False  # AI моделът по предишния начин: без посоките на повърхността (app/normals.py)
+    quality: Literal["detailed", "quick"] = "detailed"  # quick: по-малко и по-малки кадри (pipeline.run)
+    # scan: сканирането за около 35 минути (за всички). Pro: single, AI моделът (claude, photo: AI моделите, изискващи
+    # платени ключове; app/ai.py). quick или express от по-старо приложение е scan (start_job).
+    method: Literal["scan", "express", "single", "claude", "photo"] = "scan"
     tune: Tune | None = None
     extend: str | None = Field(None, pattern=r"^[0-9a-f]{32}$")  # това видео добавя липсваща страна към този модел
 
@@ -285,22 +254,31 @@ def start_job(job_id: str, params: StartParams, p: Principal = Depends(principal
     if params.video_bytes is not None and params.video_bytes != status["video_bytes"]:
         raise HTTPException(400, "Видеото не се качи докрай. Опитайте отново.")
     n = len(status["received"])
+    params.quality = "detailed"
     if not p.admin:
         params.tune = None
-    if params.method in ("scan", "express"):
-        params.method = "single"
-    if params.method != "single" and not A.is_pro(p):
-        raise HTTPException(403, "Това е само за Pro профили.")
-    if not AI.available()[params.method]:
-        raise HTTPException(503, "Тази AI услуга още не е включена.")
-    if not status["video_bytes"] and n < 1:
+    if params.method == "express":
+        params.method = "scan"
+    pro = params.method != "scan"
+    trial = False
+    if pro:
+        if not A.is_pro(p):
+            if params.method != "single":
+                raise HTTPException(403, "Това е само за Pro профили.")
+            PL.check(p, "ai", job_id)  # единственият AI модел на безплатен профил; 402, когато е използван
+            trial = True
+        if not AI.available()[params.method]:
+            raise HTTPException(503, "Тази AI услуга още не е включена.")
+    if not status["video_bytes"] and n < (1 if params.method in AI.METHODS else MIN_PHOTOS):
         raise HTTPException(400, f"Нужно е видео или поне {MIN_PHOTOS} снимки.")
-    if worker.q.qsize() >= MAX_QUEUED:
+    if (worker.ai_q if pro else worker.q).qsize() >= MAX_QUEUED:
         raise HTTPException(503, "Твърде много сканирания чакат в момента. Опитайте по-късно.")
     if params.extend:
         if not status["video_bytes"] or params.extend == job_id:
             raise HTTPException(400, "За допълнение е нужно ново видео.")
         add_frames_of(existing(params.extend, p), params.extend, job_id)
+    if trial:
+        PL.record(p, "ai", job_id)
     worker.submit(job_id, params.model_dump(exclude={"extend"}))
     return jobs.public(job_id)
 

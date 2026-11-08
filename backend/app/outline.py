@@ -11,7 +11,6 @@
 Координати: световни (на камерите, COLMAP) и на облака (света, завъртян с to_up, z нагоре, като Cloud от
 app/mesh.py)."""
 
-import sys
 from dataclasses import replace
 from pathlib import Path
 from typing import Callable
@@ -22,8 +21,6 @@ from PIL import Image
 from scipy import ndimage
 
 from . import mesh as M
-from . import normals as NO
-from . import rescue as RS
 from . import parallel as PAR
 from . import pipeline as P
 from . import segment as S
@@ -142,66 +139,17 @@ def dense_areas(views: M.Views, masks: list, cloud: M.Cloud) -> list[np.ndarray]
     return PAR.each(area, zip(views.R, views.t, views.K, masks))
 
 
-def surface_directions(job: Path, work: Path, dense: Path, views: M.Views, sh, every: int | None = None) -> Path | None:
-    """Посоките на повърхността във всяко изрязване (app/normals.py) или None: няма модел, няма изрязвания или
-    стъпката се е провалила (тогава сливането е като преди)."""
-    crops = work / P.CROPS
-    if not NO.ready():
-        P.note(job, f"AI model: surface directions skipped, model missing ({NO.MODEL})")
-        return None
-    if not crops.exists():
-        return None
-    names, out = work / "normals_names.txt", work / "normals.npz"
-    names.write_text("\n".join(views.names), encoding="utf-8")
-    try:
-        sh("estimating detail", [sys.executable, NO.__file__, dense / "images", crops, names, out,
-                                 str(every or NO.EVERY)])  # fmt: skip
-    except P.Failed as e:
-        P.note(job, f"AI model: surface directions failed ({e}); fitted AI depth only")
-        return None
-    return out if out.exists() else None
-
-
-def rescue_depth(job: Path, work: Path, dense: Path, views: M.Views, sh, force: bool | None = None) -> Path | None:
-    """Дълбочината от DA3 (app/rescue.py) за кадрите, чиято AI дълбочина не пасва на измерената, или None: всички
-    пасват (или твърде малко не пасват), няма модел или стъпката се е провалила. force: True пуска и при малко
-    неподходящи кадри, False никога."""
-    crops = work / P.CROPS
-    if force is False or not crops.exists():
-        return None
-    if not RS.ready():
-        P.note(job, f"AI model: DA3 depth skipped, model missing ({RS.WEIGHTS})")
-        return None
-    bad = RS.failing(dense, views.names, crops)
-    if not bad or (not force and len(bad) < max(RS.MIN_LEFT, RS.MIN_SHARE * len(views))):
-        P.note(job, f"AI model: {len(bad)} of {len(views)} frames' depth maps do not fit; DA3 not needed")
-        return None
-    pick = RS.chosen(len(views), bad)
-    inputs, out = work / "rescue_inputs.npz", work / "rescue.npz"
-    np.savez(inputs, names=np.array(views.names), R=views.R, t=views.t, K=views.K, pick=np.array(pick),
-             want=np.array(bad))  # fmt: skip
-    P.note(job, f"AI model: {len(bad)} of {len(views)} frames' depth maps do not fit; DA3 depth from {len(pick)} frames")
-    try:
-        sh("rescuing depth", [sys.executable, RS.__file__, dense / "images", inputs, out])
-    except P.Failed as e:
-        P.note(job, f"AI model: DA3 depth failed ({e}); those frames are left out")
-        return None
-    return out if out.exists() else None
-
-
 def measured(job: Path, work: Path, dense: Path, views: M.Views, masks: list, cloud: M.Cloud, up: np.ndarray | None,
              agree: float, set_state: Callable[[str], None], sh: Callable[[str, list], None], side: int = SIDE,
              voxel: float = VOXEL, fixed: bool = False, table: bool = True, flap: float | None = None,
-             wide: bool = False, geometric: bool = True, passes: int | None = None, debug: bool = False,
-             detail: bool = True, normals_every: int | None = None, rescue: bool | None = None):  # fmt: skip
+             wide: bool = False, geometric: bool = True, passes: int | None = None):  # fmt: skip
     """Повърхността на модела (координати на облака) и облакът, в който е: измерената между кадрите дълбочина
     (OpenMVS, в маските) и AI дълбочината, слети във формата от очертанията; самата форма, когато измерването или
     сливането се провали (dense: коригираните кадри, моделът на COLMAP в dense/sparse). side: размерът на кадрите;
     voxel: мрежата на сливането; fixed: формата точно при `agree`, без избор; table: използва масата на решаващия
     алгоритъм (на `cloud`, намерена сред точките му); flap: fuse.FLAP на сливането; wide: гъсто съпоставяне в
     областта на сканиране вместо около предмета; geometric: вторият му проверяващ проход; passes: fuse.PASSES на
-    сливането; debug: записва входа на сливането (pipeline.FUSE_DEBUG); detail: формата отблизо от посоките на
-    повърхността (app/normals.py), иначе само от напасната AI дълбочина (предишният начин)."""
+    сливането."""
     solvers = cloud.ground_z if table else None
     mask_dir = work / "dense_masks"
     mask_dir.mkdir(exist_ok=True)
@@ -223,8 +171,7 @@ def measured(job: Path, work: Path, dense: Path, views: M.Views, masks: list, cl
         neighbors = dense / "neighbors.txt"
         lines = P.neighbor_lines(views, P.mvs_indices(dense / "sparse" / "images.bin"))
         neighbors.write_text("\n".join(lines) + "\n")
-        # Съседните видео кадри силно се припокриват: стигат 4 изгледа на карта. Картите на дълбочината остават за
-        # app/fuse.py (изтриват се след него).
+        # Като при експресно сканиране (app/pipeline.py run), с уточнените маски.
         sh("dense matching", ["DensifyPointCloud", "-w", dense, "-i", dense / "scene.mvs", "-o", dense / "dense.mvs",
             "--view-neighbors-file", neighbors, "--mask-path", mask_dir, "--ignore-mask-label", "0",
             "--resolution-level", "0", "--max-resolution", str(side), "--number-views", "4",
@@ -263,10 +210,7 @@ def measured(job: Path, work: Path, dense: Path, views: M.Views, masks: list, cl
     fused = None
     if dense_cloud:
         P.carved_hull(work, dense, views, masks, cloud, sh, found)  # AI дълбочината (app/depth.py) за сливането
-        normals = surface_directions(job, work, dense, views, sh, normals_every) if detail else None
-        rescued = rescue_depth(job, work, dense, views, sh, rescue) if detail else None
-        fused = P.fused_surface(work, dense, views, cloud, outline, sh, voxel, flap, passes or P.F.PASSES, debug,
-                                normals, rescued)  # fmt: skip
+        fused = P.fused_surface(work, dense, views, cloud, outline, sh, voxel, flap, passes or P.F.PASSES)
         for p in dense.glob("*.dmap"):
             p.unlink(missing_ok=True)
     if fused is None:

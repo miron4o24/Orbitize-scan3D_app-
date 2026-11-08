@@ -203,6 +203,7 @@ function Account({ user }: { user: Profile }) {
     [
       ['stress', 'Тестове за здравина'],
       ['ar', 'Виж в стаята'],
+      ['ai', 'Безплатен AI модел'],
     ] as const
   ).filter(([kind]) => user.limits?.[kind]?.limit != null);
 

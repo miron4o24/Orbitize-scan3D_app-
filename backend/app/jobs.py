@@ -68,13 +68,20 @@ def kill(proc: subprocess.Popen):
         os.killpg(proc.pid, signal.SIGKILL)
 
 
-def create(owner: str | None = None, test: bool = False) -> str:
-    """owner: идентификаторът на потребителя (app/accounts.py); None за споделения API ключ. test: тестово копие на
-    администратора (POST /jobs/{id}/copy), което завършено не заема място от MAX_JOBS."""
+def low_priority(low: bool) -> dict:
+    """Аргументи на Popen за инструмент с приоритет под нормалния (дъщерните му процеси го наследяват)."""
+    if not low:
+        return {}
+    if WINDOWS:
+        return {"creationflags": subprocess.BELOW_NORMAL_PRIORITY_CLASS}
+    return {"preexec_fn": lambda: os.nice(10)}
+
+
+def create(owner: str | None = None) -> str:
+    """owner: идентификаторът на потребителя (app/accounts.py); None за споделения API ключ."""
     job_id = uuid.uuid4().hex
     (job_dir(job_id) / "photos").mkdir(parents=True)
-    write(job_id, id=job_id, state="uploading", created=time.time(), error=None, report=None, owner=owner,
-          **({"test": True} if test else {}))  # fmt: skip
+    write(job_id, id=job_id, state="uploading", created=time.time(), error=None, report=None, owner=owner)
     return job_id
 
 
@@ -167,11 +174,11 @@ def summaries() -> list[dict]:
 
 def count() -> int:
     """Задачи, които се броят към MAX_JOBS: всички освен завършените сканирания в профили (те имат собствено
-    ограничение) и завършените тестови копия (иначе тестовете на администратора спират качването на потребителите)."""
+    ограничение)."""
     n = 0
     for d in DATA.iterdir():
         s = read(d.name) or {}
-        n += (not s.get("owner") and not s.get("test")) or s.get("state") in ACTIVE | {"uploading"}
+        n += not s.get("owner") or s.get("state") in ACTIVE | {"uploading"}
     return n
 
 
@@ -197,24 +204,36 @@ def cleanup():
                 (d / "photos").mkdir(exist_ok=True)
 
 
+PRO_METHODS = ("express", "edit", *ai.METHODS)  # edit: текстова промяна на модел (app/edit.py)
+
+
+def is_pro(params: dict | None) -> bool:
+    return (params or {}).get("method") in PRO_METHODS
+
+
 class Worker:
-    """Една задача наведнъж: AI моделите (app/ai.py) и текстовите промени (app/edit.py)."""
+    """Две ленти с по една задача наведнъж: безплатни сканирания и тези на Pro (експресното сканиране за около 5
+    минути и AI моделите: app/ai.py). Двете делят машината, затова инструментите на безплатната лента са с по-нисък
+    приоритет: задача на Pro до безплатно сканиране взема процесора първа и остава в рамките на няколкото си
+    минути, а безплатното сканиране просто отнема малко повече време."""
 
     def __init__(self):
         self.q: queue.Queue[str] = queue.Queue()
+        self.ai_q: queue.Queue[str] = queue.Queue()
         self.lock = threading.Lock()
         self.procs: dict[str, subprocess.Popen] = {}  # номер на задача -> инструментът ѝ, който работи в момента
         self.cancelled: set[str] = set()
-        self.running: str | None = None  # обработваната задача
+        self.running: dict[int, str] = {}  # лента (идентификатор на опашката ѝ) -> обработваната там задача
 
-    def ahead(self, job_id: str) -> int | None:
-        """Колко задачи са преди тази чакаща, включително обработваната; None, ако не чака."""
-        with self.q.mutex:
-            waiting = list(self.q.queue)
+    def ahead(self, job_id: str, params: dict | None) -> int | None:
+        """Колко задачи са преди тази чакаща в лентата ѝ, включително обработваната; None, ако не чака."""
+        q = self.ai_q if is_pro(params) else self.q
+        with q.mutex:
+            waiting = list(q.queue)
         if job_id not in waiting:
             return None
         before = [j for j in waiting[: waiting.index(job_id)] if j not in self.cancelled and read(j) is not None]
-        return len(before) + (1 if self.running is not None else 0)
+        return len(before) + (1 if id(q) in self.running else 0)
 
     def start(self):
         DATA.mkdir(parents=True, exist_ok=True)
@@ -223,13 +242,17 @@ class Worker:
             s = read(d.name)
             if s and s["state"] in ACTIVE:  # прекъсната от рестарт: изпълнява се отново
                 write(d.name, state="queued")
-                self.q.put(d.name)
-        threading.Thread(target=self._loop, daemon=True).start()
+                self._queue(d.name, s.get("params"))
+        for q in (self.q, self.ai_q):
+            threading.Thread(target=self._loop, args=(q,), daemon=True).start()
+
+    def _queue(self, job_id: str, params: dict | None):
+        (self.ai_q if is_pro(params) else self.q).put(job_id)
 
     def submit(self, job_id: str, params: dict):
         self.cancelled.discard(job_id)
         write(job_id, state="queued", params=params, error=None, report=None, step=None, step_started=None)
-        self.q.put(job_id)
+        self._queue(job_id, params)
 
     def cancel(self, job_id: str):
         self.cancelled.add(job_id)
@@ -237,22 +260,23 @@ class Worker:
             if proc := self.procs.get(job_id):
                 kill(proc)
 
-    def _loop(self):
+    def _loop(self, q: queue.Queue):
         while True:
             try:
-                job_id = self.q.get(timeout=3600)
+                job_id = q.get(timeout=3600)
             except queue.Empty:
-                cleanup()
+                if q is self.q:
+                    cleanup()
                 continue
             if job_id in self.cancelled or read(job_id) is None:
                 continue
-            self.running = job_id
+            self.running[id(q)] = job_id
             try:
                 self._process(job_id)
             except Exception:  # например изтрита по време на изпълнение задача; работната нишка никога не бива да умира
                 log.exception("job %s", job_id)
             finally:
-                self.running = None
+                self.running.pop(id(q), None)
 
     def _step(self, job_id: str, step: str):
         """Стъпка без инструмент (app/ai.py чака услуга): показва се в приложението и там се спира при отказ."""
@@ -265,15 +289,18 @@ class Worker:
         params = read(job_id).get("params") or {}
         started = time.time()
         set_state = lambda state: write(job_id, state=state, step=None, step_started=time.time())  # noqa: E731
-        sh = lambda step, argv: self._sh(job_id, step, argv)  # noqa: E731
+        low = not is_pro(params)
+        sh = lambda step, argv: self._sh(job_id, step, argv, low)  # noqa: E731
         method = params.get("method")
         try:
             if method == "edit":
                 report = edit.run(d, params, set_state, sh)
-            else:  # задача отпреди AI модела ("scan", "express"), прекъсната от рестарт: AI модел
-                report = ai.run(d, method if method in ai.METHODS else "single", bool(params.get("flat_base", True)),
-                                set_state, sh, lambda step: self._step(job_id, step), params.get("tune"),
-                                bool(params.get("classic")))  # fmt: skip
+            elif method in ai.METHODS:
+                report = ai.run(d, method, bool(params.get("flat_base", True)), set_state, sh,
+                                lambda step: self._step(job_id, step), params.get("tune"))  # fmt: skip
+            else:
+                report = pipeline.run(d, bool(params.get("flat_base", True)), set_state, sh,
+                                      quick=params.get("quality") == "quick", express=method == "express")  # fmt: skip
             write(job_id, state="done", step=None, report=report | {"seconds": round(time.time() - started)})
             try:
                 (d / THUMB).unlink(missing_ok=True)  # повторно изпълнение може да е избрало други кадри
@@ -296,7 +323,8 @@ class Worker:
             if final and final.get("state") in ("done", "failed") and job_id not in self.cancelled:
                 notify.job_finished(job_id, final)
 
-    def _sh(self, job_id: str, step: str, argv: list):
+    def _sh(self, job_id: str, step: str, argv: list, low: bool = False):
+        """low: приоритет под нормалния (безплатни сканирания, така че задачите на Pro до тях да минат първи)."""
         if job_id in self.cancelled:
             raise Cancelled
         write(job_id, step=step, step_started=time.time())
@@ -311,6 +339,7 @@ class Worker:
                     stderr=subprocess.STDOUT,
                     cwd=job_dir(job_id),
                     start_new_session=not WINDOWS,
+                    **low_priority(low),
                 )
             try:
                 rc = proc.wait(timeout=STEP_TIMEOUT_S)

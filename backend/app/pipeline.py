@@ -1,5 +1,4 @@
-"""Стъпките на AI модела от видео (app/ai.py, app/outline.py): кадри от видеото, положенията на камерите (COLMAP),
-гъсти точки (OpenMVS), уточнени очертания, слята дълбочина (app/fuse.py) и текстура от снимки."""
+"""Снимки (или видео кадри) -> положения на камерите (COLMAP) -> гъсти точки (OpenMVS) -> мрежа за печат (app.mesh)."""
 
 import functools
 import json
@@ -37,6 +36,16 @@ THREADS = str(os.cpu_count() or 2)
 MAX_IMAGE = os.environ.get("MAX_IMAGE_SIZE", "1600")
 MAX_POINTS = 1_500_000  # пази почистването и Поасон в рамките на няколко GB памет
 VIDEO = "video.mp4"  # в папката на задачата; съдържание MP4 или MOV, ffmpeg се води по съдържанието
+MAX_FRAME_SIDE = 1920  # кадрите за гъсто съпоставяне и всичко освен текстурата се смаляват до това
+# Бързи сканирания: гъстото съпоставяне при този размер отнема около 55% от времето. Клетките на слятата повърхност
+# (0,25% от предмета) все още покриват повече от пиксел; текстурата пази кадрите си в пълен размер.
+QUICK_FRAME_SIDE = 1440
+# Експресни сканирания (Pro, около 5 минути на 12-те нишки на сървъра): по времената на стъпките при сканиране с 80
+# кадъра съпоставянето на снимки расте с квадрата на кадрите, а останалото с кадрите; 30 кадъра, гъсто съпоставяне при
+# 1280 px, без проход на MobileSAM (1,5 мин) и клетки за сливане от 0,4% (четвърт от клетките) дават около 4-5 мин.
+EXPRESS_FRAMES = 30
+EXPRESS_FRAME_SIDE = 1280
+EXPRESS_VOXEL = 0.004
 # Един инкрементален модел с този дял от кадрите: глобалният алгоритъм не се изпълнява допълнително (помага само
 # когато инкременталният раздели сканирането на части).
 ONE_PIECE = 0.95
@@ -47,9 +56,13 @@ FREE_MARGIN = 0.02
 # съгласувано толкова добре (медиана в градуси), за да му се вярва: така дневникът на положението се проверява спрямо
 # решените камери.
 GRAVITY_AGREE = 10.0
+# Под този дял от кадрите, разположени от решаващия алгоритъм, се пробват сензорите за движение на телефона
+# (app/motion.py): едноцветна колонка върху кадифе имаше 46 от 80 разположени кадъра от част от кръга и излезе клин с
+# ръбове.
+SFM_ENOUGH = 0.85
 # Повърхността, слята от картите на дълбочината (app/fuse.py), се използва, когато гъстите точки са толкова близо до
-# нея (медиана, от размера на предмета; при дрелка 0,2%) и поне половината кадри са влезли в нея; иначе формата от
-# очертанията.
+# нея (медиана, от размера на предмета; при дрелка 0,2%) и поне половината кадри са влезли в нея; иначе Поасон върху
+# гъстите точки.
 FUSED_OFF = 0.01
 
 
@@ -376,7 +389,6 @@ def carved_hull(work: Path, dense: Path, views: M.Views, masks: list, cloud: M.C
 
 
 CROPS = "depth_crops.npz"  # в work/: изрязванията с дълбочина от app/depth.py, за app/fuse.py
-FUSE_DEBUG = "fuse_debug.npz"  # в папката на тестова задача: входът на сливането (fuse.py --replay)
 LOOSE_AGREE = 0.5  # по-свободната обвивка за app/refine.py: маските на половината кадри са съгласни
 PROMPT_MARGIN = 0.04  # от размера: колко извън по-свободната обвивка измерена точка казва "не е предмет" и колко дълбоко
 # в обвивката точка казва "предмет" (app/refine.py)
@@ -430,23 +442,19 @@ def sharpened_masks(work: Path, dense: Path, views: M.Views, masks: list, cloud:
 
 
 def fused_surface(work: Path, dense: Path, views: M.Views, cloud: M.Cloud, hull: trimesh.Trimesh | None, sh,
-                  voxel: float = F.VOXEL, flap: float | None = None, passes: int = F.PASSES, debug: bool = False,
-                  normals: Path | None = None, rescue: Path | None = None):  # fmt: skip
+                  voxel: float = F.VOXEL, flap: float | None = None, passes: int = F.PASSES):  # fmt: skip
     """Повърхността, слята от картите на дълбочината на кадрите (app/fuse.py), или None: няма обвивка или изрязвания с
-    AI дълбочина, стъпката се е провалила или гъстите точки не са съгласни с нея (тогава формата от очертанията).
-    debug: входът на сливането се записва в папката на задачата (FUSE_DEBUG); normals: посоките на повърхността от
-    app/normals.py (детайлният начин на сливане); rescue: дълбочината от DA3 за неподходящите кадри (app/rescue.py)."""
+    AI дълбочина, стъпката се е провалила или гъстите точки не са съгласни с нея (тогава Поасон върху гъстите
+    точки)."""
     crops = work / CROPS
     if hull is None or not crops.exists():
         return None
     inputs, out = work / "fuse_inputs.npz", work / "fused.ply"
     np.savez(inputs, names=np.array(views.names), to_up=cloud.to_up, voxel=voxel, flap=F.FLAP if flap is None else flap,
-             passes=passes, **({"normals": str(normals)} if normals is not None else {}),
-             **({"rescue": str(rescue)} if rescue is not None else {}),
+             passes=passes,
              ground_z=np.nan if cloud.ground_z is None else cloud.ground_z, hull_v=hull.vertices, hull_f=hull.faces)  # fmt: skip
     try:
-        sh("fusing depth", [sys.executable, F.__file__, dense, inputs, crops, out,
-                            *([work.parent / FUSE_DEBUG] if debug else [])])  # fmt: skip
+        sh("fusing depth", [sys.executable, F.__file__, dense, inputs, crops, out])
         info = json.loads(out.with_suffix(".json").read_text())
         mesh = trimesh.load(out, force="mesh")
     except (Failed, OSError, ValueError, KeyError) as e:
@@ -460,6 +468,124 @@ def fused_surface(work: Path, dense: Path, views: M.Views, cloud: M.Cloud, hull:
     note(work.parent, f"depth fusion: {info['frames']} of {info['total']} frames, dense points {off:.2%} of the size "
          "off its surface: " + ("using it" if use else "not used"))  # fmt: skip
     return mesh if use else None
+
+
+def run(
+    job: Path,
+    flat_base: bool,
+    set_state: Callable[[str], None],
+    sh: Callable[[str, list], None],
+    quick: bool = False,
+    express: bool = False,
+) -> dict:
+    """sh(step_name, argv) изпълнява един външен инструмент и хвърля грешка при неуспех. Връща отчета за печата.
+    quick: по-малко кадри и по-малки кадри за гъсто съпоставяне, за около 40% от времето (бързото сканиране в
+    приложението). express: сканирането на Pro за около 5 минути (EXPRESS_*)."""
+    side = EXPRESS_FRAME_SIDE if express else QUICK_FRAME_SIDE if quick else MAX_FRAME_SIDE
+    photos, video = job / "photos", job / VIDEO
+    work = job / "work"
+    shutil.rmtree(work, ignore_errors=True)
+    TX.clear(job)  # старата текстура на повторно изпълнена задача
+    dense = work / "dense"
+    work.mkdir(parents=True)
+
+    set_state("reconstructing")
+    if video.exists():
+        extract_frames(video, photos, work, sh, frames_to_take(job, EXPRESS_FRAMES if express else V.QUICK_FRAMES if quick else V.MAX_FRAMES))
+        merge_more_frames(job, photos)
+    n_photos = len(list(photos.glob("*.jp*g")))
+    if quick or express:
+        note(job, f"{'express' if express else 'quick'} scan: {n_photos} frames, dense matching at {side} px")
+
+    best, placed, stray, all_masks, photo_masks = solve_cameras(job, work, photos, n_photos, sh)
+    if placed < SFM_ENOUGH * n_photos and MO.load(job) is not None:
+        focal = float(np.median(read_views(best).K[:, 0])) if placed >= 10 else 0.0
+        found = by_motion(job, work, photo_masks, focal, placed, n_photos, flat_base, sh)
+        if found is not None:
+            mesh, used = found
+            width = float(np.median([S.object_width(m) for m in all_masks.values()]))
+            return finish(job, mesh) | {"photos_used": used, "photos_total": n_photos, "object_width": round(width, 3)}
+    if best is None or placed < max(10, n_photos // 3):
+        note(job, f"only {placed} of {n_photos} frames placed in 3D")
+        raise Failed(
+            "Кадрите не можаха да се съпоставят: видеото е твърде бързо или размазано, или предметът и подложката "
+            "нямат достатъчно шарка. Снимайте по-бавно, дръжте предмета в кръга и го сложете на подложка с шарка в "
+            "различен цвят от него."
+        )
+    best = drop_stray(work, best, stray, sh)
+
+    # Гъстото съпоставяне получава кадрите в пълен размер: малък предмет често е широк само няколкостотин пиксела.
+    sh("undistorting", [COLMAP, "image_undistorter", "--image_path", photos, "--input_path", best,
+        "--output_path", dense, "--output_type", "COLMAP", "--max_image_size", str(side)])  # fmt: skip
+    masks_file, dense_masks = work / "masks.npz", work / "dense_masks"
+    turned = undistort_masks(all_masks, best, dense / "sparse")
+    if turned is None:
+        sh("finding the object", [sys.executable, S.__file__, dense / "images", masks_file, dense_masks])
+    else:
+        warped, sizes = turned
+        np.savez_compressed(masks_file, **warped)
+        dense_masks.mkdir()
+        for name, m in warped.items():
+            Image.fromarray(S.dense_area(m, sizes[name])).save(dense_masks / f"{Path(name).stem}.mask.png")
+    sh("dense setup", ["InterfaceCOLMAP", "-w", dense, "-i", dense, "-o", dense / "scene.mvs",
+        "--image-folder", dense / "images"])  # fmt: skip
+    neighbors = dense / "neighbors.txt"
+    lines = neighbor_lines(read_views(dense / "sparse"), mvs_indices(dense / "sparse" / "images.bin"))
+    neighbors.write_text("\n".join(lines) + "\n")
+    # Най-бавната стъпка. Съпоставя се само областта около предмета (маските), което прави пълната разделителна
+    # способност достъпна: при половината малък предмет получаваше няколко хиляди точки и формата му идваше само от
+    # очертанието. Съседните видео кадри силно се припокриват, затова стигат 4 изгледа на карта и един геометричен
+    # проход. Без изрязване на област на интерес: маските вече ограничават работата, а собствената оценка на OpenMVS
+    # веднъж отряза всичко. Картите на дълбочината остават за app/fuse.py (изтриват се след него).
+    sh("dense matching", ["DensifyPointCloud", "-w", dense, "-i", dense / "scene.mvs", "-o", dense / "dense.mvs",
+        "--view-neighbors-file", neighbors, "--mask-path", dense_masks, "--ignore-mask-label", "0",
+        "--resolution-level", "0", "--max-resolution", str(side), "--number-views", "4",
+        "--geometric-iters", "1", "--estimate-roi", "0", "--crop-to-roi", "0", "--remove-dmaps", "0",
+        "--max-threads", THREADS])  # fmt: skip
+
+    set_state("meshing")
+    ply = dense / "dense.ply"
+    if not ply.exists():
+        raise Failed("Формата на предмета не можа да се измери. Може да е твърде лъскав, едноцветен или размазан на кадрите.")
+    pts, nrm, col = load_cloud(ply)
+    note(job, f"dense cloud: {len(pts)} points")
+    views = read_views(dense / "sparse")
+    with np.load(masks_file) as npz:
+        masks = [npz[name] for name in views.names]
+    width = float(np.median([S.object_width(m) for m in masks]))
+    note(job, f"object width: median {width:.0%} of the frame")
+    up = gravity_up(job, views)
+    cloud = M.clean_cloud(pts, nrm, col, views, masks, S.MASK_SCALE, up)
+    note(job, f"object cloud: {len(cloud.points)} points, table found: {cloud.ground_z is not None}")
+    found = M.hull_volume(views, masks, S.MASK_SCALE, cloud)
+    sharp = None if express else sharpened_masks(work, dense, views, masks, cloud, found, pts, sh)
+    if sharp is not None:  # оттук нататък всичко с по-добрите маски
+        masks = sharp
+        cloud = M.clean_cloud(pts, nrm, col, views, masks, S.MASK_SCALE, up)
+        note(job, f"object cloud: {len(cloud.points)} points, table found: {cloud.ground_z is not None}")
+        found = M.hull_volume(views, masks, S.MASK_SCALE, cloud)
+    # Гъстите точки там, където ги има, а (издълбаната) форма от очертанията в празнините им. При кутия това даде
+    # плоски страни, остри ръбове и верни пропорции; с добавени и точки от AI дълбочина страните бяха груби с ръбове,
+    # а кутията с една трета по-плоска (височина 0,65 от дължината; гъстите ѝ точки казват 0,96).
+    hull = carved_hull(work, dense, views, masks, cloud, sh, found)
+    note(job, "visual hull: " + (f"{len(hull.faces)} faces" if hull is not None else "none, using the points only"))
+    # Сливането получава формата от очертанията неиздълбана: издълбава сама, пиксел по пиксел. Издълбаването от
+    # гъстите точки отрязваше предната част на черната дръжка на дрелка (малко шумни точки там), а сливането се държи
+    # близо до обвивката си.
+    outline = M.hull_mesh(*found) if found is not None else None
+    mesh = fused_surface(work, dense, views, cloud, outline, sh, EXPRESS_VOXEL if express else F.VOXEL)
+    for p in dense.glob("*.dmap"):  # по 40 MB
+        p.unlink(missing_ok=True)
+    if mesh is None:
+        mesh = M.poisson(cloud, hull)
+
+    set_state("cleaning")
+    mesh = M.clip_to_outline(mesh, views, masks, S.MASK_SCALE, cloud)
+    M.paint(mesh, views, [dense / "images" / n for n in views.names], cloud.to_up)
+    out = M.make_printable(mesh, M.floor_z(cloud), flat_base)
+    photo_texture(job, work, photos, best, out, cloud, sh, all_masks)
+    # Приложението предлага заснемане отблизо, когато предметът е заемал малка част от кадрите (по-малко детайли).
+    return finish(job, out) | {"photos_used": placed, "photos_total": n_photos, "object_width": round(width, 3)}
 
 
 def photo_texture(job: Path, work: Path, photos: Path, best: Path, out: trimesh.Trimesh, cloud: M.Cloud, sh,
@@ -661,3 +787,22 @@ def finish(job: Path, mesh: trimesh.Trimesh) -> dict:
     (job / VIDEO).unlink(missing_ok=True)  # най-големият файл на задачата; извлечените кадри остават за отстраняване на грешки
     return M.report(mesh)
 
+
+def by_motion(job: Path, work: Path, photo_masks: Path, focal: float, placed: int, n_photos: int, flat_base: bool,
+              sh: Callable[[str, list], None]) -> tuple[trimesh.Trimesh, int] | None:  # fmt: skip
+    """Формата от положението на телефона и очертанията (app/motion.py), ако очертанията са съгласувани със сензорите
+    по-добре, отколкото с решаващия алгоритъм. Връща (мрежа за печат, използвани кадри) или None, за да се продължи с
+    алгоритъма."""
+    out = work / "sensor_shape.ply"
+    try:
+        sh("shape from motion sensors", [sys.executable, MO.__file__, job, photo_masks, f"{focal:.1f}", out,
+            "1" if flat_base else "0"])  # fmt: skip
+        info = json.loads(out.with_suffix(".json").read_text())
+    except (Failed, OSError, ValueError) as e:
+        note(job, f"sensor poses: failed ({e}); going on with the camera solver's frames")
+        return None
+    score = info["score"]
+    use = out.exists() and (score >= MO.GOOD or (score >= MO.USABLE and placed < n_photos / 2))
+    note(job, f"sensor poses: outlines agree {score:.0%} over {info['frames']} frames filmed from {info['around']}° "
+         f"around (camera solver placed {placed} of {n_photos}): " + ("using them" if use else "not used"))  # fmt: skip
+    return (trimesh.load(out, force="mesh"), info["frames"]) if use else None

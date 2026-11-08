@@ -23,7 +23,7 @@ def jpeg(color=(200, 40, 40), size=(64, 48)) -> bytes:
 def client(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
 
-    from app import accounts, ai, db, jobs, main
+    from app import accounts, db, jobs, main, pipeline
 
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{(tmp_path / 'accounts.db').as_posix()}")
     monkeypatch.delenv("GOOGLE_CLIENT_ID", raising=False)
@@ -40,13 +40,12 @@ def client(tmp_path, monkeypatch):
 
     monkeypatch.setattr(accounts, "verify_google", fake_verify)
 
-    def fake_run(job, method, flat_base, set_state, sh, step, tune=None, classic=False):
+    def fake_run(job, flat_base, set_state, sh, quick=False, express=False):
         set_state("reconstructing")
         trimesh.creation.box(extents=[1, 2, 4]).apply_translation([0, 0, 2]).export(job / "model.ply")
         return {"dimensions_mm": [25, 50, 100], "triangles": 12, "watertight": True}
 
-    monkeypatch.setattr(ai, "run", fake_run)
-    monkeypatch.setattr(ai, "available", lambda: {"edit": True, "single": True, "claude": False, "photo": False})
+    monkeypatch.setattr(pipeline, "run", fake_run)
     with TestClient(main.app) as c:
         yield c
     db.reset()

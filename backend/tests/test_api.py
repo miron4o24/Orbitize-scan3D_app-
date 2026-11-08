@@ -15,17 +15,16 @@ os.environ["API_TOKEN"] = "test-token-123"
 def client(tmp_path, monkeypatch):
     from fastapi.testclient import TestClient
 
-    from app import ai, jobs, main
+    from app import jobs, main, pipeline
 
     monkeypatch.setattr(jobs, "DATA", tmp_path)
 
-    def fake_run(job, method, flat_base, set_state, sh, step, tune=None, classic=False):
+    def fake_run(job, flat_base, set_state, sh, quick=False, express=False):
         set_state("reconstructing")
         trimesh.creation.box(extents=[1, 2, 4]).apply_translation([0, 0, 2]).export(job / "model.ply")
         return {"dimensions_mm": [25, 50, 100], "triangles": 12, "watertight": True}
 
-    monkeypatch.setattr(ai, "run", fake_run)
-    monkeypatch.setattr(ai, "available", lambda: {"edit": True, "single": True, "claude": False, "photo": False})
+    monkeypatch.setattr(pipeline, "run", fake_run)
     with TestClient(main.app, headers={"Authorization": "Bearer test-token-123"}) as c:
         yield c
 
@@ -88,14 +87,14 @@ def test_full_lifecycle(client):
 def test_failed_job_log_and_list(client, monkeypatch):
     import sys
 
-    from app import ai, pipeline
+    from app import pipeline
 
-    def failing_run(job, method, flat_base, set_state, sh, step, tune=None, classic=False):
+    def failing_run(job, flat_base, set_state, sh, quick=False, express=False):
         set_state("reconstructing")
         sh("camera solving", [sys.executable, "-c", "print('early' + chr(13) + 'final')"])
         raise pipeline.Failed("Only 3 of 90 frames could be placed in 3D.")
 
-    monkeypatch.setattr(ai, "run", failing_run)
+    monkeypatch.setattr(pipeline, "run", failing_run)
     job_id = client.post("/jobs").json()["id"]
     for i in range(8):
         client.put(f"/jobs/{job_id}/photos/img_{i:04d}.jpg", content=JPEG)
@@ -166,17 +165,6 @@ def test_limits(client, monkeypatch):
     monkeypatch.setattr(main, "MAX_JOBS", 2)
     assert client.post("/jobs").status_code == 200
     assert client.post("/jobs").status_code == 200
-    assert client.post("/jobs").status_code == 503
-
-
-def test_finished_test_copies_do_not_fill_the_limit(client, monkeypatch):
-    from app import jobs, main
-
-    monkeypatch.setattr(main, "MAX_JOBS", 2)
-    for _ in range(3):
-        jobs.write(jobs.create(test=True), state="done")
-    assert client.post("/jobs").status_code == 200
-    jobs.create(test=True)  # still uploading: counts
     assert client.post("/jobs").status_code == 503
 
 
