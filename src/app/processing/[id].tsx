@@ -17,8 +17,8 @@ import Animated, {
 } from 'react-native-reanimated';
 
 import { Appear, CountUp, LiveDot } from '@/components/motion';
-import { Button, Card, ErrorText, H3, Header, Mono, Row, Screen, Section, Segmented, Small } from '@/components/ui';
-import { CLASSIC_INFO, PRO_INFO } from '@/lib/prefs';
+import { Button, Card, ErrorText, H3, Header, Mono, Row, Screen, Small } from '@/components/ui';
+import { PRO_INFO } from '@/lib/prefs';
 import { checkProgress } from '@/lib/progress';
 import { setUpPush } from '@/lib/push';
 import { useSession } from '@/lib/session';
@@ -292,7 +292,6 @@ export default function Processing() {
         startJob(job.id, {
           flat_base: now.flatBase ?? true,
           method: 'single',
-          ...(now.classic && { classic: true }),
           ...(hasVideo && { video_bytes: video.size }),
           ...(now.extendFrom && { extend: now.extendFrom }),
         }),
@@ -350,7 +349,7 @@ export default function Processing() {
     );
 
   if (active) {
-    const total = method === 'single' && scan.classic ? CLASSIC_INFO.minutes : PRO_INFO[method].minutes;
+    const total = PRO_INFO[method].minutes;
     const queued = scan.status === 'queued';
     const share = queued ? 0 : progress;
     const left = Math.max(1, Math.round(total * (1 - share)));
@@ -358,7 +357,7 @@ export default function Processing() {
     const at = steps.findIndex(([st]) => st === scan.status);
     return (
       <Screen>
-        <Header kicker={method === 'single' && scan.classic ? CLASSIC_INFO.label : PRO_INFO[method].label} title={scanTitle(scan)} />
+        <Header kicker={PRO_INFO[method].label} title={scanTitle(scan)} />
         <Appear index={1}>
           <Card style={s.overall}>
             <View style={s.row}>
@@ -452,19 +451,6 @@ export default function Processing() {
         </Appear>
       )}
       {info && <Small>{info}</Small>}
-      <Appear index={2}>
-        <Section label="Начин">
-          <Segmented<'new' | 'classic'>
-            value={scan.classic ? 'classic' : 'new'}
-            onChange={(m) => update({ classic: m === 'classic' })}
-            options={[
-              { value: 'new', label: PRO_INFO.single.label },
-              { value: 'classic', label: 'Предишен' },
-            ]}
-          />
-          <Small>{scan.classic ? `${CLASSIC_INFO.time} · по-груби гладки части` : `${PRO_INFO.single.time} · по-гладък и с повече детайли`}</Small>
-        </Section>
-      </Appear>
       <Appear index={3}>
         <Card style={s.list}>
           <Row

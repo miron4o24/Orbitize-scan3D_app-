@@ -151,7 +151,7 @@ export const createJob = () => call<Job>('POST', '/jobs');
 export const getJob = (id: string) => call<Job>('GET', `/jobs/${id}`);
 export const startJob = (
   id: string,
-  params: { flat_base: boolean; video_bytes?: number; method: 'single'; classic?: boolean; extend?: string },
+  params: { flat_base: boolean; video_bytes?: number; method: 'single'; extend?: string },
 ) => call<Job>('POST', `/jobs/${id}/start`, params);
 export const cancelJob = (id: string) => call<Job>('DELETE', `/jobs/${id}`);
 
