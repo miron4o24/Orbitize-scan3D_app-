@@ -76,8 +76,62 @@ def chosen(n: int, bad: list[int]) -> list[int]:
     return sorted(set(bad) | set(good))
 
 
+def vision_stubs(force: bool = False) -> None:
+    """torchvision и cv2 са нужни на DA3 само за подготовката на кадъра (нормализиране, изрязване, смяна на размера).
+    Без тях (сървърът не ги инсталира: torchvision би сменил вече заредения torch при обновяване) ги заместват тези."""
+    import torch
+
+    try:
+        if force:
+            raise ImportError
+        import torchvision.transforms  # noqa: F401
+    except ImportError:
+        tv = types.ModuleType("torchvision")
+        T = types.ModuleType("torchvision.transforms")
+
+        class ToTensor:
+            def __call__(self, img):
+                return torch.from_numpy(np.asarray(img, np.float32).transpose(2, 0, 1).copy() / 255)
+
+        class Normalize:
+            def __init__(self, mean, std):
+                self.mean = torch.tensor(mean).view(-1, 1, 1)
+                self.std = torch.tensor(std).view(-1, 1, 1)
+
+            def __call__(self, t):
+                return (t - self.mean) / self.std
+
+        class CenterCrop:
+            def __init__(self, size):
+                self.h, self.w = size
+
+            def __call__(self, t):
+                H, W = t.shape[-2:]
+                y, x = (H - self.h) // 2, (W - self.w) // 2
+                return t[..., y : y + self.h, x : x + self.w]
+
+        T.ToTensor, T.Normalize, T.CenterCrop = ToTensor, Normalize, CenterCrop
+        tv.transforms = T
+        sys.modules["torchvision"], sys.modules["torchvision.transforms"] = tv, T
+    try:
+        if force:
+            raise ImportError
+        import cv2  # noqa: F401
+    except ImportError:
+        cv = types.ModuleType("cv2")
+        cv.INTER_LINEAR, cv.INTER_CUBIC, cv.INTER_AREA = 1, 2, 3
+
+        def resize(arr, size, interpolation=1):
+            way = {2: Image.BICUBIC, 3: Image.BOX}.get(interpolation, Image.BILINEAR)
+            return np.asarray(Image.fromarray(np.asarray(arr)).resize(tuple(int(s) for s in size), way))
+
+        cv.resize = resize
+        sys.modules["cv2"] = cv
+
+
 def model():
     """DA3 от tools/da3: кодът му внася модули само за износ и за подравняване с evo, които тук не трябват."""
+    vision_stubs(os.environ.get("DA3_STUBS") == "1")
     sys.path.insert(0, str(CODE))
     traj = types.ModuleType("evo.core.trajectory")
 

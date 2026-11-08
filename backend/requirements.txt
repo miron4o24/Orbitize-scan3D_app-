@@ -34,10 +34,9 @@ omegaconf
 einops
 huggingface-hub
 imageio
-# Depth Anything 3 for the frames whose measured depth is noise (app/rescue.py; its code is in tools\da3)
-torchvision
+# Depth Anything 3 for the frames whose measured depth is noise (app/rescue.py; its code is in tools\da3). No
+# torchvision or opencv: they would replace the torch the running server has loaded (app/rescue.py vision_stubs)
 addict
 safetensors
-opencv-python-headless
 pytest
 httpx
