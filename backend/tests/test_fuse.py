@@ -160,6 +160,24 @@ def test_keeps_the_hole_seen_through(tmp_path):
     assert mesh.contains(axis).mean() < 0.2
 
 
+def test_rescue_depth_replaces_unfit_frames(tmp_path):
+    """Кадри с шум вместо измерена дълбочина (лъскава пластмаса) се пропускат; с дълбочина от DA3 (app/rescue.py)
+    влизат в сливането."""
+    import json
+    from dataclasses import replace
+
+    z, hull, views = scene()
+    rng = np.random.default_rng(0)
+    noisy = [replace(v, dep=np.where(v.dep > 0, rng.uniform(1, 9, v.dep.shape), 0).astype(np.float32)) if i % 2 else v
+             for i, v in enumerate(views)]  # fmt: skip
+    assert all(F.completed(v) is None for v in noisy[1::2])
+    for name, frames in (("left_out", noisy), ("rescued", [replace(v, rescue=w.dep) for v, w in zip(noisy, views)])):
+        out = tmp_path / f"{name}.ply"
+        F.fuse_views(z, hull, frames, out)
+        used = json.loads(out.with_suffix(".json").read_text())["frames"]
+        assert used == (len(views) // 2 if name == "left_out" else len(views))
+
+
 @pytest.mark.parametrize("dump", [False, True])
 def test_save_and_replay(tmp_path, dump):
     z, hull, views = scene()

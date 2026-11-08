@@ -21,7 +21,7 @@ import json
 import struct
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -185,6 +185,7 @@ class View:
     allowed: np.ndarray  # (h, w) къде се вижда обвивката
     core: np.ndarray  # (h, w) ядрото ѝ далеч от очертанието
     normal: np.ndarray | None = None  # (h, w, 3) посоките на повърхността (app/normals.py): детайлният начин
+    rescue: np.ndarray | None = None  # (h, w) дълбочината от DA3 (app/rescue.py), когато измерената не пасва
 
 
 def completed(v: View, detail: bool | None = None):
@@ -465,10 +466,8 @@ def grid(z: dict, hull: trimesh.Trimesh):
     return lo, shape, step, size
 
 
-def read_views(dense: Path, names: list[str], crops_file: Path, hull_points: np.ndarray, spacing: float,
-               normals_file: Path | None = None) -> list[View]:  # fmt: skip
-    """Кадрите с карта на дълбочината на OpenMVS и изрязване с AI дълбочина (и посоките на повърхността от
-    app/normals.py, ако са дадени)."""
+def dmap_files(dense: Path) -> dict[str, Path]:
+    """Картата на дълбочината на OpenMVS за всеки кадър по името му."""
     maps = {}
     for p in dense.glob("depth*.dmap"):
         with open(p, "rb") as f:
@@ -476,16 +475,39 @@ def read_views(dense: Path, names: list[str], crops_file: Path, hull_points: np.
         o = struct.calcsize(HEADER)
         (n,) = struct.unpack_from("<H", head, o)
         maps[Path(head[o + 2 : o + 2 + n].decode("utf-8", "replace")).name] = p
-    normals = {}
+    return maps
+
+
+def in_crop(full: np.ndarray, shape: tuple[int, int], box) -> np.ndarray:
+    """Дълбочина за цялото изображение (с размер shape) при друга разделителна способност, пренесена в изрязването."""
+    H, W = shape
+    h, w = full.shape
+    x0, y0, x1, y1 = box
+    ys = (np.arange(y0, y1) + 0.5) * h / H - 0.5
+    xs = (np.arange(x0, x1) + 0.5) * w / W - 0.5
+    gy, gx = np.meshgrid(ys, xs, indexing="ij")
+    return ndimage.map_coordinates(full, [gy, gx], order=1, mode="nearest").astype(np.float32)
+
+
+def read_views(dense: Path, names: list[str], crops_file: Path, hull_points: np.ndarray, spacing: float,
+               normals_file: Path | None = None, rescue_file: Path | None = None) -> list[View]:  # fmt: skip
+    """Кадрите с карта на дълбочината на OpenMVS и изрязване с AI дълбочина (и посоките на повърхността от
+    app/normals.py и дълбочината от DA3 от app/rescue.py, ако са дадени)."""
+    maps = dmap_files(dense)
+    normals, rescues = {}, {}
     if normals_file is not None:
         with np.load(normals_file) as f:
             normals = {k: f[k] for k in f.files}
+    if rescue_file is not None:
+        with np.load(rescue_file) as f:
+            rescues = {k: f[k] for k in f.files}
     with np.load(crops_file) as crops:
         todo = [(name, crops[f"disp_{i}"], tuple(int(v) for v in crops[f"box_{i}"]), crops[f"inner_{i}"],
-                 normals.get(f"normal_{i}")) for i, name in enumerate(names) if f"disp_{i}" in crops and name in maps]  # fmt: skip
+                 normals.get(f"normal_{i}"), rescues.get(f"depth_{i}"))
+                for i, name in enumerate(names) if f"disp_{i}" in crops and name in maps]  # fmt: skip
 
     def one(item) -> View | None:
-        name, disp, box, inner, normal = item
+        name, disp, box, inner, normal, full = item
         dm = at_image_size(read_dmap(maps[name]))
         x0, y0, x1, y1 = box
         dep = dm.depth[y0:y1, x0:x1]
@@ -495,7 +517,8 @@ def read_views(dense: Path, names: list[str], crops_file: Path, hull_points: np.
         allowed, core = hull_view(hull_points, spacing, dm, box)
         if normal is not None and normal.shape[:2] != dep.shape:
             normal = None
-        return View(name, dm.K, dm.R, dm.C, box, dep, conf, disp, inner, allowed, core, normal)
+        rescue = in_crop(full, dm.depth.shape, box) if full is not None else None
+        return View(name, dm.K, dm.R, dm.C, box, dep, conf, disp, inner, allowed, core, normal, rescue)
 
     return [v for v in PAR.each(one, todo) if v is not None]
 
@@ -510,6 +533,8 @@ def save(path: Path, z: dict, views: list[View]) -> None:
                    f"core_{i}": v.core}  # fmt: skip
         if v.normal is not None:
             arrays[f"normal_{i}"] = v.normal.astype(np.float16)
+        if v.rescue is not None:
+            arrays[f"rescue_{i}"] = v.rescue.astype(np.float32)
     np.savez_compressed(path, **arrays)
 
 
@@ -522,7 +547,8 @@ def load(path: Path) -> tuple[dict, list[View]]:
             views.append(View(str(f[f"name_{i}"]), f[f"K_{i}"], f[f"R_{i}"], f[f"C_{i}"],
                               tuple(int(v) for v in f[f"box_{i}"]), f[f"dep_{i}"], f[f"conf_{i}"].astype(np.float32),
                               f[f"disp_{i}"], f[f"inner_{i}"], f[f"allowed_{i}"], f[f"core_{i}"],
-                              f[f"normal_{i}"] if f"normal_{i}" in f.files else None))  # fmt: skip
+                              f[f"normal_{i}"] if f"normal_{i}" in f.files else None,
+                              f[f"rescue_{i}"] if f"rescue_{i}" in f.files else None))  # fmt: skip
             i += 1
     return z, views
 
@@ -540,7 +566,8 @@ def fuse(dense: Path, inputs: Path, crops_file: Path, out: Path, dump: Path | No
     hull_points = (cells * step + lo) @ z["to_up"].astype(np.float64)
     del inside, pick, cells
     normals = Path(str(z["normals"])) if "normals" in z and Path(str(z["normals"])).exists() else None
-    views = read_views(dense, [str(n) for n in z["names"]], crops_file, hull_points, spacing, normals)
+    rescue = Path(str(z["rescue"])) if "rescue" in z and Path(str(z["rescue"])).exists() else None
+    views = read_views(dense, [str(n) for n in z["names"]], crops_file, hull_points, spacing, normals, rescue)
     note("detail from the surface directions" if normals else "fitted AI depth (no surface directions)")
     if dump is not None:
         save(dump, z, views)
@@ -699,6 +726,12 @@ def fuse_views(z: dict, hull: trimesh.Trimesh, views: list[View], out: Path, sdf
 
     def prepare(v: View):
         got = completed(v, detail)
+        if got is None and v.rescue is not None:  # измерената дълбочина е шум: тази от DA3 (app/rescue.py)
+            d = v.rescue
+            got = completed(replace(v, dep=d, conf=np.ones_like(d),
+                                    disp=np.where(d > 0, 1 / np.maximum(d, 1e-9), 0).astype(np.float32)), detail)  # fmt: skip
+            if got is not None:
+                note(f"{v.name}: the depth map does not fit, depth from DA3 instead")
         if got is None:
             note(f"{v.name}: AI depth does not fit the depth map, left out")
             return None, v
