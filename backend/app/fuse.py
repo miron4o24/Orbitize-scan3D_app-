@@ -81,6 +81,12 @@ FIELD_WIDE = 0.03
 EDGE_PX = 6  # пиксели около скок в дълбочината или очертанието, където измерената дълбочина не се взима
 DETAIL = 0.03
 GRAZING = 0.25  # косинус: по-косо видени места (ръб на част пред друга) взимат наклона от напасната дълбочина
+# Дупка през предмета (ролетка): маската и AI дълбочината я запълват, но измерената дълбочина вижда през нея, далеч зад
+# повърхността. Пикселите, уверено измерени повече от SEE_THROUGH (от дълбочината на предмета в кадъра) зад нея, на
+# петна от поне SEE_THROUGH_PX от изрязването, гласуват само за празно пространство. 0: изключено.
+SEE_THROUGH = 0.2
+SEE_THROUGH_CONF = 0.7
+SEE_THROUGH_PX = 1e-4
 
 
 def note(text: str) -> None:
@@ -279,6 +285,15 @@ def detailed(v: View):
     width = DETAIL * max(z.shape)
     zz = screened_poisson(gx, gy, z, 1 / width**2)
     depth = np.where(ok & (zz > 0), zz, 0).astype(np.float32)
+    if SEE_THROUGH > 0 and (depth > 0).any():
+        span = np.ptp(depth[depth > 0])
+        far = measured & (v.conf >= SEE_THROUGH_CONF) & (depth > 0) & (v.dep - depth > SEE_THROUGH * span)
+        far = ndimage.binary_opening(far, iterations=2)
+        lab, count = ndimage.label(far)
+        if count:
+            sizes = ndimage.sum(far, lab, np.arange(1, count + 1))
+            far = np.isin(lab, 1 + np.flatnonzero(sizes >= max(20, SEE_THROUGH_PX * far.size)))
+            depth[ndimage.binary_dilation(far, iterations=2) & (depth > 0)] = 0
     weight = (depth > 0).astype(np.float32)
     if FACING_MIN > 0:
         weight *= np.clip(facing(depth, v.K, v.box), FACING_MIN, 1.0)

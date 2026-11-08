@@ -138,6 +138,28 @@ def test_fuses_the_sphere_with_surface_directions(tmp_path):
     assert np.median(np.abs(r[upper] - RADIUS)) < 0.02
 
 
+def test_keeps_the_hole_seen_through(tmp_path):
+    """Проход през кълбото: маската, AI дълбочината и посоките на повърхността го запълват (виждат цялото кълбо), но
+    измерената дълбочина вижда през него. Детайлният начин го оставя празен."""
+    from dataclasses import replace
+
+    from scipy import ndimage
+
+    z, hull, views = scene(hole=True)
+    z["voxel"] = 0.015
+    filled = []
+    for v in views:
+        full, _ = trace(v.R, v.C, v.K, False)
+        ai = ndimage.gaussian_filter(np.where(full > 0, 1 / np.maximum(full, 1e-6), 0), 2.0).astype(np.float32)
+        nv = replace(v, disp=ai, inner=v.core)
+        filled.append(replace(with_normals([replace(nv, dep=full)])[0], dep=v.dep))
+    out = tmp_path / "fused.ply"
+    F.fuse_views(z, hull, filled, out)
+    mesh = trimesh.load(out, force="mesh")
+    axis = np.c_[np.linspace(-0.85, 0.85, 35), np.zeros(35), np.ones(35)]
+    assert mesh.contains(axis).mean() < 0.2
+
+
 @pytest.mark.parametrize("dump", [False, True])
 def test_save_and_replay(tmp_path, dump):
     z, hull, views = scene()
