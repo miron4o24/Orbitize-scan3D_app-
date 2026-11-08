@@ -50,6 +50,13 @@ AI_WEIGHT = 0.5  # глас, където само AI е видял повърх
 FREE_WEIGHT = 0.3  # глас за празно пространство пред повърхността: издълбава, но един грешен кадър не може да пробие дупка
 AI_FREE = 0.3  # и от него, където само AI е видял повърхността (без това дръжката на дрелка се разкъсваше)
 HULL_WEIGHT = 0.3  # думата на обвивката от очертанията, част от тази на един кадър
+# Където гласовете на кадрите се разминават (стандартното отклонение в първия проход, в разстояния на пресичане, между
+# DOUBT_FROM и DOUBT_TO), обвивката тежи до още HULL_DOUBT кадъра. Чаша от матово стъкло (2026-11-08): кадрите се
+# разминаваха с няколко милиметра и стената излизаше със стъпало, а изпъкналото тяло е точно обвивката. Където кадрите
+# са съгласни (вдлъбнатините при Фродо), остава тяхната дума: обвивка с тегло 3 навсякъде издуваше Фродо (0,75% от
+# размера вместо 0,44% на кадри извън сливането).
+HULL_DOUBT = 3.0
+DOUBT_FROM, DOUBT_TO = 0.5, 0.8  # Фродо: медиана 0,46 до повърхността; чашата: 0,70
 OUTSIDE = 0.02  # от размера: отвъд това извън обвивката нищо не се слива (масата и стаята)
 FLOOR_BAND = 0.06  # от размера: колко високо над масата може да стигне лист от нея (меката възглавница се издува)
 FLAP = 0.0125  # от размера: по-тънките от двойно това листове там са маса, а не предмет (вижте floor_sheet)
@@ -412,10 +419,11 @@ def floor_sheet(solid: np.ndarray, top: int, radius: float) -> np.ndarray | None
 
 
 def vote_block(frames: list, world: np.ndarray, cells: np.ndarray, tsdf: np.ndarray, weight: np.ndarray,
-               prev: np.ndarray | None, trunc: float) -> int:  # fmt: skip
+               prev: np.ndarray | None, trunc: float, sq: np.ndarray | None = None) -> int:  # fmt: skip
     """Гласовете на всеки кадър за един блок от клетките на обема (world: центровете им; cells: местата им в tsdf и
     weight; два блока нямат обща клетка, затова вървят едновременно, а средното не зависи от реда на гласовете). С
-    `prev` (предишния проход) гласовете за повърхност далеч от него отпадат. Връща колко."""
+    `prev` (предишния проход) гласовете за повърхност далеч от него отпадат. Връща колко. sq: сумата на теглата по
+    квадрата на гласа (за разминаването между кадрите, вижте HULL_DOUBT)."""
     dropped = 0
     for (R, C, K), box, depth, wmap, fmap in frames:
         x0, y0, x1, y1 = box
@@ -446,6 +454,8 @@ def vote_block(frames: list, world: np.ndarray, cells: np.ndarray, tsdf: np.ndar
         w = np.where(free, w * FREE_WEIGHT * np.where(w < 1.0, AI_FREE, 1.0), w).astype(np.float32)
         tsdf[cell] = (tsdf[cell] * weight[cell] + val * w) / (weight[cell] + w)
         weight[cell] += w
+        if sq is not None:
+            sq[cell] += w * val * val
     return dropped
 
 
@@ -748,18 +758,37 @@ def fuse_views(z: dict, hull: trimesh.Trimesh, views: list[View], out: Path, sdf
     if used < 3:
         raise SystemExit(f"only {used} frames' depth could be used")
 
-    def vote(tsdf: np.ndarray, weight: np.ndarray, prev: np.ndarray | None) -> int:
+    def vote(tsdf: np.ndarray, weight: np.ndarray, prev: np.ndarray | None, sq: np.ndarray | None = None) -> int:
         starts = range(0, len(active), BLOCK)
         return sum(PAR.each(lambda s: vote_block(frames, world[s : s + BLOCK], active[s : s + BLOCK], tsdf, weight, prev,
-                                                 trunc), starts))  # fmt: skip
+                                                 trunc, sq), starts))  # fmt: skip
 
     passes = (int(z["passes"]) if "passes" in z else PASSES) if OUTLIER > 0 else 1
     empty_tsdf, empty_weight, prev = tsdf, weight, None
+    doubt = None
     for k in range(passes):
         tsdf, weight = empty_tsdf.copy(), empty_weight.copy()
-        dropped = vote(tsdf, weight, prev)
+        sq = (empty_weight * empty_tsdf**2).astype(np.float32) if k == 0 and HULL_DOUBT > 0 else None
+        dropped = vote(tsdf, weight, prev, sq)
+        if sq is not None:  # колко се разминават гласовете (и с обвивката) в първия проход, без отпадане
+            spread = np.sqrt(np.maximum(sq / np.maximum(weight, 1e-6) - tsdf**2, 0))
+            # Но не там, където кадрите заедно казват "празно" (дупка, през която се вижда): там обвивката греши.
+            wf = weight - empty_weight
+            empty = (tsdf * weight - empty_tsdf * empty_weight) / np.maximum(wf, 1e-6)
+            empty = np.where(wf > 1e-3, np.clip((empty - 0.8) / 0.15, 0, 1), 0)  # почти всички гласове: празно
+            doubt = (np.clip((spread - DOUBT_FROM) / (DOUBT_TO - DOUBT_FROM), 0, 1) * (1 - empty)).astype(np.float16)
+            del wf, empty
+            near = np.abs(tsdf[active]) < 0.5
+            note(f"votes' spread near the surface: median {np.median(spread[active][near]):.2f}, "
+                 f"{(doubt[active][near] > 0).mean():.0%} of it doubtful")  # fmt: skip
+            del sq, spread
         prev = tsdf
         note(f"pass {k + 1}: {dropped / 1e6:.1f} million votes left out as far from the others")
+    if doubt is not None:  # където кадрите се разминават, думата на обвивката от очертанията тежи повече
+        extra = HULL_DOUBT * doubt.astype(np.float32)
+        tsdf = (tsdf * weight + empty_tsdf * extra) / (weight + extra)
+        weight = weight + extra
+        del extra, doubt
     del empty_tsdf, empty_weight, prev
     note(f"{used} of {len(names)} frames fused")
 
