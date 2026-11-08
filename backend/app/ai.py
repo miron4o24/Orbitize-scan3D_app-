@@ -613,7 +613,8 @@ def model_from_solved(job: Path, work: Path, photos: Path, flat_base: bool, set_
                                  voxel=tune.get("voxel", OL.VOXEL), fixed="agree" in tune,
                                  table=not tune.get("no_table"), flap=tune.get("flap"), wide=tune.get("wide_dense", False),
                                  geometric=not tune.get("no_geo"), passes=tune.get("passes"),
-                                 debug=bool(tune.get("debug")), detail=not classic)  # fmt: skip
+                                 debug=bool(tune.get("debug")), detail=not classic,
+                                 normals_every=tune.get("normals_every"))  # fmt: skip
     set_state("cleaning")
     M.paint(surface, views, images, cloud.to_up)
     out = M.make_printable(surface, M.floor_z(cloud), flat_base)

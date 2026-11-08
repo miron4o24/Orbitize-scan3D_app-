@@ -141,7 +141,7 @@ def dense_areas(views: M.Views, masks: list, cloud: M.Cloud) -> list[np.ndarray]
     return PAR.each(area, zip(views.R, views.t, views.K, masks))
 
 
-def surface_directions(job: Path, work: Path, dense: Path, views: M.Views, sh) -> Path | None:
+def surface_directions(job: Path, work: Path, dense: Path, views: M.Views, sh, every: int | None = None) -> Path | None:
     """Посоките на повърхността във всяко изрязване (app/normals.py) или None: няма модел, няма изрязвания или
     стъпката се е провалила (тогава сливането е като преди)."""
     crops = work / P.CROPS
@@ -153,7 +153,8 @@ def surface_directions(job: Path, work: Path, dense: Path, views: M.Views, sh) -
     names, out = work / "normals_names.txt", work / "normals.npz"
     names.write_text("\n".join(views.names), encoding="utf-8")
     try:
-        sh("estimating detail", [sys.executable, NO.__file__, dense / "images", crops, names, out])
+        sh("estimating detail", [sys.executable, NO.__file__, dense / "images", crops, names, out,
+                                 str(every or NO.EVERY)])  # fmt: skip
     except P.Failed as e:
         P.note(job, f"AI model: surface directions failed ({e}); fitted AI depth only")
         return None
@@ -164,7 +165,7 @@ def measured(job: Path, work: Path, dense: Path, views: M.Views, masks: list, cl
              agree: float, set_state: Callable[[str], None], sh: Callable[[str, list], None], side: int = SIDE,
              voxel: float = VOXEL, fixed: bool = False, table: bool = True, flap: float | None = None,
              wide: bool = False, geometric: bool = True, passes: int | None = None, debug: bool = False,
-             detail: bool = True):  # fmt: skip
+             detail: bool = True, normals_every: int | None = None):  # fmt: skip
     """Повърхността на модела (координати на облака) и облакът, в който е: измерената между кадрите дълбочина
     (OpenMVS, в маските) и AI дълбочината, слети във формата от очертанията; самата форма, когато измерването или
     сливането се провали (dense: коригираните кадри, моделът на COLMAP в dense/sparse). side: размерът на кадрите;
@@ -234,7 +235,7 @@ def measured(job: Path, work: Path, dense: Path, views: M.Views, masks: list, cl
     fused = None
     if dense_cloud:
         P.carved_hull(work, dense, views, masks, cloud, sh, found)  # AI дълбочината (app/depth.py) за сливането
-        normals = surface_directions(job, work, dense, views, sh) if detail else None
+        normals = surface_directions(job, work, dense, views, sh, normals_every) if detail else None
         fused = P.fused_surface(work, dense, views, cloud, outline, sh, voxel, flap, passes or P.F.PASSES, debug,
                                 normals)  # fmt: skip
         for p in dense.glob("*.dmap"):

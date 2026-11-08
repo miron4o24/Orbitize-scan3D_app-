@@ -91,8 +91,10 @@ GRAZING = 0.25  # косинус: по-косо видени места (ръб 
 REFINE = 0.1
 REFINE_ITER = 300
 NORMAL_FACING = 0.3  # косинус: по-косо видяно място не дава посока
+NORMAL_AGREE = 0.8  # косинус: кадър, чиито посоки средно се разминават повече с мрежата (37°), не се взима
 NORMAL_TOL = 3.0  # от разстоянието на пресичане: докъде от дълбочината на кадъра мястото се брои за видяно
 NORMAL_SMOOTH = 3  # стъпки заглаждане на посоките по съседните върхове
+USE_LEFT = False  # посоките и от кадрите, които не са слети (AI дълбочината им не пасва на измерената)
 SEE_THROUGH = 0.2
 SEE_THROUGH_CONF = 0.7
 SEE_THROUGH_PX = 1e-4
@@ -178,13 +180,14 @@ class View:
     normal: np.ndarray | None = None  # (h, w, 3) посоките на повърхността (app/normals.py): детайлният начин
 
 
-def completed(v: View):
+def completed(v: View, detail: bool | None = None):
     """Дълбочината на кадъра върху изрязването му: AI дълбочината, напасната към измерената, върху пикселите на
     предмета: вътрешността на маската и на обвивката (`core`: където маската е пропуснала тъмна част, черен спусък
     на дрелка), но само където обвивката се вижда (`allowed`). Връща (depth, weight, free), 0 където няма нищо, или
     None, ако двете не пасват. free: измерената дълбочина на другите пиксели, която показва само празно
-    пространство (пред пропуснат пиксел от предмета пак е празно). С посоки на повърхността: detailed."""
-    if v.normal is not None:
+    пространство (пред пропуснат пиксел от предмета пак е празно). С посоки на повърхността (или detail при
+    детайлния начин, когато кадърът е без тях): detailed."""
+    if v.normal is not None or detail:
         return detailed(v)
     dep, conf, disp, box = v.dep, v.conf, v.disp, v.box
     measured = (dep > 0) & (conf >= MIN_CONF)
@@ -272,6 +275,8 @@ def detailed(v: View):
         return None
     zc, on, measured = got
     ok = zc > 0
+    if v.normal is None:  # без посоки: само напасната дълбочина (детайлът идва от другите кадри накрая)
+        return see_through(v, np.where(ok, zc, 0).astype(np.float32), measured)
     n = v.normal.astype(np.float32)
     x0, y0, x1, y1 = v.box
     K = v.K
@@ -293,7 +298,11 @@ def detailed(v: View):
     gx, gy = np.where(coarse, zgx, gx), np.where(coarse, zgy, gy)
     width = DETAIL * max(z.shape)
     zz = screened_poisson(gx, gy, z, 1 / width**2)
-    depth = np.where(ok & (zz > 0), zz, 0).astype(np.float32)
+    return see_through(v, np.where(ok & (zz > 0), zz, 0).astype(np.float32), measured)
+
+
+def see_through(v: View, depth: np.ndarray, measured: np.ndarray):
+    """(depth, weight, free) на детайлния начин: дупките, през които измерената дълбочина вижда, стават празни."""
     if SEE_THROUGH > 0 and (depth > 0).any():
         span = np.ptp(depth[depth > 0])
         far = measured & (v.conf >= SEE_THROUGH_CONF) & (depth > 0) & (v.dep - depth > SEE_THROUGH * span)
@@ -532,6 +541,7 @@ def observed_normals(V: np.ndarray, Fc: np.ndarray, frames: list, normals: list,
     world = PAR.turned(V, to_up.T)
     mesh_n = PAR.turned(trimesh.Trimesh(V, Fc, process=False).vertex_normals, to_up.T)
     acc = np.zeros_like(V)
+    dropped = 0
     for ((R, C, K), box, depth, _, _), normal in zip(frames, normals):
         if normal is None:
             continue
@@ -557,10 +567,41 @@ def observed_normals(V: np.ndarray, Fc: np.ndarray, frames: list, normals: list,
         n = normal[v[idx], u[idx]].astype(np.float64)
         n = PAR.turned(n, R.T)  # камера -> свят
         w = (cos - NORMAL_FACING) / (1 - NORMAL_FACING) * near  # плавно до 0 при косото и далечното
+        # Кадър с грешно положение (или грешни посоки) се разминава с мрежата навсякъде: не се взима.
+        agree = (n * mesh_n[idx]).sum(1)
+        if len(agree) < 100 or np.median(agree) < NORMAL_AGREE:
+            dropped += 1
+            continue
         acc[idx] += w[:, None] * n
+    if dropped:
+        note(f"surface directions: {dropped} frames disagree with the fused shape, not used")
     length = np.linalg.norm(acc, axis=1)
-    target = PAR.turned(acc / np.maximum(length, 1e-12)[:, None], to_up)  # world -> grid
+    target = PAR.turned(acc / np.maximum(length, 1e-12)[:, None], to_up)  # свят -> мрежа
     return target, length > 0
+
+
+def mesh_depth(world: np.ndarray, Fc: np.ndarray, R: np.ndarray, C: np.ndarray, K: np.ndarray, box) -> np.ndarray:
+    """Дълбочината на мрежата (върхове в света) в изрязването на кадър, 0 където не се вижда: точки по триъгълниците,
+    най-близката на пиксел."""
+    x0, y0, x1, y1 = box
+    h, w = y1 - y0, x1 - x0
+    X = PAR.turned(world - C, R)
+    k = 4
+    ab = np.array([(a, b) for a in range(k + 1) for b in range(k + 1 - a)], np.float64) / k
+    out = np.full(h * w, np.inf)
+    for s in range(0, len(Fc), 50_000):
+        f = Fc[s : s + 50_000]
+        P = (X[f[:, 0], None] * ab[None, :, :1] + X[f[:, 1], None] * ab[None, :, 1:]
+             + X[f[:, 2], None] * (1 - ab.sum(1))[None, :, None]).reshape(-1, 3)  # fmt: skip
+        z = P[:, 2]
+        ok = z > 1e-9
+        u = np.round(K[0, 0] * P[ok, 0] / z[ok] + K[0, 2]).astype(np.int64) - x0
+        v = np.round(K[1, 1] * P[ok, 1] / z[ok] + K[1, 2]).astype(np.int64) - y0
+        z = z[ok]
+        inside = (u >= 0) & (v >= 0) & (u < w) & (v < h)
+        np.minimum.at(out, v[inside] * w + u[inside], z[inside])
+    out = out.reshape(h, w)
+    return np.where(np.isfinite(out), out, 0).astype(np.float32)
 
 
 def refined(V: np.ndarray, Fc: np.ndarray, target: np.ndarray, seen: np.ndarray) -> np.ndarray:
@@ -622,16 +663,20 @@ def fuse_views(z: dict, hull: trimesh.Trimesh, views: list[View], out: Path, sdf
     del cells
     note(f"{len(active) / 1e6:.1f} million cells near the hull")
 
+    detail = any(v.normal is not None for v in views)  # детайлният начин: и кадрите без посоки са като него
+
     def prepare(v: View):
-        got = completed(v)
+        got = completed(v, detail)
         if got is None:
             note(f"{v.name}: AI depth does not fit the depth map, left out")
-            return None
-        return ((v.R.astype(np.float32), v.C.astype(np.float32), v.K), v.box, *got), v.normal
+            return None, v
+        return (((v.R.astype(np.float32), v.C.astype(np.float32), v.K), v.box, *got), v.normal), v
 
     # За всеки използваем кадър: (поза, кутия, дълбочина, тегло, празно), запазени за следващите проходи.
-    pairs = [f for f in PAR.each(prepare, views) if f is not None]
-    frames, normals = [f for f, _ in pairs], [n for _, n in pairs]
+    pairs = PAR.each(prepare, views)
+    frames, normals = [f[0] for f, _ in pairs if f is not None], [f[1] for f, _ in pairs if f is not None]
+    # Неслетите кадри с посоки на повърхността: дават посоките си накрая (вижте observed_normals), видени върху мрежата.
+    left = [v for f, v in pairs if f is None and v.normal is not None]
     del pairs
     used = len(frames)
     note(f"{used} of {len(names)} frames have depth to fuse")
@@ -679,7 +724,14 @@ def fuse_views(z: dict, hull: trimesh.Trimesh, views: list[View], out: Path, sdf
     m = ms.current_mesh()
     V, Fc = m.vertex_matrix(), m.face_matrix()
     if REFINE > 0 and any(n is not None for n in normals):
-        target, seen = observed_normals(V, Fc, frames, normals, to_up, NORMAL_TOL * trunc)
+        world_v = PAR.turned(V, to_up.T)
+        more = [(((v.R.astype(np.float32), v.C.astype(np.float32), v.K), v.box,
+                  mesh_depth(world_v, Fc, v.R.astype(np.float64), v.C.astype(np.float64), v.K, v.box), None, None),
+                 v.normal) for v in (left if USE_LEFT else [])]  # fmt: skip
+        if more:
+            note(f"surface directions: also from {len(more)} frames left out of the fusion")
+        target, seen = observed_normals(V, Fc, frames + [f for f, _ in more], normals + [n for _, n in more], to_up,
+                                        NORMAL_TOL * trunc)  # fmt: skip
         note(f"surface directions: {seen.mean():.0%} of the surface seen")
         V = refined(V, Fc, target, seen)
     trimesh.Trimesh(V, Fc).export(out)
