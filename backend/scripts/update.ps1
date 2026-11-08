@@ -17,6 +17,12 @@ if (-not (Test-Path (Join-Path $source "app\main.py"))) { throw "The download ha
 Write-Host "Copying the files..."
 robocopy $source $backend /E /NFL /NDL /NJH /NJS /NP | Out-Null
 if ($LASTEXITCODE -ge 8) { throw "Copying failed (robocopy code $LASTEXITCODE)." }
+# Папките с кода стават точно като в GitHub: файлове на махнати режими (например старата "Точна част") не остават.
+# Моделите са в tools, а данните в data, затова не се засягат.
+foreach ($sub in @("app", "tests")) {
+  robocopy (Join-Path $source $sub) (Join-Path $backend $sub) /MIR /NFL /NDL /NJH /NJS /NP | Out-Null
+  if ($LASTEXITCODE -ge 8) { throw "Copying $sub failed (robocopy code $LASTEXITCODE)." }
+}
 $global:LASTEXITCODE = 0
 Remove-Item $zip -Force
 Remove-Item $dir -Recurse -Force

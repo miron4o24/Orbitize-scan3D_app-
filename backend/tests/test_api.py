@@ -210,3 +210,36 @@ def test_read_views(tmp_path):
     np.testing.assert_allclose(views.centers, [[0, 0, -5]])
     np.testing.assert_allclose(views.dirs, [[0, 0, 1]])
     np.testing.assert_allclose(views.ups, [[0, -1, 0]])
+
+
+def test_engineering_mode_needs_photos_and_a_measure(client, monkeypatch):
+    """Инженерният режим (app/engineer.py): от 8 снимки и поне един общ размер; Claude само за собственика."""
+    from app import engineer
+
+    seen = {}
+
+    def fake_cad(job, params, set_state, sh, step):
+        seen.update(params)
+        cad = job / "cad"
+        cad.mkdir()
+        (cad / "part.step").write_text("ISO-10303-21;")
+        trimesh.creation.box(extents=[1, 2, 4]).export(job / "model.ply")
+        return {"dimensions_mm": [25, 50, 100], "triangles": 12, "watertight": True, "ai": "cad", "real_mm": 40}
+
+    monkeypatch.setattr(engineer, "run", fake_cad)
+    job = client.post("/jobs").json()["id"]
+    for i in range(7):
+        client.put(f"/jobs/{job}/photos/img_{i:04d}.jpg", content=JPEG)
+    start = f"/jobs/{job}/start"
+    assert client.post(start, json={"method": "cad", "cad": {"length": 40}}).status_code == 400  # 7 снимки
+    client.put(f"/jobs/{job}/photos/img_0007.jpg", content=JPEG)
+    assert client.post(start, json={"method": "cad"}).status_code == 400  # без мерки
+    assert client.post(start, json={"method": "cad", "cad": {"length": -1}}).status_code == 422
+    body = {"method": "cad", "cad": {"length": 40, "features": [{"kind": "hole", "value": 6.2}]}}
+    assert client.post(start, json=body).status_code == 200
+    wait_state(client, job, "done")
+    assert seen["cad"]["features"][0]["value"] == 6.2 and seen["cad"]["engine"] == "local"
+    r = client.get(f"/jobs/{job}/cad/part.step")
+    assert r.status_code == 200 and r.content.startswith(b"ISO-10303-21")
+    assert client.get(f"/jobs/{job}/cad/part.py").status_code == 404  # няма го
+    assert client.get(f"/jobs/{job}/cad/..%2Fstatus.json").status_code == 404

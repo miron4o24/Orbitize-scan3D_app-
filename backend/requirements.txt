@@ -34,5 +34,7 @@ omegaconf
 einops
 huggingface-hub
 imageio
+# Инженерният режим (app/cad_local.py, app/cad_check.py): CAD модел от елементи, STEP (OpenCascade)
+cadquery==2.8.0
 pytest
 httpx
