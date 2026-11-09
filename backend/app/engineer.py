@@ -35,14 +35,30 @@ TIPS = ("Снимките не можаха да се свържат в 3D. Сн
 
 
 def prepared(job: Path, work: Path) -> Path:
-    """Снимките изправени (EXIF) и не по-големи от SIDE, с имената им: COLMAP чете пикселите без завъртането."""
+    """Снимките изправени (EXIF), не по-големи от SIDE и всички с еднакъв размер, с имената им.
+
+    COLMAP пази една камера за всички снимки и пропуска тези с друг размер: телефонът записва снимка, държан изправен,
+    като 2448x3264, а легнал като 3264x2448 (наблюдавано: 7 от 10 пропуснати). Затова снимките в другата посока се
+    завъртат на 90° към посоката на повечето (за намирането на камерите посоката в кадъра няма значение), а снимка с
+    друго съотношение се изрязва около средата до него."""
     out = work / "photos"
     out.mkdir(parents=True, exist_ok=True)
+    ims = []
     for p in sorted((job / "photos").glob("*.jp*g")):
         with Image.open(p) as im:
             im = ImageOps.exif_transpose(im).convert("RGB")
             im.thumbnail((SIDE, SIDE))
-            im.save(out / p.name, quality=95)
+            ims.append((p.name, im))
+    if not ims:
+        return out
+    wide = sum(im.width >= im.height for _, im in ims) * 2 >= len(ims)
+    turned = [(n, im if (im.width >= im.height) == wide else im.transpose(Image.Transpose.ROTATE_90)) for n, im in ims]
+    sizes = [im.size for _, im in turned]
+    size = max(set(sizes), key=sizes.count)
+    for name, im in turned:
+        if im.size != size:
+            im = ImageOps.fit(im, size, Image.Resampling.LANCZOS)  # изрязва около средата до съотношението
+        im.save(out / name, quality=95)
     return out
 
 
@@ -65,7 +81,10 @@ def run(job: Path, params: dict, set_state: Callable[[str], None], sh: Callable[
     P.note(job, f"engineering: {n} photos, measures {json.dumps(meas, ensure_ascii=False)}, engine {engine}")
 
     # 1. Сканирането (подреден кръг от снимки: всяка с всяка, без двойките за видео).
-    best, placed, stray, masks, _ = P.solve_cameras(job, work, photos, n, sh, paired=False, mask_every=1)
+    try:
+        best, placed, stray, masks, _ = P.solve_cameras(job, work, photos, n, sh, paired=False, mask_every=1)
+    except P.Failed as e:
+        raise P.Failed(TIPS) from e
     scanned = AI.model_from_solved(job, work, photos, True, set_state, sh, best, placed, stray, masks, None,
                                    min_placed=MIN_PLACED)  # fmt: skip
     if scanned is None:
