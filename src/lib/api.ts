@@ -142,10 +142,17 @@ export async function retrying<T>(work: (attempt: number) => Promise<T>): Promis
 
 async function check(res: { ok: boolean; status: number; text(): Promise<string> }, what: string) {
   if (res.ok) return;
-  let detail = await res.text();
+  let detail: unknown = await res.text();
   try {
-    detail = JSON.parse(detail).detail ?? detail; // тяло на грешка от FastAPI
+    detail = JSON.parse(detail as string).detail ?? detail; // тяло на грешка от FastAPI
   } catch {}
+  // Проверката на FastAPI (422) дава списък. Непознат режим значи, че сървърът е отпреди него.
+  if (Array.isArray(detail)) {
+    const items = detail as { type?: string; loc?: unknown[]; msg?: string }[];
+    detail = items.some((d) => d.type === 'literal_error' && d.loc?.includes('method'))
+      ? 'Сървърът още не поддържа този режим: трябва да се обнови.'
+      : items.map((d) => `${(d.loc ?? []).slice(1).join('.')}: ${d.msg}`).join('; ');
+  }
   // Сесията на профила е приключила (изход от другаде, изтрит профил): обратно към екрана за вход.
   if (res.status === 401 && sessionToken()) clearSession();
   throw new ApiError(detail ? String(detail) : `${what}: ${res.status}`, res.status);
