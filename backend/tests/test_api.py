@@ -243,3 +243,17 @@ def test_engineering_mode_needs_photos_and_a_measure(client, monkeypatch):
     assert r.status_code == 200 and r.content.startswith(b"ISO-10303-21")
     assert client.get(f"/jobs/{job}/cad/part.py").status_code == 404  # няма го
     assert client.get(f"/jobs/{job}/cad/..%2Fstatus.json").status_code == 404
+
+
+def test_photos_get_one_size_for_colmap(tmp_path):
+    """Телефонът пази изправените снимки като 2448x3264, а легналите като 3264x2448: COLMAP пропуска различните."""
+    from PIL import Image
+
+    from app import engineer
+
+    (tmp_path / "photos").mkdir()
+    for k, size in enumerate([(3264, 2448)] * 3 + [(2448, 3264)] * 6 + [(3000, 3000)]):
+        Image.new("RGB", size, (k * 20, 90, 160)).save(tmp_path / "photos" / f"img_{k:04d}.jpg")
+    out = engineer.prepared(tmp_path, tmp_path / "work")
+    sizes = {Image.open(p).size for p in out.glob("*.jpg")}
+    assert sizes == {(1800, 2400)} and len(list(out.glob("*.jpg"))) == 10
