@@ -79,6 +79,7 @@ export default function Engineer() {
   const finished = useRef(false);
   const [ready, setReady] = useState(false);
   const [taking, setTaking] = useState(false);
+  const [torch, setTorch] = useState(false);
   const [shots, setShots] = useState<File[]>([]);
   const [phase, setPhase] = useState<"photos" | "measures">("photos");
   const [message, setMessage] = useState<string | null>(null);
@@ -174,6 +175,7 @@ export default function Engineer() {
         ref={camera}
         style={StyleSheet.absoluteFill}
         mode="picture"
+        enableTorch={torch}
         onCameraReady={() => setReady(true)}
       />
       <SafeAreaView
@@ -200,6 +202,21 @@ export default function Engineer() {
                     : `${n} снимки`}
               </Text>
             </View>
+            <Pressable
+              style={[styles.round, torch && styles.roundOn]}
+              onPress={() => setTorch((t) => !t)}
+              accessibilityRole="button"
+              accessibilityState={{ selected: torch }}
+              accessibilityLabel={
+                torch ? "Изключи фенерчето" : "Включи фенерчето"
+              }
+            >
+              <Ionicons
+                name={torch ? "flash" : "flash-off"}
+                size={20}
+                color={torch ? DARK_TEXT : WHITE}
+              />
+            </Pressable>
           </View>
           {n === 0 && (
             <View style={styles.panel}>
@@ -497,6 +514,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
   },
+  roundOn: { backgroundColor: "#facc15", borderColor: "#facc15" },
   round: {
     width: 40,
     height: 40,
