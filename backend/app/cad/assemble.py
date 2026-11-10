@@ -25,10 +25,24 @@ def mirror_iou(outer: np.ndarray, V: float) -> float:
     return p.intersection(q).area / max(p.union(q).area, 1e-9)
 
 
+def resting_down(outer: np.ndarray, U: float, V: float) -> bool:
+    """Снимката отстрани или откъм края е обърната наопаки (завъртяна на 180°): телефонът, държан над масата, не знае
+    накъде е "горе", а детайлът стои на долната си страна, която обикновено е пълна права по цялата дължина. Ако
+    горната страна на снимката е по-пълна от долната с поне 20%, снимката е наопаки."""
+    tol = 0.012 * V
+    poly = Polygon(outer).buffer(0)
+    edge_pts = np.asarray(poly.exterior.coords)
+    bottom = np.ptp(edge_pts[edge_pts[:, 1] <= tol][:, 0]) if (edge_pts[:, 1] <= tol).sum() > 1 else 0.0
+    top = np.ptp(edge_pts[edge_pts[:, 1] >= V - tol][:, 0]) if (edge_pts[:, 1] >= V - tol).sum() > 1 else 0.0
+    return top > 1.2 * bottom + 0.02 * U
+
+
 def oriented(view: dict, name: str, flips: dict) -> dict:
     """Изглед в осите на детайла: (u, v) на изгледа -> координати по осите му, с обръщанията."""
     U, V = view["U"], view["V"]
     fu, fv = flips.get(name, [False, False])
+    if name in ("side", "end") and resting_down(np.asarray(view["outer"]), U, V):
+        fu, fv = not fu, not fv  # завъртане на 180°: и двете оси
     if name == "end":
         fu = not fu  # гледаме левия край: надясно на снимката е към предния ръб (по-малки Y)
 

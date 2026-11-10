@@ -439,6 +439,14 @@ def cad_photo(job_id: str, view: str, p: Principal = Depends(principal)):
                     headers={"Cache-Control": "private, max-age=60"})  # fmt: skip
 
 
+@app.get("/jobs/{job_id}/cad/preview.glb")
+def cad_preview(job_id: str, p: Principal = Depends(principal)):
+    """Детайлът по оценките от снимките, преди мерките: за проверка, че е разчетен правилно (посоки, стъпала)."""
+    job = cad_job(job_id, p)
+    path = cad_call(CAD.preview, job)
+    return Response(path.read_bytes(), media_type="model/gltf-binary", headers={"Cache-Control": "no-store"})
+
+
 @app.post("/jobs/{job_id}/cad/build")
 def cad_build(job_id: str, body: CadBuild, p: Principal = Depends(principal)):
     """Строи детайла от измерените числа; задачата става готова (в историята, с модела за прегледа)."""
