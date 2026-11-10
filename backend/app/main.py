@@ -20,9 +20,7 @@ from . import ai as AI
 from . import ar as AR
 from . import billing
 from . import community
-from . import cad_claude as CC
 from . import edit as ED
-from . import engineer as EN
 from . import jobs
 from . import mesh as M
 from . import motion as MO
@@ -232,35 +230,14 @@ class Tune(BaseModel):
     features: int | None = Field(None, ge=2000, le=8192)  # най-много особености на кадър за решаващия алгоритъм
 
 
-class CadFeature(BaseModel):
-    """Мярка на елемент в инженерния режим: отвор (диаметър), диаметър на издатина или вал, дебелина на стъпало или
-    друга (само в отчета, и за Claude)."""
-
-    kind: Literal["hole", "diameter", "thickness", "other"]
-    value: float = Field(gt=0, le=1000)
-    label: str | None = Field(None, max_length=40)
-
-
-class CadParams(BaseModel):
-    """Инженерният режим (app/engineer.py): общите размери с шублер (поне един), мерки на елементи и кой прави модела:
-    local (безплатно, на сървъра) или claude (само собственикът, по абонамента му; app/cad_claude.py)."""
-
-    length: float | None = Field(None, gt=0, le=1000)
-    width: float | None = Field(None, gt=0, le=1000)
-    height: float | None = Field(None, gt=0, le=1000)
-    features: list[CadFeature] = Field(default_factory=list, max_length=20)
-    engine: Literal["local", "claude"] = "local"
-
-
 class StartParams(BaseModel):
     flat_base: bool = True
     video_bytes: int | None = None  # размерът на файла в приложението, за да не се обработва никога наполовина качено видео
     quality: Literal["detailed", "quick"] = "detailed"  # quick: по-малко и по-малки кадри (pipeline.run)
     # scan: сканирането за около 35 минути (за всички). Pro: single, AI моделът (claude, photo: AI моделите, изискващи
     # платени ключове; app/ai.py). quick или express от по-старо приложение е scan (start_job).
-    method: Literal["scan", "express", "single", "claude", "photo", "cad"] = "scan"
+    method: Literal["scan", "express", "single", "claude", "photo"] = "scan"
     tune: Tune | None = None
-    cad: CadParams | None = None  # само за method "cad"
     extend: str | None = Field(None, pattern=r"^[0-9a-f]{32}$")  # това видео добавя липсваща страна към този модел
 
 
@@ -282,7 +259,7 @@ def start_job(job_id: str, params: StartParams, p: Principal = Depends(principal
         params.tune = None
     if params.method == "express":
         params.method = "scan"
-    pro = params.method not in ("scan", EN.METHOD)  # инженерният режим е за всички (локално, безплатно)
+    pro = params.method != "scan"
     trial = False
     if pro:
         if not A.is_pro(p):
@@ -292,11 +269,9 @@ def start_job(job_id: str, params: StartParams, p: Principal = Depends(principal
             trial = True
         if not AI.available()[params.method]:
             raise HTTPException(503, "Тази AI услуга още не е включена.")
-    if params.method == EN.METHOD:
-        check_cad(params, status, p)
-    elif not status["video_bytes"] and n < (1 if params.method in AI.METHODS else MIN_PHOTOS):
+    if not status["video_bytes"] and n < (1 if params.method in AI.METHODS else MIN_PHOTOS):
         raise HTTPException(400, f"Нужно е видео или поне {MIN_PHOTOS} снимки.")
-    if (worker.ai_q if params.method != "scan" else worker.q).qsize() >= MAX_QUEUED:
+    if (worker.ai_q if pro else worker.q).qsize() >= MAX_QUEUED:
         raise HTTPException(503, "Твърде много сканирания чакат в момента. Опитайте по-късно.")
     if params.extend:
         if not status["video_bytes"] or params.extend == job_id:
@@ -306,38 +281,6 @@ def start_job(job_id: str, params: StartParams, p: Principal = Depends(principal
         PL.record(p, "ai", job_id)
     worker.submit(job_id, params.model_dump(exclude={"extend"}))
     return jobs.public(job_id)
-
-
-def check_cad(params: StartParams, status: dict, p: Principal) -> None:
-    c = params.cad
-    if c is None or not (c.length or c.width or c.height):
-        raise HTTPException(400, "Въведете поне един общ размер (дължина, ширина или височина) в мм.")
-    if status["video_bytes"] or params.extend:
-        raise HTTPException(400, "Инженерният режим е от снимки, не от видео.")
-    n = len(status["received"])
-    if not EN.PHOTOS_MIN <= n <= EN.PHOTOS_MAX:
-        raise HTTPException(400, f"Нужни са от {EN.PHOTOS_MIN} до {EN.PHOTOS_MAX} снимки.")
-    if c.engine == "claude":
-        if not p.admin and not (p.user_id and A.is_owner_email(A.user_email_pro(p.user_id)[0])):
-            raise HTTPException(403, "Моделът от Claude е само за собственика на приложението.")
-        if not CC.ready():
-            raise HTTPException(503, "Claude Code още не е настроен на сървъра (CLAUDE_CLI и CLAUDE_CODE_OAUTH_TOKEN).")
-
-
-@app.get("/jobs/{job_id}/cad/{name}")
-def cad_file(job_id: str, name: str, p: Principal = Depends(principal)):
-    """Файловете на инженерния режим: part.step (за CAD програмите), part.py (кодът на CadQuery), part.stl (в мм),
-    part.json (отчет), compare.png (сканирането и моделът)."""
-    if name not in EN.FILES:
-        raise HTTPException(404, "Няма такъв файл.")
-    if existing(job_id, p)["state"] != "done":
-        raise HTTPException(409, "Моделът още не е готов.")
-    path = jobs.job_dir(job_id) / "cad" / name
-    if not path.exists():
-        raise HTTPException(404, "Това не е модел от инженерния режим.")
-    stem, dot, ext = name.partition(".")
-    return Response(path.read_bytes(), media_type=EN.FILES[name],
-                    headers={"Content-Disposition": f'attachment; filename="{stem}-{job_id[:8]}{dot}{ext}"'})  # fmt: skip
 
 
 MORE_FRAMES_MOST = 96  # от кадрите на модела при добавяне на страна (модел с вече добавена страна има повече)

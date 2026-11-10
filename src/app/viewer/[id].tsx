@@ -8,7 +8,6 @@ import Animated from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import type { Object3D } from 'three';
 
-import { CadPanel } from '@/components/CadPanel';
 import { FullscreenModel } from '@/components/FullscreenModel';
 import { MeasureTool } from '@/components/MeasureTool';
 import { ModelView, type Spot } from '@/components/ModelView';
@@ -440,12 +439,6 @@ export default function Viewer() {
         )}
 
         {error && <ErrorText>{error}</ErrorText>}
-
-        {report?.cad && jobId && (
-          <Appear index={3}>
-            <CadPanel jobId={jobId} cad={report.cad} />
-          </Appear>
-        )}
 
         <Appear index={3}>
           <Segmented<Tab> value={tab} onChange={setTab} options={tabs} />
