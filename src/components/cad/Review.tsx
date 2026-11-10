@@ -43,7 +43,7 @@ export function Review({
   error: string | null;
   onOp: (op: CadOp) => void;
   onNext: () => void;
-  onRetake: () => void;
+  onRetake?: () => void; // няма при промяна на построен детайл
 }) {
   const s = useStyles();
   const c = useColors();
@@ -102,7 +102,7 @@ export function Review({
           </Card>
         ))}
         <Small>Оранжевото е това, което ще се построи. Ако не пасва на детайла, снимайте отново.</Small>
-        <Button title="Снимай отново" icon="camera-outline" variant="ghost" onPress={onRetake} disabled={busy} />
+        {onRetake && <Button title="Снимай отново" icon="camera-outline" variant="ghost" onPress={onRetake} disabled={busy} />}
       </Section>
 
       {[...state.warnings, ...state.notes].map((n) => (

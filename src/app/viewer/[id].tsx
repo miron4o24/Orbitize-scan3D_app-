@@ -1,8 +1,8 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { File, Paths } from 'expo-file-system';
-import { router, useLocalSearchParams, type ErrorBoundaryProps } from 'expo-router';
+import { router, useFocusEffect, useLocalSearchParams, type ErrorBoundaryProps } from 'expo-router';
 import * as Sharing from 'expo-sharing';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Modal, Pressable, Share, Switch, Text, View } from 'react-native';
 import Animated from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -106,6 +106,20 @@ export default function Viewer() {
   const [renaming, setRenaming] = useState(false);
   const [realSize, setRealSize] = useState(true);
   const [attempt, setAttempt] = useState(0);
+  // CAD детайл, променен в инженерния режим (нови мерки): при връщане тук се зарежда наново.
+  const cadVersion = useRef(String(scan?.report?.cad?.volume_mm3 ?? ''));
+  useFocusEffect(
+    useCallback(() => {
+      const now = getScan(id);
+      const version = String(now?.report?.cad?.volume_mm3 ?? '');
+      if (!now?.report?.cad || version === cadVersion.current) return;
+      cadVersion.current = version;
+      setScan(now);
+      setMmInput(String(now.longestMm ?? 100));
+      setModel(null);
+      setAttempt((a) => a + 1);
+    }, [id]),
+  );
   const [tab, setTab] = useState<Tab>('size');
   const [surface, setSurface] = useState<Surface>('smooth');
   const [support, setSupport] = useState<ArSupport | null>(null); // AR на този телефон; null, докато се пита

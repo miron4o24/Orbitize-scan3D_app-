@@ -146,7 +146,12 @@ export default function Engineer() {
       if (editing) {
         const local = modelFile(editing.id);
         if (local.exists) local.delete(); // новият модел се изтегля наново
-        updateScan(editing.id, { report, longestMm: report.real_mm ?? undefined, cad: measured.design, status: 'done' });
+        updateScan(editing.id, {
+          report,
+          longestMm: report.real_mm ?? undefined,
+          cad: measured.design,
+          status: 'done',
+        });
         router.back();
         return;
       }
@@ -214,7 +219,9 @@ export default function Engineer() {
         <View style={s.wait}>
           <ActivityIndicator size="large" />
           <Text style={s.waitTitle}>{phase === 'reading' ? (editing ? 'Зареждане на детайла…' : 'Чета снимките…') : 'Строя модела…'}</Text>
-          <Small>{phase === 'reading' ? 'Очертания, стъпала и отвори. Около половин минута.' : 'Само от вашите мерки. Няколко секунди.'}</Small>
+          <Small>
+            {phase === 'reading' ? 'Очертания, стъпала и отвори. Около половин минута.' : 'Само от вашите мерки. Няколко секунди.'}
+          </Small>
         </View>
       </SafeAreaView>
     );
@@ -229,12 +236,21 @@ export default function Engineer() {
           error={error}
           onOp={apply}
           onNext={startMeasuring}
-          onRetake={() => {
-            setShot(0);
-            setPhotos({});
-            setError(null);
-            setPhase('shoot');
-          }}
+          onRetake={
+            editing
+              ? undefined
+              : () => {
+                  // Нови снимки: нова задача на сървъра (иначе пропусната снимка откъм края би останала старата).
+                  if (jobRef.current) cancelJob(jobRef.current).catch(() => {});
+                  jobRef.current = null;
+                  setJobId(null);
+                  setState(null);
+                  setShot(0);
+                  setPhotos({});
+                  setError(null);
+                  setPhase('shoot');
+                }
+          }
         />
       </SafeAreaView>
     );
@@ -262,7 +278,11 @@ export default function Engineer() {
     return (
       <SafeAreaView style={s.safe} edges={['top']}>
         <Screen>
-          <Header kicker={`${CAD_INFO.label} · снимките са готови`} title="Общите размери" sub="С шублер, в милиметри. От тях се разчита мащабът на снимките." />
+          <Header
+            kicker={`${CAD_INFO.label} · снимките са готови`}
+            title="Общите размери"
+            sub="С шублер, в милиметри. От тях се разчита мащабът на снимките."
+          />
           <Card style={s.card}>
             {(
               [
@@ -319,7 +339,11 @@ export default function Engineer() {
   return (
     <SafeAreaView style={s.safe} edges={['top']}>
       <Screen>
-        <Header kicker={CAD_INFO.label} title="Детайл 1:1 от снимки и шублер" sub="Снимките казват какво има, шублерът казва колко е голямо. Моделът е само от вашите числа." />
+        <Header
+          kicker={CAD_INFO.label}
+          title="Детайл 1:1 от снимки и шублер"
+          sub="Снимките казват какво има, шублерът казва колко е голямо. Моделът е само от вашите числа."
+        />
         <Section label="Как става">
           <Card style={s.card}>
             {STEPS.map(([title, text], k) => (
@@ -358,7 +382,18 @@ const useStyles = makeStyles((c) => ({
   label: { fontFamily: font.medium, fontSize: 15, color: c.text },
   mm: { width: 104, textAlign: 'right' },
   step: { flexDirection: 'row', gap: space.md, alignItems: 'flex-start' },
-  stepNum: { width: 22, color: c.accent, fontFamily: font.semibold, fontSize: 15 },
-  wait: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: space.md, padding: space.xl },
+  stepNum: {
+    width: 22,
+    color: c.accent,
+    fontFamily: font.semibold,
+    fontSize: 15,
+  },
+  wait: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: space.md,
+    padding: space.xl,
+  },
   waitTitle: { color: c.text, fontFamily: font.semibold, fontSize: 18 },
 }));
