@@ -79,9 +79,7 @@ def available() -> dict:
     """Какво може да използва Pro на този сървър; express: сканирането за около 5 минути (app/pipeline.py), edit:
     текстови промени (app/edit.py; простите заявки работят без езиковия му модел), и двете винаги са налични."""
     paid = {method: bool(key(service)) for method, service in NEEDS.items()}
-    from . import cad_claude  # инженерният режим: локалният е винаги наличен, с Claude само при вход в Claude Code
-
-    return {"express": True, "edit": True, "single": single3d.ready(), "cad": True, "cad_claude": cad_claude.ready()} | paid
+    return {"express": True, "edit": True, "single": single3d.ready()} | paid
 
 
 # --- Кадри ----------------------------------------------------------------------------------------------------------
@@ -544,8 +542,7 @@ ROUNDS = 2  # проходи на MobileSAM, всеки с подсказки о
 
 def model_from_solved(job: Path, work: Path, photos: Path, flat_base: bool, set_state: Callable[[str], None],
                       sh: Callable[[str, list], None], best: Path | None, placed: int, stray: list[str],
-                      all_masks: dict[str, np.ndarray], tune: dict | None = None,
-                      min_placed: int = MIN_PLACED) -> dict | None:  # fmt: skip
+                      all_masks: dict[str, np.ndarray], tune: dict | None = None) -> dict | None:  # fmt: skip
     """from_video след камерите: разположени кадри (`placed` от тях съгласувани с очертанията на търсача на предмета,
     `stray` несъгласувани) и маските на търсача. Те решават само откъде да се започне. При дрелка върху куфар той
     включваше куфара, дръжката му, стол или кутия отзад или пропускаше дръжката или патронника в 26 от 48 кадъра с
@@ -553,7 +550,7 @@ def model_from_solved(job: Path, work: Path, photos: Path, flat_base: bool, set_
     кадъра, някои от тях все още грешни, с издълбана до стъбло дръжка. Затова формата от съгласуваните кадри дава
     подсказки на MobileSAM за всеки разположен кадър (outlines_from_3d, ROUNDS пъти) и отпадат само кадри, чиито
     уточнени очертания все още се разминават с другите."""
-    if best is None or placed < min_placed:
+    if best is None or placed < MIN_PLACED:
         P.note(job, f"AI model: only {placed} of the {len(all_masks)} frames with the object cut out placed in 3D; "
                "making it from one frame")  # fmt: skip
         return None
@@ -596,8 +593,8 @@ def model_from_solved(job: Path, work: Path, photos: Path, flat_base: bool, set_
             raise P.Failed("the frames' outlines give no shape")
         P.note(job, f"AI model: {len(views)} frames placed, {placed} agreeing, few points on the object")
 
-    masks, keep, sharpened = outlines_from_3d(job, work, dense, views, masks, agreed, cloud, pts, sh, min_placed)
-    if keep.sum() < min_placed:
+    masks, keep, sharpened = outlines_from_3d(job, work, dense, views, masks, agreed, cloud, pts, sh)
+    if keep.sum() < MIN_PLACED:
         P.note(job, f"AI model: only {keep.sum()} frames agree on the object's outline; making it from one frame")
         return None
     if not keep.all():  # кадри с очертания, които още се разминават: извън гъстото съпоставяне и формата
@@ -626,8 +623,7 @@ def model_from_solved(job: Path, work: Path, photos: Path, flat_base: bool, set_
 
 
 def outlines_from_3d(job: Path, work: Path, dense: Path, views: M.Views, masks: list[np.ndarray], agreed: np.ndarray,
-                     cloud: M.Cloud, pts: np.ndarray, sh,
-                     min_placed: int = MIN_PLACED) -> tuple[list[np.ndarray], np.ndarray, bool]:  # fmt: skip
+                     cloud: M.Cloud, pts: np.ndarray, sh) -> tuple[list[np.ndarray], np.ndarray, bool]:  # fmt: skip
     """Очертанията на предмета във всеки разположен кадър (коригирани `views`, `masks` на търсача): формата от кадрите
     със съгласувани очертания (първоначално `agreed`) дава подсказки на MobileSAM за всички
     (pipeline.sharpened_masks); кадрите с нови очертания, съгласувани с другите (mesh.consistent_frames), дават
@@ -645,7 +641,7 @@ def outlines_from_3d(job: Path, work: Path, dense: Path, views: M.Views, masks: 
         keep = M.consistent_frames(views, sharp, S.MASK_SCALE)
         P.note(job, f"AI model: outlines round {round_ + 1}: {keep.sum()} of {len(views)} frames agree "
                f"(before: {trusted.sum()})")  # fmt: skip
-        if keep.sum() < min_placed:  # очертанията на MobileSAM са твърде несъгласувани: остават последните
+        if keep.sum() < MIN_PLACED:  # очертанията на MobileSAM са твърде несъгласувани: остават последните
             break
         current, trusted, sharpened = sharp, keep, True
     return current, trusted, sharpened
