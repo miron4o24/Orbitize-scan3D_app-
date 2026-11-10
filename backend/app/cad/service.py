@@ -207,7 +207,8 @@ def photo_jpg(job: Path, view: str) -> bytes:
         raise D.DesignError("Снимката още не е прочетена.")
     im = load(path)
     try:
-        im = R.overlay(d, view, im, views[view]["transform"], d.get("flips") or {})
+        im = R.overlay(d, view, im, views[view]["transform"], d.get("flips") or {},
+                       outer=np.asarray(views[view]["outer"]))
     except D.DesignError:
         im.thumbnail((1100, 1100), Image.LANCZOS)
     import io
@@ -257,3 +258,34 @@ def build(job: Path, raw: dict) -> dict:
         os.replace(tmp, job / "model.ply")
     return M.report(model) | {"ai": "cad", "real_mm": round(real, 3), "object": "", "suitable": True,
                               "cad": report}  # fmt: skip
+
+
+def preview(job: Path) -> Path:
+    """GLB на текущото описание с оценките (за проверка на посоките преди мерките). Елементи без размер (добавени
+    ръчно, още неизмерени) се пропускат."""
+    import copy
+    import hashlib
+
+    from .build import build as make
+    from .build import clean
+
+    d = draft(job)
+    stamp = hashlib.sha1(json.dumps(d, sort_keys=True).encode()).hexdigest()[:16]
+    out = job / "cad" / "preview"
+    glb = out / "part.glb"
+    if glb.exists() and (out / "stamp").exists() and (out / "stamp").read_text() == stamp:
+        return glb
+    p = copy.deepcopy(d)
+    missing = {i for i, dim in p["dims"].items() if dim["v"] is None}
+    if missing:
+        p["features"] = [f for f in p["features"] if not any(f.get(k) in missing for k in
+                                                             ("d", "w", "h", "len", "depth", "r", "c"))]  # fmt: skip
+        D.unused_cleanup(p)
+    with lock(job):
+        work = job / "cad" / "preview.tmp"
+        shutil.rmtree(work, ignore_errors=True)
+        make(clean(p), work)
+        (work / "stamp").write_text(stamp)
+        shutil.rmtree(out, ignore_errors=True)
+        os.replace(work, out)
+    return glb

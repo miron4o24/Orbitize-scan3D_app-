@@ -327,18 +327,24 @@ def caption(sh: Sheet, text: str):
 # --- Върху снимката -------------------------------------------------------------------------------------------------
 
 
-def to_view(d: dict, view: str, pts: np.ndarray, flips: dict) -> np.ndarray:
+def to_view(d: dict, view: str, pts: np.ndarray, flips: dict, outer: np.ndarray | None = None) -> np.ndarray:
     """Точки в осите на детайла за изгледа (u, v) -> точки в мм на снимката на изгледа (обратното на
     assemble.oriented: огледалата са сами себе си обратни)."""
     U, V = view_size(d, view if view != "profile" else "profile")
     fu, fv = flips.get(view, [False, False])
     if view == "end":
         fu = not fu
+    if outer is not None and view in ("side", "end"):
+        from .assemble import resting_down
+
+        if resting_down(outer, U, V):
+            fu, fv = not fu, not fv
     p = np.asarray(pts, float)
     return np.c_[U - p[:, 0] if fu else p[:, 0], V - p[:, 1] if fv else p[:, 1]]
 
 
-def overlay(d: dict, view: str, photo: Image.Image, transform: dict, flips: dict, side: int = 1100) -> Image.Image:
+def overlay(d: dict, view: str, photo: Image.Image, transform: dict, flips: dict, side: int = 1100,
+            outer: np.ndarray | None = None) -> Image.Image:
     """Снимката на изгледа с очертанието и отворите от описанието, изрязана около детайла."""
     from .vision import View
 
@@ -361,7 +367,7 @@ def overlay(d: dict, view: str, photo: Image.Image, transform: dict, flips: dict
     allpx = []
     width = max(3, round(max(im.size) / 450))
     for k, pts in enumerate(polys):
-        px = v.to_photo(to_view(d, view, pts, flips))
+        px = v.to_photo(to_view(d, view, pts, flips, outer))
         allpx.append(px)
         xy = [tuple(p) for p in px] + [tuple(px[0])]
         draw.line(xy, fill=(255, 255, 255, 230), width=width + 4, joint="curve")
