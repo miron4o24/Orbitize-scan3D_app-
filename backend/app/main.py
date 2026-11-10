@@ -32,6 +32,8 @@ from . import render as RE
 from . import stress as ST
 from . import texture as TX
 from .accounts import Principal, admin_only, principal
+from .cad import design as CD
+from .cad import service as CAD
 
 API_TOKEN = os.environ.get("API_TOKEN", "")
 if len(API_TOKEN) < 8:
@@ -369,6 +371,100 @@ def nameplate_job(job_id: str, params: NameplateParams, p: Principal = Depends(p
     worker.submit(new, {"method": "edit", "source": job_id, "longest_mm": params.longest_mm,
                         "nameplate": {"text": params.text, "shape": params.shape}})  # fmt: skip
     return jobs.public(new)
+
+
+# --- Инженерният режим: мерене по указания (app/cad) -------------------------------------------------------------
+# Снимките (top.jpg, side.jpg, по желание end.jpg) се качват като при сканиране; четенето и строенето стават веднага,
+# не в опашката на сканиранията. Безплатно и без външни услуги, затова е за всеки профил.
+
+
+class CadRead(BaseModel):
+    L: float = Field(gt=0, le=CD.LIMIT)
+    W: float = Field(gt=0, le=CD.LIMIT)
+    H: float = Field(gt=0, le=CD.LIMIT)
+    flips: dict | None = None
+
+
+class CadEdit(BaseModel):
+    design: dict
+    op: dict
+
+
+class CadBuild(BaseModel):
+    design: dict
+
+
+def cad_job(job_id: str, p: Principal):
+    s = existing(job_id, p)
+    if s["state"] in jobs.ACTIVE:
+        raise HTTPException(409, "Тази задача е сканиране в обработка.")
+    return jobs.job_dir(job_id)
+
+
+def cad_call(fn, *args):
+    try:
+        return fn(*args)
+    except CD.DesignError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@app.post("/jobs/{job_id}/cad/read")
+def cad_read(job_id: str, body: CadRead, p: Principal = Depends(principal)):
+    """Чете снимките и предлага описанието на детайла: разпознатото и въпросите с оценките от снимките."""
+    job = cad_job(job_id, p)
+    return cad_call(CAD.read, job, body.L, body.W, body.H, CAD.sanitize_flips(body.flips))
+
+
+@app.post("/jobs/{job_id}/cad/edit")
+def cad_edit(job_id: str, body: CadEdit, p: Principal = Depends(principal)):
+    job = cad_job(job_id, p)
+    return cad_call(CAD.edit, job, body.design, body.op)
+
+
+@app.get("/jobs/{job_id}/cad/question/{dim}.png")
+def cad_question(job_id: str, dim: str, p: Principal = Depends(principal)):
+    job = cad_job(job_id, p)
+    if not CD.DIM_ID.match(dim):
+        raise HTTPException(404, "Няма такъв размер.")
+    return Response(cad_call(CAD.question_png, job, dim), media_type="image/png",
+                    headers={"Cache-Control": "private, max-age=60"})  # fmt: skip
+
+
+@app.get("/jobs/{job_id}/cad/photo/{view}.jpg")
+def cad_photo(job_id: str, view: str, p: Principal = Depends(principal)):
+    job = cad_job(job_id, p)
+    if view not in CAD.VIEWS:
+        raise HTTPException(404, "Няма такава снимка.")
+    return Response(cad_call(CAD.photo_jpg, job, view), media_type="image/jpeg",
+                    headers={"Cache-Control": "private, max-age=60"})  # fmt: skip
+
+
+@app.post("/jobs/{job_id}/cad/build")
+def cad_build(job_id: str, body: CadBuild, p: Principal = Depends(principal)):
+    """Строи детайла от измерените числа; задачата става готова (в историята, с модела за прегледа)."""
+    job = cad_job(job_id, p)
+    report = cad_call(CAD.build, job, body.design)
+    jobs.write(job_id, state="done", report=report, error=None, step=None, params={"method": "cad"})
+    try:
+        (job / jobs.THUMB).unlink(missing_ok=True)
+        jobs.thumbnail(job_id)  # картинката на детайла за историята
+    except OSError:
+        pass
+    return jobs.public(job_id)
+
+
+@app.get("/jobs/{job_id}/cad/file/{name}")
+def cad_file(job_id: str, name: str, p: Principal = Depends(principal)):
+    """Файловете на построения детайл: part.step (за CAD програмите), part.py (кодът), part.stl (в мм), part.glb
+    (прегледът) и drawing.png (чертежът)."""
+    job = cad_job(job_id, p)
+    if name not in CAD.FILES:
+        raise HTTPException(404, "Няма такъв файл.")
+    path = job / "cad" / "out" / name
+    if not path.exists():
+        raise HTTPException(404, "Детайлът още не е построен.")
+    return Response(path.read_bytes(), media_type=CAD.FILES[name],
+                    headers={"Content-Disposition": f'attachment; filename="part-{job_id[:8]}.{name.split(".")[1]}"'})
 
 
 @app.delete("/jobs/{job_id}")
