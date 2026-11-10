@@ -127,7 +127,12 @@ export default function Engineer() {
     const list = state.questions.filter((q) => (editing ? true : q.src !== 'measured'));
     if (!list.length) return build({});
     setAsked(list);
-    setAnswers(editing ? Object.fromEntries(list.map((q) => [q.id, q.value])) : {});
+    // Вече въведените (връщане към прегледа и обратно) остават; при промяна на детайл: досегашните стойности.
+    setAnswers((prev) =>
+      Object.fromEntries(
+        list.filter((q) => q.id in prev || editing).map((q) => [q.id, q.id in prev ? prev[q.id] : q.value]),
+      ),
+    );
     setQi(0);
     setPhase('measure');
   }
