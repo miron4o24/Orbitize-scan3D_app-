@@ -15,7 +15,7 @@ import { ArrowLink, IconButton, Kicker, ScrollBar, Section, useScrollY } from '@
 import { errorText, type Method } from '@/lib/api';
 import { refreshProfile } from '@/lib/auth';
 import { importVideo } from '@/lib/importVideo';
-import { aiAvailable, aiTrial, PRO_INFO, SCAN_INFO } from '@/lib/prefs';
+import { aiAvailable, aiTrial, CAD_INFO, PRO_INFO, SCAN_INFO } from '@/lib/prefs';
 import { openEntry, useLibrary } from '@/lib/library';
 import { checkProgress, useProgress } from '@/lib/progress';
 import { useSession } from '@/lib/session';
@@ -68,6 +68,7 @@ export default function Home() {
 
   const scan = () => router.push('/capture');
   const filmAi = () => router.push({ pathname: '/capture', params: { ai: '1' } });
+  const engineer = () => router.push('/engineer');
 
   // Видео, заснето по-рано: при наличие на двата начина потребителят казва кой.
   const upload = () => {
@@ -118,6 +119,7 @@ export default function Home() {
               ) : (
                 <ScanChoice highlight title="Започни сканиране" time={SCAN_INFO.time} icon="videocam" onPress={scan} />
               )}
+              <ScanChoice title={CAD_INFO.label} time={CAD_INFO.time} sub="Детайл 1:1 от снимки и шублер: STEP за CAD" icon="construct-outline" onPress={engineer} />
               <ArrowLink label={importing ? 'Отваряне…' : 'Качи готово видео'} onPress={upload} style={s.ctaLink} />
               {!!user && !user.pro && <ArrowLink label="Виж Orbitize Pro" onPress={() => router.push('/pro')} style={s.ctaLink} />}
             </Appear>

@@ -215,7 +215,7 @@ export default function Processing() {
   const active = !!scan && ACTIVE.includes(scan.status);
   const jobId = scan?.jobId;
   const method: Method = scan?.method ?? 'scan';
-  const pro = method === 'scan' ? null : method;
+  const pro = method === 'scan' || method === 'cad' ? null : method; // инженерният режим не минава оттук
   const plan = pro ? PRO_PLANS[pro] : PLAN;
   const session = useSession();
   const user = session?.kind === 'account' ? session.user : null;

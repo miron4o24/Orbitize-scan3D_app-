@@ -36,13 +36,14 @@ export type Report = {
   photos_total?: number;
   seconds?: number;
   object_width?: number; // медианният дял от ширината на кадъра, който заема предметът
-  ai?: AiMethod; // създаден от AI (Pro), а не сканиран
+  ai?: AiMethod | 'cad'; // създаден от AI (Pro) или в инженерния режим, а не сканиран
   object?: string; // какво е видял AI, на български
   real_mm?: number | null; // реалната най-дълга страна: оценка на AI или резултат от текстова промяна
   // при размер 100 мм, за оценката на печата (lib/printEstimate.ts); за по-стари сканирания: getGeometry
   volume_mm3?: number;
   area_mm2?: number;
   edit?: { prompt: string; changes: string[]; source: string | null }; // създаден чрез текстова промяна (Pro)
+  cad?: CadReport; // инженерният режим: детайлът, построен от измерените размери
 };
 
 export type Geometry = { dimensions_mm: [number, number, number]; volume_mm3: number; area_mm2: number };
@@ -54,7 +55,7 @@ export type Geometry = { dimensions_mm: [number, number, number]; volume_mm3: nu
 // преглед.
 export type AiMethod = 'single' | 'claude' | 'photo';
 export type ProMethod = 'express' | 'edit' | AiMethod;
-export type Method = 'scan' | ProMethod;
+export type Method = 'scan' | 'cad' | ProMethod; // cad: инженерният режим (безплатен, не е сканиране)
 
 export type ResultFormat = 'glb' | 'stl' | 'obj' | '3mf';
 
@@ -491,3 +492,90 @@ export type OwnerUser = { id: string; email: string; name: string; created: numb
 
 export const ownerUsers = (q: string) => call<OwnerUser[]>('GET', `/owner/users?q=${encodeURIComponent(q)}`);
 export const setPro = (userId: string, pro: boolean) => call<{ id: string; pro: boolean }>('PUT', `/owner/users/${userId}/pro`, { pro });
+
+// --- Инженерният режим: мерене по указания (сървър app/cad) ---------------------------------------------------------
+// Снимките (top.jpg, side.jpg, по желание end.jpg) се качват с uploadPhoto; сървърът ги чете и предлага описание на
+// детайла, в което всеки размер е въпрос с оценка от снимките. Моделът се строи само от числата.
+
+export type CadView = 'top' | 'side' | 'end';
+export type CadDimKind = 'length' | 'position' | 'diameter' | 'radius';
+export type CadDim = {
+  v: number | null;
+  est: number | null; // оценката от снимките (null: няма, трябва да се измери)
+  src: 'measured' | 'photo' | 'skipped';
+  name: string;
+  ask: string;
+  hint: string;
+  kind: CadDimKind;
+  optional: boolean;
+  hidden?: boolean;
+};
+export type CadFeatureType = 'hole' | 'rect' | 'slot' | 'fillet' | 'chamfer';
+export type CadFeature = { id: string; t: CadFeatureType; depth?: string; face?: string; thread?: string };
+export type CadDesign = {
+  kind: 'block' | 'turned';
+  dims: Record<string, CadDim>;
+  features: CadFeature[];
+  notes: string[];
+  flips?: Partial<Record<'side' | 'end', [boolean, boolean]>>;
+  [key: string]: unknown; // нивата и изгледите: приложението само ги връща на сървъра
+};
+export type CadQuestion = {
+  id: string;
+  name: string;
+  ask: string;
+  hint: string;
+  est: number | null;
+  value: number | null;
+  src: CadDim['src'];
+  optional: boolean;
+  kind: CadDimKind;
+};
+export type CadItem = { id: string; text: string; view?: string | null; kind: 'body' | 'view' | CadFeatureType };
+export type CadState = {
+  design: CadDesign;
+  items: CadItem[];
+  questions: CadQuestion[];
+  notes: string[];
+  warnings: string[];
+  views: CadView[];
+  stamp: string; // за картинките: нова стойност при всяка промяна
+};
+export type CadFace = 'top' | 'bottom' | 'front' | 'back' | 'left' | 'right';
+export type CadEdges = 'vertical' | 'top' | 'bottom' | 'all' | 'ends';
+export type CadAdd = {
+  t: CadFeatureType;
+  face?: CadFace;
+  through?: boolean;
+  centered?: [boolean, boolean];
+  edges?: CadEdges;
+  thread?: string;
+};
+export type CadOp =
+  | { values: Record<string, number | null> }
+  | { remove: string }
+  | { add: CadAdd }
+  | { through: [string, boolean] }
+  | { flip: ['side' | 'end', 0 | 1] };
+export type CadReport = {
+  size_mm: [number, number, number];
+  volume_mm3: number;
+  kind: 'block' | 'turned';
+  measured: number;
+  estimated: number;
+  estimated_names: string[];
+  elements: string[];
+};
+export type CadFile = 'part.step' | 'part.py' | 'part.stl' | 'part.glb' | 'drawing.png';
+
+export const cadRead = (jobId: string, L: number, W: number, H: number) =>
+  call<CadState>('POST', `/jobs/${jobId}/cad/read`, { L, W, H });
+export const cadEdit = (jobId: string, design: CadDesign, op: CadOp) =>
+  call<CadState>('POST', `/jobs/${jobId}/cad/edit`, { design, op });
+export const cadBuild = (jobId: string, design: CadDesign) => call<Job>('POST', `/jobs/${jobId}/cad/build`, { design });
+export const cadQuestionUrl = (jobId: string, dim: string, stamp: string) => `${API_URL}/jobs/${jobId}/cad/question/${dim}.png?s=${stamp}`;
+export const cadPhotoUrl = (jobId: string, view: CadView, stamp: string) => `${API_URL}/jobs/${jobId}/cad/photo/${view}.jpg?s=${stamp}`;
+export const downloadCadPreview = (jobId: string, dest: File) =>
+  retrying(() => File.downloadFileAsync(`${API_URL}/jobs/${jobId}/cad/preview.glb`, dest, { headers: headers(), idempotent: true }));
+export const downloadCadFile = (jobId: string, name: CadFile, dest: File) =>
+  retrying(() => File.downloadFileAsync(`${API_URL}/jobs/${jobId}/cad/file/${name}`, dest, { headers: headers(), idempotent: true }));
