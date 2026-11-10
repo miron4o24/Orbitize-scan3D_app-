@@ -151,7 +151,10 @@ def corners(outer: np.ndarray, U: float, V: float) -> list[tuple[float, float, f
             return None
         e = LineString(between).distance(Point(c)) if len(between) >= 2 else 0.0
         ang = math.radians(180 - abs(turn))
-        r = e / (1 / math.sin(ang / 2) - 1) if e > 0.6 * tol and ang < math.pi - 1e-3 else 0.0
+        # Заоблен ъгъл само при ясен завой (поне 30°) и радиус, който се побира в съседните прави: иначе е шум.
+        r = e / (1 / math.sin(ang / 2) - 1) if e > 0.6 * tol and abs(turn) >= 30 else 0.0
+        if r > 0.5 * size:
+            r = 0.0
         out.append((float(c[0]), float(c[1]), r if r >= SHARP * size else 0.0))
     if len(out) < 3:
         return None
@@ -277,10 +280,15 @@ def hole_shape(pts: np.ndarray, size: float) -> dict:
     along_u = abs(ang) < 45
     if long / short >= 1.3 and abs(fill - slot_fill) < abs(fill - 1.0) and axis_aligned:
         return {"t": "slot", "u": c.x, "v": c.y, "len": long, "w": short, "angle": 0 if along_u else 90}
-    # Правоъгълник: радиусът на ъглите от липсващата площ (w*h - (4 - pi) r^2 = площта).
-    miss = max(0.0, rect.area - poly.area)
-    rr = math.sqrt(miss / (4 - math.pi)) if miss > 0 else 0.0
+    # Правоъгълник: ъглите като при очертанието (сянката в отвора отрязва площ, затова радиусът не е от площта).
     w, h = (long, short) if along_u else (short, long)
+    cs = corners(pts, w, h) if axis_aligned else None
+    rr = 0.0
+    if cs is not None and len(cs) == 4:
+        radii = sorted(c[2] for c in cs)
+        rr = radii[1] if radii[1] > 0 else 0.0  # поне два заоблени ъгъла (сянката заобля най-много един-два)
+        us, vs = [c[0] for c in cs], [c[1] for c in cs]
+        w, h = max(us) - min(us), max(vs) - min(vs)
     return {"t": "rect", "u": c.x, "v": c.y, "w": w, "h": h, "r": rr if rr >= SHARP * size else 0.0}
 
 

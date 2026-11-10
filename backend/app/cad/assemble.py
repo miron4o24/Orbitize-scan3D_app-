@@ -99,6 +99,7 @@ def assemble(views: dict, L: float, W: float, H: float, flips: dict | None = Non
             pts.append([lu, lv, rid])
         if len(pts) >= 2 and pts[0][:2] == pts[-1][:2]:
             pts.pop()
+        pts = tidy(pts)
         d["views"][name] = {"pts": pts} if len(pts) >= 3 else {"pts": D.box(a, b)}
     group_holes(d)
     try:
@@ -112,6 +113,23 @@ def assemble(views: dict, L: float, W: float, H: float, flips: dict | None = Non
         d["notes"].append("Очертанията от снимките не се събраха: започваме от кутия; добавете елементите ръчно.")
     D.unused_cleanup(d)
     return d
+
+
+def tidy(pts: list) -> list:
+    """Маха ъглите, които не са ъгли: повторени точки и точки по средата на права по едно ниво (стъпало, по-малко
+    от допуска, слято с ръба), докато не остане какво да се маха."""
+    changed = True
+    while changed and len(pts) > 3:
+        changed = False
+        for k in range(len(pts)):
+            p, c, n = pts[k - 1], pts[k], pts[(k + 1) % len(pts)]
+            same = c[:2] == p[:2]
+            on_line = (p[0] == c[0] == n[0]) or (p[1] == c[1] == n[1])
+            if same or (on_line and not c[2]):
+                pts = pts[:k] + pts[k + 1 :]
+                changed = True
+                break
+    return pts
 
 
 def clamp(x: float, top: float) -> float:
