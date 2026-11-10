@@ -118,9 +118,9 @@ def level_for(d: dict, axis: str, at: float, name: str, what: str, allow_center:
     ("ръба на стъпалото"). merge=False: само свое ниво (положенията на отвори не се сливат със стъпала)."""
     size = total(d, axis)
     tol = MERGE_TOL * size
-    if abs(at) <= tol * 0.5:
+    if abs(at) <= tol:  # до 3% от ръба е ръбът (на снимка по-малко не се различава от наклон и шум)
         return f"{axis}0"
-    if abs(at - size) <= tol * 0.5:
+    if abs(at - size) <= tol:
         return end_level(axis)
     if allow_center and abs(at - size / 2) <= CENTER_TOL * size:
         return f"{axis}c"
@@ -238,7 +238,7 @@ def check(d: dict) -> None:
             nu, nv, _ = pts[(k + 1) % len(pts)]
             room = min(math.dist((u, v), (pu, pv)), math.dist((u, v), (nu, nv)))
             ang = corner_angle((pu, pv), (u, v), (nu, nv))
-            if ang <= 1e-3 or r / math.tan(ang / 2) > room + 1e-6:
+            if ang <= 1e-3 or ang >= math.pi - 1e-3 or r / math.tan(ang / 2) > room + 1e-6:
                 raise DesignError(f"Радиусът {r:g} мм е твърде голям за ъгъла {VIEW_NAME[view]}.")
     for f in d["features"]:
         if f["t"] in ("hole", "rect", "slot"):

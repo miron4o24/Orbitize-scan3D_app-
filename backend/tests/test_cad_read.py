@@ -86,3 +86,29 @@ def test_turned_shaft(sess, tmp_path):
     assert sorted(round(q["est"]) for q in diam) == [6, 12]
     shoulder = next(q for q in D.questions(d) if q["kind"] == "position")
     assert shoulder["est"] == pytest.approx(20, abs=0.6)
+
+
+def test_plate_with_slot_and_square_cutout(sess, tmp_path):
+    """Канал и правоъгълен изрез с остри ъгли: сянката в изреза не бива да прави ъглите му заоблени."""
+    truth = D.new("block", 60, 36, 5)
+    truth = D.add_feature(truth, {"t": "slot", "face": "top", "through": True, "centered": [False, True]})
+    truth = D.add_feature(truth, {"t": "rect", "face": "top", "through": True, "centered": [False, True]})
+    sl, rc = truth["features"]
+    truth = D.set_values(truth, {sl["len"]: 20, sl["w"]: 6, truth["levels"][sl["u"]["lvl"]]["dim"]: 18, rc["w"]: 12,
+                                 rc["h"]: 16, truth["levels"][rc["u"]["lvl"]]["dim"]: 38})  # fmt: skip
+    B.build(measured_all(truth), tmp_path / "truth")
+    mesh = trimesh.load(tmp_path / "truth" / "part.stl", force="mesh")
+    views = {}
+    for k, (name, (U, VV)) in enumerate((("top", (60, 36)), ("side", (60, 5)))):
+        path = tmp_path / f"{name}.jpg"
+        CP.photo(mesh, name, angle=[5, -2][k], seed=k + 20, px_per_mm=12).save(path, quality=92)
+        v = V.read(sess, path, U, VV)
+        views[name] = {"outer": v.outer, "holes": v.holes, "U": U, "V": VV}
+    d = A.assemble(views, 60, 36, 5)
+    slot = next(f for f in d["features"] if f["t"] == "slot")
+    rect = next(f for f in d["features"] if f["t"] == "rect")
+    assert d["dims"][slot["len"]]["est"] == pytest.approx(20, abs=0.6)
+    assert d["dims"][slot["w"]]["est"] == pytest.approx(6, abs=0.4)
+    assert (d["dims"][rect["w"]]["est"], d["dims"][rect["h"]]["est"]) == pytest.approx((12, 16), abs=0.4)
+    assert "r" not in rect  # остри ъгли
+    assert D.coord(d, slot["u"]["lvl"]) == pytest.approx(8, abs=0.5)  # левият край на канала
