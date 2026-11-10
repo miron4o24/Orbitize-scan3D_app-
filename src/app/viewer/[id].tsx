@@ -9,6 +9,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import type { Object3D } from 'three';
 
 import { FullscreenModel } from '@/components/FullscreenModel';
+import { CadPanel } from '@/components/cad/CadPanel';
 import { MeasureTool } from '@/components/MeasureTool';
 import { ModelView, type Spot } from '@/components/ModelView';
 import { Appear, fade, PressScale, Skeleton, swap } from '@/components/motion';
@@ -37,7 +38,7 @@ import { exportForPrint } from '@/lib/exportModel';
 import { badgeOf, deleteEntry } from '@/lib/library';
 import { parseGlb } from '@/lib/model';
 import { allowance, allowanceNote, blocked } from '@/lib/plan';
-import { PRO_INFO, SCAN_INFO } from '@/lib/prefs';
+import { madeWith, SCAN_INFO } from '@/lib/prefs';
 import { estimate, euro, getPrices, printTime, setPrice } from '@/lib/printEstimate';
 import { checkProgress } from '@/lib/progress';
 import { createScan, getScan, modelFile, scanTitle, updateScan } from '@/lib/scans';
@@ -343,7 +344,7 @@ export default function Viewer() {
   const done = scan.status === 'done';
   const kind = badgeOf(scan.status);
   // Кой от двата начина го е създал; безплатният профил има само един, затова няма какво да се различава.
-  const way = report?.ai ? PRO_INFO[report.ai].label : report && !report.edit && user?.pro ? SCAN_INFO.label : null;
+  const way = report?.ai ? madeWith(report.ai) : report && !report.edit && user?.pro ? SCAN_INFO.label : null;
   const tabs: { value: Tab; label: string }[] = [
     { value: 'size', label: 'Размер' },
     { value: 'files', label: 'Файлове' },
@@ -439,6 +440,12 @@ export default function Viewer() {
         )}
 
         {error && <ErrorText>{error}</ErrorText>}
+
+        {report?.cad && !!jobId && done && (
+          <Appear index={3}>
+            <CadPanel scanId={id} jobId={jobId} cad={report.cad} stamp={String(report.cad.volume_mm3)} />
+          </Appear>
+        )}
 
         <Appear index={3}>
           <Segmented<Tab> value={tab} onChange={setTab} options={tabs} />
@@ -613,7 +620,7 @@ export default function Viewer() {
         {!!user?.owner && !!report && (
           <Section label="Собственик">
             <Card style={s.list}>
-              <Row label="Начин" value={report.ai ? PRO_INFO[report.ai].label : report.edit ? 'Промяна с AI' : 'Сканиране'} last={report.seconds == null} />
+              <Row label="Начин" value={report.ai ? madeWith(report.ai) : report.edit ? 'Промяна с AI' : 'Сканиране'} last={report.seconds == null} />
               {report.seconds != null && <Row label="Време за обработка" value={duration(report.seconds)} last />}
             </Card>
           </Section>

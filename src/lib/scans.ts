@@ -1,6 +1,6 @@
 import { Directory, File, Paths } from 'expo-file-system';
 
-import type { Method, Report, ServerScan } from './api';
+import type { CadDesign, Method, Report, ServerScan } from './api';
 import { dayMonth } from './dates';
 import type { Quality } from './prefs';
 
@@ -35,6 +35,7 @@ export type Scan = {
   imported?: boolean; // видеото е от галерията, а не от камерата на приложението
   method?: Method; // AI модел (Pro) вместо сканиране (липсва: сканиране)
   extendFrom?: string; // това видео добавя липсваща страна към този модел (номер на задачата му)
+  cad?: CadDesign; // инженерният режим: описанието на детайла с мерките (за промяна по-късно)
 };
 
 const root = new Directory(Paths.document, 'scans');
@@ -79,6 +80,8 @@ export function importScan(server: ServerScan, userId: string): Scan {
     title: server.title || undefined,
     share: server.share ?? undefined,
     published: !!server.published || undefined,
+    ...(server.report?.real_mm && { longestMm: server.report.real_mm }), // истинският размер (CAD детайл, AI модел)
+    ...(server.report?.ai === 'cad' && { method: 'cad' as const }),
   };
   scanDir(scan.id).create({ intermediates: true });
   saveScan(scan);

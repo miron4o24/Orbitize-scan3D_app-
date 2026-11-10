@@ -19,6 +19,12 @@ export const PRO_INFO: Record<ProMethod, { label: string; time: string; minutes:
   photo: { label: 'AI от снимки', time: '~3 мин', minutes: 3 },
 };
 
+// Инженерният режим (сървър app/cad): безплатен, детайлът се строи от измерените размери.
+export const CAD_INFO = { label: 'Инженерен CAD', time: '~5 мин' };
+
+/* Как е създаден моделът, за етикета в прегледа. */
+export const madeWith = (ai: ProMethod | 'cad') => (ai === 'cad' ? CAD_INFO.label : PRO_INFO[ai].label);
+
 /* Единственият AI модел на безплатен профил, още неизползван. */
 export function aiTrial(): boolean {
   const s = getSession();
