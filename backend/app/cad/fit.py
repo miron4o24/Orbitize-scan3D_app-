@@ -222,10 +222,14 @@ def smooth_out(lines: list, p: np.ndarray, size: float) -> list:
     def turn(a, b) -> float:
         return abs(math.degrees(math.atan2(cross2(a[1], b[1]), a[1] @ b[1])))
 
+    def stepped(a, b) -> bool:  # успоредни, но разместени: стъпало (например по-тесен край), а не дъга
+        return turn(a, b) < 10 and point_line_dist(b[0], a[0], a[1]) > 0.5 * TOL * size
+
     keep = []
     for k, ln in enumerate(lines):
-        sharp = min(turn(lines[k - 1], ln), turn(ln, lines[(k + 1) % m])) >= SHARP_TURN
-        if sharp or length(ln) >= LONG_EDGE * size:
+        prev, nxt = lines[k - 1], lines[(k + 1) % m]
+        sharp = min(turn(prev, ln), turn(ln, nxt)) >= SHARP_TURN
+        if sharp or length(ln) >= LONG_EDGE * size or stepped(prev, ln) or stepped(ln, nxt):
             keep.append(ln)
     return keep if len(keep) >= 2 else lines
 
@@ -248,6 +252,77 @@ def symmetric_round(cs: list, U: float, V: float) -> list[tuple[float, float, fl
         mate = max(mates, default=0.0)
         out.append((u, v, (r + mate) / 2 if mate and r >= 0.4 * mate else 0.0))
     return out
+
+
+TAB_INSET = 0.02  # край, по-тесен от тялото поне с толкова (дял от ширината, и поне 0,4 мм) от двете страни
+TAB_MAX = 0.2  # и не по-дълъг от толкова от дължината
+
+
+def end_tabs(outer: np.ndarray, U: float, V: float) -> list[dict]:
+    """По-тесен край (например краят на флашка срещу капачката): в края по дължината ширината е по-малка от тази на
+    тялото от двете страни. Връща [{"end": 0 или 1, "len", "lo", "hi"}] в мм: колко е дълъг и с колко е навътре
+    отпред (lo) и отзад (hi). Тези стъпала са къси (под MIN_EDGE) и с меки ръбове на снимката, затова се търсят по
+    ширината, а не като ъгли."""
+    poly = Polygon(outer).buffer(0)
+    if poly.geom_type != "Polygon":
+        return []
+    step = U / 400
+    xs = np.arange(step / 2, U, step)
+    lo, hi = np.full(len(xs), np.nan), np.full(len(xs), np.nan)
+    for i, x in enumerate(xs):
+        c = poly.intersection(LineString([(x, -1), (x, V + 1)]))
+        if not c.is_empty:
+            lo[i], hi[i] = c.bounds[1], c.bounds[3]
+    body = (xs > 0.25 * U) & (xs < 0.75 * U)
+    lo_b, hi_b = np.nanmedian(lo[body]), np.nanmedian(hi[body])
+    d_min = max(0.4, TAB_INSET * V)
+    out = []
+    for end in (0, 1):
+        idx = np.arange(len(xs)) if end == 0 else np.arange(len(xs))[::-1]
+        dist = xs if end == 0 else U - xs
+        inside = (lo[idx] - lo_b > d_min / 2) & (hi_b - hi[idx] > d_min / 2)
+        n = 0
+        while n < len(idx) and dist[idx[n]] < TAB_MAX * U and (inside[n] or dist[idx[n]] < 0.015 * U):
+            n += 1
+        length = float(dist[idx[n]]) if n < len(idx) else 0.0
+        if length < 0.04 * U or length >= TAB_MAX * U:
+            continue
+        core = idx[(dist[idx] > 0.25 * length) & (dist[idx] < 0.75 * length)]
+        if len(core) < 3:
+            continue
+        d_lo, d_hi = float(np.nanmedian(lo[core] - lo_b)), float(np.nanmedian(hi_b - hi[core]))
+        if d_lo >= d_min and d_hi >= d_min:
+            out.append({"end": end, "len": length, "lo": d_lo, "hi": d_hi})
+    return out
+
+
+def apply_tabs(cs: list, tabs: list, U: float, V: float) -> list:
+    """Ъглите на очертанието (обратно на часовника) с по-тесните краища: ъглите в края (и намерените от тях
+    стъпала) се заменят със стъпало навътре от двете страни; радиусът им остава за ъглите на по-тесния край."""
+    for t in tabs:
+        x_e = t["len"] if t["end"] == 0 else U - t["len"]
+        reach = 1.2 * t["len"]
+        near = [(c[0] < reach) if t["end"] == 0 else (c[0] > U - reach) for c in cs]
+        n = len(cs)
+        if sum(near) < 2 or all(near):
+            continue
+        start = next(k for k in range(n) if near[k] and not near[k - 1])  # началото на поредицата в края
+        block = []
+        k = start
+        while near[k % n] and len(block) < n:
+            block.append(k % n)
+            k += 1
+        if len(block) != sum(near):
+            continue  # ъглите в края не са една поредица
+        r = min(max(cs[k][2] for k in block), 0.45 * t["len"], 0.45 * (V - t["lo"] - t["hi"]))
+        lo, hi = t["lo"], V - t["hi"]
+        if t["end"] == 0:  # отляво обратно на часовника: отгоре надолу
+            new = [(x_e, V, 0.0), (x_e, hi, 0.0), (0.0, hi, r), (0.0, lo, r), (x_e, lo, 0.0), (x_e, 0.0, 0.0)]
+        else:  # отдясно: отдолу нагоре
+            new = [(x_e, 0.0, 0.0), (x_e, lo, 0.0), (U, lo, r), (U, hi, r), (x_e, hi, 0.0), (x_e, V, 0.0)]
+        rest = [cs[(start + len(block) + j) % n] for j in range(n - len(block))]
+        cs = new + rest
+    return cs
 
 
 def cross2(a, b) -> float:

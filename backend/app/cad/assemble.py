@@ -98,6 +98,8 @@ def assemble(views: dict, L: float, W: float, H: float) -> dict:
         cs = fit.corners(v["outer"], v["U"], v["V"], raw=True)
         if cs is not None:
             cs = fit.symmetric_round(cs, v["U"], v["V"])
+            if name == "top":  # по-тесен край (флашка, химикалка): къси стъпала, които ъглите не хващат
+                cs = fit.apply_tabs(cs, fit.end_tabs(v["outer"], v["U"], v["V"]), v["U"], v["V"])
         if cs is None:
             d["views"][name] = free_view(d, v, a, b, name)
             d["notes"].append(f"Очертанието {D.VIEW_NAME[name]} не е от прави и дъги: взето е от снимката (оценено).")

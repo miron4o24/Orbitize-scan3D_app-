@@ -258,8 +258,8 @@ def base_view(d: dict, view: str, size=(1000, 640), margin=120) -> Sheet:
     sh.poly(silhouette(d, view), fill=FILL, outline=INK, width=4)
     for _, pts in features_in(d, view):
         sh.poly(pts, fill=PAPER, outline=INK, width=3)
-    for x in split_xs(d, view):  # граница между части (капачка и тяло)
-        sh.line((x, -V * 0.04), (x, V * 1.04), BLUE, 3, dash=16)
+    for x0, x1 in split_lines(d, view):  # граница между части (капачка и тяло): отдолу x0, отгоре x1
+        sh.line((x0, -V * 0.04), (x1, V * 1.04), BLUE, 3, dash=16)
     if view == "profile":  # оста и отворът по нея (скрит: пунктир)
         R = V / 2
         sh.line((-U * 0.04, R), (U * 1.04, R), SOFT, 2, dash=14)
@@ -273,17 +273,20 @@ def base_view(d: dict, view: str, size=(1000, 640), margin=120) -> Sheet:
     return sh
 
 
-def split_xs(d: dict, view: str) -> list[float]:
-    """Границите между части (по X) в изглед, в който X е хоризонталата."""
+def split_lines(d: dict, view: str) -> list[tuple[float, float]]:
+    """Границите между части в изглед, в който X е хоризонталата: (X долу, X горе) на изгледа. Отгоре се вижда
+    горната страна; отпред (и в профила) границата може да е по диагонал от долната към горната страна."""
     if view not in ("top", "side", "profile"):
         return []
     out = []
     for f in d["features"]:
         if f["t"] == "split":
             try:
-                out.append(D.coord(d, f["at"]))
+                top = D.coord(d, f["at"])
+                low = D.coord(d, f["at2"]) if f.get("at2") else top
             except D.DesignError:
-                pass
+                continue
+            out.append((top, top) if view == "top" else (low, top))
     return out
 
 
@@ -534,8 +537,8 @@ def overlay(d: dict, view: str, photo: Image.Image, A, side: int = 1100) -> Imag
         xy = [sh.px(u, v) for u, v in pts]
         sh.stroke(xy + [xy[0]], ACCENT, 4)
     if not (d["kind"] == "turned" and view == "end"):
-        for x in split_xs(d, "profile" if d["kind"] == "turned" else view):
-            sh.line((x, 0), (x, V), ACCENT, 3, dash=14)
+        for x0, x1 in split_lines(d, "profile" if d["kind"] == "turned" else view):
+            sh.line((x0, 0), (x1, V), ACCENT, 3, dash=14)
     return sh.im
 
 

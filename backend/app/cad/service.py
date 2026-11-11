@@ -136,9 +136,9 @@ def assemble(job: Path, values: dict, flips: dict | None = None) -> dict:
     views, warnings = P.views_mm(sh, lay, L, W, H)
     d = AS.assemble(views, L, W, H)
     xs = [D.coord(d, lid) for lid, spec in d["levels"].items() if spec["axis"] == "x"]
-    for x in seams(job, sh, lay, L, W):
+    for x, x_bottom in seams(job, sh, lay, L, W):
         if all(abs(x - lx) > 0.04 * L for lx in xs):  # не е ръбът на стъпало
-            d = D.add_split(d, x)
+            d = D.add_split(d, x, x_bottom)
     d["flips"] = flips
     return response(job, d, lay["warnings"] + warnings)
 
@@ -150,7 +150,7 @@ def seams(job: Path, sh: dict, lay: dict, L: float, W: float) -> list[float]:
     """Границите между две части по дължината (капачка и тяло, два материала): права линия през цялата ширина на
     предмета на снимката отгоре (рязка смяна на яркостта по дължината в поне 90% от ширината; надписите и отворите
     не я пресичат цялата). Ако има и снимка отдолу, там трябва да има линия наблизо (до 10% от дължината); иначе
-    е рисунка само отгоре. Връща X в мм (до две)."""
+    е рисунка само отгоре. Връща [(X отгоре, X отдолу или None)] в мм (до две)."""
     from scipy import ndimage
 
     from .vision import load
@@ -181,10 +181,15 @@ def seams(job: Path, sh: dict, lay: dict, L: float, W: float) -> list[float]:
             if not merged or x - merged[-1] > 2.0:
                 merged.append(x)
         found[name] = merged
-    top = found.get("top", [])
-    if "bottom" in found:
-        top = [x for x in top if any(abs(x - y) <= 0.1 * L for y in found["bottom"])]
-    return top[:2]
+    out = []
+    for x in found.get("top", []):
+        if "bottom" not in found:
+            out.append((x, None))
+            continue
+        near = [y for y in found["bottom"] if abs(x - y) <= 0.1 * L]
+        if near:  # отдолу границата може да е на друго място: по страните минава по диагонал
+            out.append((x, min(near, key=lambda y: abs(x - y))))
+    return out[:2]
 
 
 def edit(job: Path, raw: dict, op: dict) -> dict:
