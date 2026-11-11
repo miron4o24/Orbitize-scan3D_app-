@@ -182,7 +182,10 @@ def spin(job: Path, out: Path, ffmpeg: str, frames: int | None = None):
 
 
 def picture(job: Path) -> Image.Image:
-    mesh = trimesh.load(job / "model.ply", force="mesh")  # Z нагоре, основа върху z = 0
+    # Z нагоре, основа върху z = 0. Детайл от инженерния режим: без сливане на върховете, иначе там, където
+    # капачката опира в тялото, върховете стават общи и цветовете им се размазват по съседните триъгълници.
+    cad = (job / "cad" / "out" / "display.ply").exists()
+    mesh = trimesh.load(job / "model.ply", force="mesh", process=not cad)
     size = SIDE * SUPER
     pts, col, nrm = surface(job, mesh, int(POINTS_PER_PIXEL * size * size * 0.5))
     R = view_turn(best_side(pts, col))

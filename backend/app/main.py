@@ -514,6 +514,8 @@ def result(job_id: str, fmt: str, longest_mm: float | None = Query(None, gt=0, l
     # Детайл от инженерния режим: върховете по острите ръбове са нарочно разделени (остри ръбове, цветни части);
     # сливането им при зареждане (както за сканиране) би го показало размазан и закръглен.
     out = job / "cad" / "out"
+    if fmt == "glb" and (out / "part.py").exists() and not (out / "display.ply").exists():
+        CAD.refresh(job)  # построен преди цветните части: същото тяло с новия вид (и нова картинка в историята)
     cad = (out / "display.ply").exists() and fmt == "glb"
     mesh = trimesh.load(job / "model.ply", force="mesh", process=not cad)
     if fmt == "glb" and not cad and (out / "part.stl").exists():  # построен преди display.ply: само острите ръбове

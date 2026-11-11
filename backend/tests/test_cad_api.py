@@ -87,6 +87,13 @@ def test_read_measure_build_and_download(client):
         assert r.status_code == 200 and r.content[:4] == b"\x89PNG"
     for v in ("top", "front"):
         assert client.get(f"/jobs/{job}/cad/photo/{v}.jpg").content[:3] == b"\xff\xd8\xff"
+    # 3D прегледът по оценките: изправен (височината по Y, както всеки glTF и моделът в историята).
+    import trimesh
+
+    pv = client.get(f"/jobs/{job}/cad/preview.glb")
+    assert pv.status_code == 200
+    shown = trimesh.load(io.BytesIO(pv.content), file_type="glb", force="mesh", process=False)
+    assert np.allclose(shown.extents, [60, 8, 30], atol=0.5)
     # Мерките: отворът 6,2 с шублера, другото по оценката.
     values = {q["id"]: q["est"] for q in got["questions"] if q["est"] is not None}
     values[hole["d"]] = 6.2
@@ -116,18 +123,26 @@ def test_read_measure_build_and_download(client):
     attrs = json.loads(glb.content[20:20 + n])["meshes"][0]["primitives"][0]["attributes"]
     # Остри ръбове и цвят: с общи нормали през ръбовете (както при сканиране) детайлът изглеждаше размазан.
     assert {"NORMAL", "COLOR_0"} <= set(attrs)
-    import numpy as np
-    import trimesh
 
     shown = trimesh.load(io.BytesIO(glb.content), file_type="glb", force="mesh", process=False)
     corner = np.isclose(np.abs(shown.vertex_normals).max(1), 1.0, atol=1e-3).mean()
     assert corner > 0.5  # по равните стени нормалите са точно перпендикулярни, не наклонени към ръбовете
-    # Детайл, построен преди display.ply: острите ръбове се разделят при изпращане.
+    # Детайл, построен преди display.ply: при първото отваряне прегледът се прави наново от същото тяло (part.py).
     from app import jobs
 
-    (jobs.job_dir(job) / "cad" / "out" / "display.ply").unlink()
+    out = jobs.job_dir(job) / "cad" / "out"
+    step = (out / "part.step").read_bytes()
+    (out / "display.ply").unlink()
+    again = client.get(f"/jobs/{job}/result.glb")
+    assert again.status_code == 200 and (out / "display.ply").exists()
+    assert (out / "part.step").read_bytes() == step  # файловете за изработка не се променят
+    shown = trimesh.load(io.BytesIO(again.content), file_type="glb", force="mesh", process=False)
+    assert np.isclose(np.abs(shown.vertex_normals).max(1), 1.0, atol=1e-3).mean() > 0.5
+    # Без part.py (не може да се направи наново): острите ръбове се разделят при изпращане.
+    (out / "display.ply").unlink()
+    (out / "part.py").unlink()
     old = client.get(f"/jobs/{job}/result.glb")
-    assert old.status_code == 200
+    assert old.status_code == 200 and not (out / "display.ply").exists()
     shown = trimesh.load(io.BytesIO(old.content), file_type="glb", force="mesh", process=False)
     assert np.isclose(np.abs(shown.vertex_normals).max(1), 1.0, atol=1e-3).mean() > 0.5
 

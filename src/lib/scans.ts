@@ -44,7 +44,10 @@ export const scanDir = (id: string) => new Directory(root, id);
 export const photosDir = (id: string) => new Directory(scanDir(id), 'photos');
 export const videoFile = (id: string) => new File(scanDir(id), 'video.mp4'); // iOS записва MOV; сървърът чете и двата формата
 export const motionFile = (id: string) => new File(scanDir(id), 'motion.json'); // положението на телефона по време на записа
-export const modelFile = (id: string) => new File(scanDir(id), 'model.glb');
+// CAD детайлите имат собствен файл с версия: при промяна в начина, по който сървърът ги показва (CAD_DISPLAY),
+// приложението ги изтегля наново, вместо да показва стария запазен файл.
+export const CAD_DISPLAY = 3;
+export const modelFile = (id: string, cad = false) => new File(scanDir(id), cad ? `model-cad${CAD_DISPLAY}.glb` : 'model.glb');
 const metaFile = (id: string) => new File(scanDir(id), 'scan.json');
 
 const newId = () => `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;

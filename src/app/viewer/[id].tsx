@@ -46,8 +46,12 @@ import { currentUserId, useSession } from '@/lib/session';
 import { INFILLS, MATERIALS, type Infill, type Material } from '@/lib/stress';
 import { font, makeStyles, radius, space, text, useColors } from '@/theme';
 
-async function loadModel(id: string, jobId: string | undefined): Promise<Object3D> {
-  const file = modelFile(id);
+async function loadModel(id: string, jobId: string | undefined, cad: boolean): Promise<Object3D> {
+  const file = modelFile(id, cad);
+  if (cad) {
+    const old = modelFile(id); // запазеният преди файл (със старото показване): не се ползва повече
+    if (old.exists) old.delete();
+  }
   if (!file.exists) {
     if (!jobId) throw new Error('Моделът вече не е наличен.');
     await downloadResult(jobId, 'glb', file);
@@ -163,16 +167,17 @@ export default function Viewer() {
     };
   }, [needGeometry, jobId, id]);
 
+  const isCad = !!scan?.cad;
   useEffect(() => {
     let cancelled = false;
-    loadModel(id, jobId).then(
+    loadModel(id, jobId, isCad).then(
       (m) => !cancelled && setModel(m),
       (e) => !cancelled && setLoadError(`Моделът не се зареди. ${errorText(e)}`),
     );
     return () => {
       cancelled = true;
     };
-  }, [id, jobId, attempt]);
+  }, [id, jobId, attempt, isCad]);
 
   const mm = Number(mmInput.replace(',', '.'));
   const mmValid = Number.isFinite(mm) && mm >= 1 && mm <= 2000;
@@ -201,7 +206,7 @@ export default function Viewer() {
     run(format, async () => {
       if (!model || !mmValid) return;
       setScan(updateScan(id, { longestMm: mm }));
-      let file = modelFile(id);
+      let file = modelFile(id, !!scan?.cad);
       if (format !== 'glb') {
         file = new File(Paths.cache, `scan-${id}-${Math.round(mm)}mm.${format}`);
         if (surface === 'smooth' && jobId) {
