@@ -327,6 +327,7 @@ def segment(sess, path, points: list | None = None) -> dict:
         raise ValueError("cut")
     return {"outer": np.round(outer + off, 2).tolist(), "holes": [np.round(h + off, 2).tolist() for h in holes],
             "size": list(im.size), "f35": focal35(path), "lines": line_profiles(im, outer + off),
+            "looks": looks(im, outer + off), "profiles": PROFILES,
             **marks_of(np.asarray(im.crop(box), np.float32), solid, off), "by": by}  # fmt: skip
 
 
@@ -337,25 +338,20 @@ def marks_of(rgb: np.ndarray, solid: np.ndarray, off: np.ndarray) -> dict:
 
 
 LINE_BINS = 200
+PROFILES = 2  # версията на lines и looks (осите на снимката): по-старите се смятат наново от снимката
 
 
 def line_profiles(im: Image.Image, outer: np.ndarray) -> dict:
     """Колко от ширината на предмета пресича права линия (шев, граница капачка/тяло, ръб на отвор) на всяко място
     по дължината му и по ширината му (по LINE_BINS места от единия до другия край), по осите на най-малкия описан
-    правоъгълник (както в photos.Frame). По тях се разбира как е обърната снимката на симетричен предмет."""
+    правоъгълник (fit.main_axes, както в photos.Frame). По тях се разбира как е обърната снимката на симетричен
+    предмет."""
     from scipy import ndimage as nd
 
+    from .fit import main_axes
+
     q = outer * [1.0, -1.0]
-    poly = Polygon(q).buffer(0)
-    if poly.geom_type != "Polygon":
-        poly = max(poly.geoms, key=lambda g: g.area)
-    rect = poly.minimum_rotated_rectangle
-    rx, ry = rect.exterior.coords.xy
-    edges = [(rx[k + 1] - rx[k], ry[k + 1] - ry[k]) for k in range(2)]
-    e = max(edges, key=lambda v: math.hypot(*v))
-    phi = (math.degrees(math.atan2(e[1], e[0])) + 90) % 180 - 90
-    l = np.array([math.cos(math.radians(phi)), math.sin(math.radians(phi))])
-    s_ = np.array([-l[1], l[0]])
+    l, s_, _ = main_axes(q)
     gray = nd.gaussian_filter(np.asarray(im.convert("L"), np.float32), 1.0)
     out = {}
     for key, a, b in (("l", l, s_), ("s", s_, l)):
@@ -371,6 +367,53 @@ def line_profiles(im: Image.Image, outer: np.ndarray) -> dict:
         thr = max(3 * float(np.median(diff)), 6.0)
         cover = np.r_[np.zeros(k // 2), (diff > thr).mean(1), np.zeros(k - k // 2)]
         out[key] = np.round(cover.reshape(LINE_BINS, 2).max(1), 3).tolist()
+    return out
+
+
+LOOK_BINS = 48
+
+
+def looks(im: Image.Image, outer: np.ndarray) -> dict:
+    """Как изглежда детайлът по дължината и по ширината си (LOOK_BINS места от единия до другия край, по осите на
+    fit.main_axes, както в photos.Frame): средният цвят (Lab) и колко е пъстро (разсейването на
+    яркостта). По тях photos.layout разбира кой край на снимката отстрани е кой край на снимката отгоре: капачката,
+    прозрачната или цветната част и надписите са в единия край на всяка снимка."""
+    from skimage import color
+    from skimage.draw import polygon as fill
+
+    from .fit import main_axes
+
+    q = outer * [1.0, -1.0]
+    l, s_, _ = main_axes(q)
+    x0, y0 = np.floor(outer.min(0)).astype(int)
+    x1, y1 = np.ceil(outer.max(0)).astype(int) + 1
+    x0, y0, x1, y1 = max(x0, 0), max(y0, 0), min(x1, im.size[0]), min(y1, im.size[1])
+    rgb = np.asarray(im.crop((x0, y0, x1, y1)).convert("RGB"), np.float32) / 255
+    mask = np.zeros(rgb.shape[:2], bool)
+    rr, cc = fill(outer[:, 1] - y0, outer[:, 0] - x0, mask.shape)
+    mask[rr, cc] = True
+    small = min(np.ptp(q @ l), np.ptp(q @ s_))
+    inner = ndimage.binary_erosion(mask, iterations=max(2, round(0.06 * small)))  # без сенките по ръба
+    if inner.sum() < 50:
+        inner = mask
+    ys, xs = np.nonzero(inner)
+    lab = color.rgb2lab(rgb[ys, xs])
+    pts = np.c_[xs + x0, -(ys + y0)].astype(float)
+    out = {}
+    for key, a in (("l", l), ("s", s_)):
+        ta = q @ a
+        t = (pts @ a - ta.min()) / max(np.ptp(ta), 1e-9)
+        k = np.clip((t * LOOK_BINS).astype(int), 0, LOOK_BINS - 1)
+        lab_bins, tex = [], []
+        for i in range(LOOK_BINS):
+            sel = lab[k == i]
+            if len(sel) < 5:
+                lab_bins.append(None)
+                tex.append(None)
+                continue
+            lab_bins.append([round(float(x), 2) for x in np.median(sel, axis=0)])
+            tex.append(round(float(sel[:, 0].std()), 2))
+        out[key] = {"lab": lab_bins, "tex": tex}
     return out
 
 

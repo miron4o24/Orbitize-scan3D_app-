@@ -38,6 +38,8 @@ const GOOD = '#22c55e';
 
 export function Shoot({
   index,
+  step,
+  count,
   only,
   folder,
   onTaken,
@@ -45,6 +47,8 @@ export function Shoot({
   onClose,
 }: {
   index: number;
+  step: number; // коя поред е тази снимка (от 1) и колко са (плосък детайл: само отгоре и отдолу)
+  count: number;
   only?: boolean; // само тази снимка (без "Пропусни" и без брояч)
   folder: Directory;
   onTaken: (file: File) => void;
@@ -117,7 +121,7 @@ export function Shoot({
               <Ionicons name="close" size={20} color={WHITE} />
             </Pressable>
             <View style={styles.pill}>
-              <Text style={styles.pillText}>{single ? `Отново · ${shot.title}` : `${index + 1} от ${SHOTS.length} · ${shot.title}`}</Text>
+              <Text style={styles.pillText}>{single ? `Отново · ${shot.title}` : `${step} от ${count} · ${shot.title}`}</Text>
             </View>
             <Pressable
               style={[styles.round, torch && styles.roundOn]}

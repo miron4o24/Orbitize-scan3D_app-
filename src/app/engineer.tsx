@@ -45,6 +45,11 @@ import { font, makeStyles, space } from '@/theme';
 
 type Phase = 'intro' | 'shoot' | 'photos' | 'reading' | 'outlines' | 'overall' | 'review' | 'measure' | 'building';
 
+// Плосък детайл (кука, пластина, шайба): отстрани няма какво да се види (и не стои изправен), затова само отгоре и
+// отдолу; сървърът го прави с една дебелина навсякъде и пита за заобляне на ръбовете.
+const ALL_SHOTS: CadPhoto[] = SHOTS.map((x) => x.photo);
+const FLAT_SHOTS: CadPhoto[] = ['top', 'bottom'];
+
 export default function Engineer() {
   useKeepAwake();
   const { scan: editId } = useLocalSearchParams<{ scan?: string }>();
@@ -59,6 +64,8 @@ export default function Engineer() {
   const [phase, setPhase] = useState<Phase>(editing ? 'reading' : 'intro');
   const [shot, setShot] = useState(0);
   const [single, setSingle] = useState(false); // снимане отново на една снимка от прегледа
+  const [flat, setFlat] = useState(false);
+  const order = flat ? FLAT_SHOTS : ALL_SHOTS;
   const [photos, setPhotos] = useState<Partial<Record<CadPhoto, File>>>({});
   const [uploading, setUploading] = useState(0);
   const [jobId, setJobId] = useState<string | null>(editing?.jobId ?? null);
@@ -135,7 +142,7 @@ export default function Engineer() {
         if (file) await uploadPhoto(id, file); // повторен опит за неуспешно качените
         failed.current.delete(photo);
       }
-      const p = await cadRead(id);
+      const p = await cadRead(id, flat);
       setPlan(p);
       setOi(0);
       setPhase('outlines');
@@ -152,7 +159,7 @@ export default function Engineer() {
     setPlan(null);
     setPhase('reading');
     try {
-      const p = await cadRead(jobId);
+      const p = await cadRead(jobId, flat);
       setPlan(p);
       setOi(0);
       setPhase('overall');
@@ -175,7 +182,7 @@ export default function Engineer() {
     setError(null);
     setPhase('reading');
     try {
-      const st = await cadAssemble(jobId, values);
+      const st = await cadAssemble(jobId, values, flat);
       setState(st);
       setPhase('review');
     } catch (e) {
@@ -294,28 +301,42 @@ export default function Engineer() {
         </Screen>
       );
     const photo = SHOTS[shot].photo;
+    const step = order.indexOf(photo);
     const done = (file: File | null) => {
       if (file) {
         setPhotos((p) => ({ ...p, [photo]: file }));
         upload(photo, file);
       }
-      if (single || shot === SHOTS.length - 1) {
+      if (single || step < 0 || step === order.length - 1) {
         setSingle(false);
         setPhase('photos');
-      } else setShot(shot + 1);
+      } else setShot(SHOTS.findIndex((x) => x.photo === order[step + 1]));
     };
     const close = () => {
       if (!single) return router.back();
       setSingle(false);
       setPhase('photos');
     };
-    return <Shoot key={`${shot}-${single}`} index={shot} only={single} folder={folder} onTaken={done} onSkip={() => done(null)} onClose={close} />;
+    return (
+      <Shoot
+        key={`${shot}-${single}`}
+        index={shot}
+        step={step + 1}
+        count={order.length}
+        only={single}
+        folder={folder}
+        onTaken={done}
+        onSkip={() => done(null)}
+        onClose={close}
+      />
+    );
   }
 
   if (phase === 'photos')
     return (
       <SafeAreaView style={s.safe} edges={['top']}>
         <Photos
+          shots={order}
           photos={photos}
           uploading={uploading > 0}
           error={error}
@@ -368,6 +389,7 @@ export default function Engineer() {
           jobId={jobId}
           stamp={plan.stamp}
           kicker="Общите размери ·"
+          zero={false}
           question={{ ...q, est: null, value: sizes[q.id] ?? null, src: 'photo', optional: false, kind: q.id === 'D' ? 'diameter' : 'length' }}
           index={oi}
           count={plan.overall.length}
@@ -457,19 +479,38 @@ export default function Engineer() {
         </Section>
         <Note>
           Нужен е шублер (или линийка за по-груби мерки) и контрастна повърхност: светъл предмет на тъмна маса или обратно. За
-          плочи, скоби, капаци, кутии, валове, цилиндри; не за свободни (органични) форми.
+          плочи, скоби, куки, капаци, кутии, валове, цилиндри; не за свободни (органични) форми.
         </Note>
-        <Button
-          title={started ? 'Към снимките' : 'Започни'}
-          variant="brand"
-          size="lg"
-          icon="camera-outline"
-          onPress={() => {
-            if (started) return setPhase('photos');
-            setShot(0);
-            setPhase('shoot');
-          }}
-        />
+        {started ? (
+          <Button title="Към снимките" variant="brand" size="lg" icon="camera-outline" onPress={() => setPhase('photos')} />
+        ) : (
+          <>
+            <Button
+              title="Обемен предмет"
+              sub="Снимки от всички страни (до 6): кутия, флашка, капачка, вал"
+              variant="brand"
+              size="lg"
+              icon="cube-outline"
+              onPress={() => {
+                setFlat(false);
+                setShot(0);
+                setPhase('shoot');
+              }}
+            />
+            <Button
+              title="Плосък детайл"
+              sub="Само отгоре и отдолу: кука, пластина, шайба, уплътнение. Една дебелина навсякъде"
+              variant="secondary"
+              size="lg"
+              icon="layers-outline"
+              onPress={() => {
+                setFlat(true);
+                setShot(0);
+                setPhase('shoot');
+              }}
+            />
+          </>
+        )}
         <Button title="Назад" variant="ghost" onPress={() => router.back()} />
       </Screen>
     </SafeAreaView>
@@ -479,7 +520,7 @@ export default function Engineer() {
 const STEPS: [string, string][] = [
   [
     'Снимки от всички страни',
-    'До 6 снимки отгоре: за всяка обръщате предмета с друга страна нагоре. Картинка показва коя и как; нивелирът казва кога телефонът е прав.',
+    'До 6 снимки отгоре: за всяка обръщате предмета с друга страна нагоре. Картинка показва коя и как; нивелирът казва кога телефонът е прав. Плосък детайл: само отгоре и отдолу.',
   ],
   ['Общите размери', 'Дължина, ширина, височина: оранжева линия върху вашата снимка показва какво да измерите.'],
   ['Какво виждам', 'Сървърът разчита очертанията, стъпалата и отворите; проверявате ги в 3D и добавяте пропуснатото.'],

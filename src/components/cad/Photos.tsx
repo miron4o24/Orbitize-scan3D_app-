@@ -12,6 +12,7 @@ import { SHOTS } from './Shoot';
 // Преглед на снимките след снимането: коя страна е снимана и коя пропусната; докосване снима отново само нея.
 
 export function Photos({
+  shots,
   photos,
   uploading,
   error,
@@ -19,6 +20,7 @@ export function Photos({
   onNext,
   onBack,
 }: {
+  shots: CadPhoto[]; // снимките на режима (плосък детайл: отгоре и отдолу)
   photos: Partial<Record<CadPhoto, File>>;
   uploading: boolean;
   error: string | null;
@@ -28,16 +30,17 @@ export function Photos({
 }) {
   const s = useStyles();
   const c = useColors();
-  const count = SHOTS.filter((shot) => photos[shot.photo]).length;
+  const list = SHOTS.filter((shot) => shots.includes(shot.photo));
+  const count = list.filter((shot) => photos[shot.photo]).length;
   return (
     <Screen>
       <Header
-        kicker={`Инженерен CAD · ${count} от ${SHOTS.length} снимки`}
+        kicker={`Инженерен CAD · ${count} от ${list.length} снимки`}
         title="Снимките"
         sub="Докоснете снимка, за да я направите отново. Колкото повече страни, толкова по-точно."
       />
       <View style={s.grid}>
-        {SHOTS.map((shot) => {
+        {list.map((shot) => {
           const file = photos[shot.photo];
           return (
             <Pressable
@@ -63,7 +66,7 @@ export function Photos({
           );
         })}
       </View>
-      {count < 3 && <Note>С повече страни (поне отгоре, отпред и отдясно) формата се разчита по-сигурно.</Note>}
+      {count < 3 && list.length > 2 && <Note>С повече страни (поне отгоре, отпред и отдясно) формата се разчита по-сигурно.</Note>}
       {error && <ErrorText>{error}</ErrorText>}
       <Button title={uploading ? 'Качване на снимките…' : 'Напред: общите размери'} variant="brand" size="lg" icon="arrow-forward" loading={uploading} onPress={onNext} />
       <Button title="Назад" variant="ghost" icon="arrow-back" onPress={onBack} />

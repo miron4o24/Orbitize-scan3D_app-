@@ -68,6 +68,47 @@ def resample(closed: np.ndarray, step: float) -> np.ndarray:
     return np.c_[np.interp(ts, t, closed[:, 0]), np.interp(ts, t, closed[:, 1])]
 
 
+AXIS_EDGES = 0.25  # прави в една посока (и напряко) поне толкова от обиколката: осите са по тях
+
+
+def main_axes(q: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
+    """Осите на очертанието q (x надясно, y нагоре): l по дължината, s напряко, и ъгълът на l в градуси (-90..90].
+    По правите ръбове, ако има достатъчно (стъпала, краката на кука, страните на кутия), иначе по най-малкия описан
+    правоъгълник: при кука или дъга той е завъртян, а детайлът е подравнен с правите си, както и мерките."""
+    poly = Polygon(q).buffer(0)
+    if poly.geom_type != "Polygon":
+        poly = max(poly.geoms, key=lambda g: g.area)
+    ring = np.asarray(poly.exterior.coords)
+    step = poly.length / 720
+    p = resample(ring, step)
+    k = 6
+    n = len(p)
+    ext = np.r_[p, p, p]
+    fwd = ext[n + k : 2 * n + k] - ext[n - k : 2 * n - k]
+    straight = np.hypot(fwd[:, 0], fwd[:, 1]) > 0.985 * 2 * k * step
+    ang = np.degrees(np.arctan2(fwd[:, 1], fwd[:, 0])) % 90
+    hist = np.bincount(np.round(ang[straight]).astype(int) % 90, minlength=90).astype(float)
+    smooth = hist + np.roll(hist, 1) + np.roll(hist, -1) + np.roll(hist, 2) + np.roll(hist, -2)
+    peak = int(np.argmax(smooth))
+    phi = None
+    if smooth[peak] >= AXIS_EDGES * n:
+        near = straight & (np.abs((ang - peak + 45) % 90 - 45) <= 3)
+        phi = peak + float(np.mean((ang[near] - peak + 45) % 90 - 45))
+    else:
+        rect = poly.minimum_rotated_rectangle
+        rx, ry = rect.exterior.coords.xy
+        edges = [(rx[i + 1] - rx[i], ry[i + 1] - ry[i]) for i in range(2)]
+        e = max(edges, key=lambda v: math.hypot(*v))
+        phi = math.degrees(math.atan2(e[1], e[0]))
+    a = np.array([math.cos(math.radians(phi)), math.sin(math.radians(phi))])
+    b = np.array([-a[1], a[0]])
+    if np.ptp(ring @ b) > np.ptp(ring @ a):
+        phi += 90
+    phi = (phi + 90) % 180 - 90
+    l = np.array([math.cos(math.radians(phi)), math.sin(math.radians(phi))])
+    return l, np.array([-l[1], l[0]]), phi
+
+
 def straight_runs(p: np.ndarray, k: int, max_dev_deg: float, min_len: int) -> list[tuple[int, int]]:
     """Отрязъци [i, j) от затворената линия p (равни стъпки), в които посоката (по прозорец ±k) е постоянна:
     правите. Индексите могат да минават края (по модул)."""
@@ -488,3 +529,71 @@ def turned_profile(outer: np.ndarray, U: float, V: float) -> list[tuple[float, f
         if abs(x2 - x1) <= math.tan(math.radians(SNAP_DEG)) * abs(r2 - r1) + TOL * U:
             out[k + 1] = (x1, r2)
     return out
+
+
+CURVE_STEP = 0.02  # точките на гладкото очертание: през толкова от по-големия размер (и не повече от CURVE_MAX)
+CURVE_MAX = 180
+CURVE_CORNER = 50.0  # завой (градуси) на късо разстояние: остър ъгъл, в който кривата се прекъсва
+BOX_IOU = 0.965  # правоъгълник със заоблени ъгли, съвпадащ с очертанието поне толкова, е по-добър от свободна форма
+BOX_DEV = 0.03  # и средно отклонение на ръба под толкова от по-малкия размер
+
+
+def smooth_outline(outer: np.ndarray, U: float, V: float) -> tuple[list[tuple[float, float]], list[int]]:
+    """Свободна форма (кука, дъга, капка): точки по очертанието на равни разстояния (u, v в мм, обратно на
+    часовника) и кои от тях са остри ъгли. Детайлът минава гладко (сплайн) през точките и се чупи само в ъглите,
+    затова дъгите остават дъги, а не начупени линии. Шумът от пикселите се изглажда преди това."""
+    from scipy import ndimage as nd
+
+    size = max(U, V)
+    poly = Polygon(outer).buffer(0)
+    if poly.geom_type != "Polygon":
+        poly = max(poly.geoms, key=lambda g: g.area)
+    ring = ccw(np.asarray(poly.exterior.coords))
+    step = poly.length / 2000
+    p = resample(ring, step)
+    sigma = max(1.0, 0.0025 * size / step)
+    p = np.c_[nd.gaussian_filter1d(p[:, 0], sigma, mode="wrap"), nd.gaussian_filter1d(p[:, 1], sigma, mode="wrap")]
+    n = len(p)
+    k = max(2, int(0.012 * size / step))
+    ext = np.r_[p, p, p]
+    back, fwd = ext[n : 2 * n] - ext[n - k : 2 * n - k], ext[n + k : 2 * n + k] - ext[n : 2 * n]
+    turn = np.degrees(np.abs(np.arctan2(back[:, 0] * fwd[:, 1] - back[:, 1] * fwd[:, 0],
+                                        (back * fwd).sum(1))))  # fmt: skip
+    corners: list[int] = []
+    for i in np.argsort(-turn):
+        if turn[i] < CURVE_CORNER:
+            break
+        if all(min(abs(int(i) - c), n - abs(int(i) - c)) > 2 * k for c in corners):
+            corners.append(int(i))
+    corners.sort()
+    gap = max(CURVE_STEP * size, poly.length / CURVE_MAX)
+    marks = corners or [0]
+    pts, flags = [], []
+    for a, b in zip(marks, marks[1:] + [marks[0] + n]):
+        m = max(1, int(round((b - a) / (gap / step))))
+        for j in range(m):
+            q = p[int(round(a + (b - a) * j / m)) % n]
+            pts.append((float(np.clip(q[0], 0, U)), float(np.clip(q[1], 0, V))))
+            flags.append(j == 0 and bool(corners))
+    return pts, [i for i, f in enumerate(flags) if f]
+
+
+def rounded_box(outer: np.ndarray, U: float, V: float) -> float | None:
+    """Радиусът на правоъгълник U x V с четири еднакво заоблени ъгъла, който съвпада с очертанието (BOX_IOU,
+    BOX_DEV), или None. Овално или с полукръгли краища сечение (флашка, дръжка) е такова."""
+    poly = Polygon(outer).buffer(0)
+    if poly.geom_type != "Polygon" or poly.area <= 0:
+        return None
+    small = min(U, V)
+    best, best_r = 0.0, 0.0
+    for r in np.linspace(0, 0.499 * small, 50):
+        box = Polygon(rounded([(0, 0, r), (U, 0, r), (U, V, r), (0, V, r)], steps=16))
+        sc = poly.intersection(box).area / max(poly.union(box).area, 1e-12)
+        if sc > best:
+            best, best_r = sc, float(r)
+    if best < BOX_IOU:
+        return None
+    box = Polygon(rounded([(0, 0, best_r), (U, 0, best_r), (U, V, best_r), (0, V, best_r)], steps=16))
+    edge = resample(np.asarray(poly.exterior.coords), poly.length / 400)
+    dev = float(np.mean([box.exterior.distance(Point(q)) for q in edge]))
+    return best_r if dev <= BOX_DEV * small else None
