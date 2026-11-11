@@ -160,8 +160,10 @@ def step_what(axis: str) -> str:
 
 
 def radius_dim(d: dict, known: list, r: float, view: str) -> str:
+    """Размерът за заоблен ъгъл: близките радиуси в един изглед са един размер (едно мерене); в различните изгледи
+    са различни ръбове (например ъглите отгоре и заоблените страни), затова и различни размери."""
     for value, i in known:
-        if abs(value - r) <= RADIUS_GROUP * max(value, r):
+        if d["dims"][i]["show"].get("view") == view and abs(value - r) <= RADIUS_GROUP * max(value, r):
             return i
     i = D.add_dim(d, "r", r, "Радиус на заоблен ъгъл", "Радиус на заобления ъгъл",
                   "Сравнете с радиусомер или свредла; ако не можете да го измерите, оставете оценката.", "radius",

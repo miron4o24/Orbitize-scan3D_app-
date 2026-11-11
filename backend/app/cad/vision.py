@@ -138,8 +138,46 @@ def segment(sess, path) -> dict:
     if o[:, 0].min() < edge or o[:, 1].min() < edge or o[:, 0].max() > im.size[0] - edge or             o[:, 1].max() > im.size[1] - edge:  # fmt: skip
         raise ValueError("cut")
     return {"outer": np.round(outer + off, 2).tolist(), "holes": [np.round(h + off, 2).tolist() for h in holes],
-            "size": list(im.size), "f35": focal35(path),
+            "size": list(im.size), "f35": focal35(path), "lines": line_profiles(im, outer + off),
             "marks": [np.round(m + off, 2).tolist() for m in dark_marks(np.asarray(im.crop(box), np.float32), solid)]}  # fmt: skip
+
+
+LINE_BINS = 200
+
+
+def line_profiles(im: Image.Image, outer: np.ndarray) -> dict:
+    """Колко от ширината на предмета пресича права линия (шев, граница капачка/тяло, ръб на отвор) на всяко място
+    по дължината му и по ширината му (по LINE_BINS места от единия до другия край), по осите на най-малкия описан
+    правоъгълник (както в photos.Frame). По тях се разбира как е обърната снимката на симетричен предмет."""
+    from scipy import ndimage as nd
+
+    q = outer * [1.0, -1.0]
+    poly = Polygon(q).buffer(0)
+    if poly.geom_type != "Polygon":
+        poly = max(poly.geoms, key=lambda g: g.area)
+    rect = poly.minimum_rotated_rectangle
+    rx, ry = rect.exterior.coords.xy
+    edges = [(rx[k + 1] - rx[k], ry[k + 1] - ry[k]) for k in range(2)]
+    e = max(edges, key=lambda v: math.hypot(*v))
+    phi = (math.degrees(math.atan2(e[1], e[0])) + 90) % 180 - 90
+    l = np.array([math.cos(math.radians(phi)), math.sin(math.radians(phi))])
+    s_ = np.array([-l[1], l[0]])
+    gray = nd.gaussian_filter(np.asarray(im.convert("L"), np.float32), 1.0)
+    out = {}
+    for key, a, b in (("l", l, s_), ("s", s_, l)):
+        ta, tb = q @ a, q @ b
+        a0, a1, b0, b1 = ta.min(), ta.max(), tb.min(), tb.max()
+        ts = np.linspace(0, 1, LINE_BINS * 2)
+        ws = np.linspace(0.12, 0.88, 50)
+        tt, ww = np.meshgrid(ts, ws, indexing="ij")
+        pts = (a0 + tt.ravel()[:, None] * (a1 - a0)) * a + (b0 + ww.ravel()[:, None] * (b1 - b0)) * b
+        g = nd.map_coordinates(gray, [-pts[:, 1], pts[:, 0]], order=1).reshape(len(ts), len(ws))
+        k = max(2, round(len(ts) * 0.008))
+        diff = np.abs(g[k:] - g[:-k])
+        thr = max(3 * float(np.median(diff)), 6.0)
+        cover = np.r_[np.zeros(k // 2), (diff > thr).mean(1), np.zeros(k - k // 2)]
+        out[key] = np.round(cover.reshape(LINE_BINS, 2).max(1), 3).tolist()
+    return out
 
 
 def dark_marks(rgb: np.ndarray, solid: np.ndarray) -> list[np.ndarray]:

@@ -37,6 +37,7 @@ FUSE_IOU = 0.86  # под това съвпадение две противоп�
 MATCH_IOU = 0.8  # под това съвпадение (в мм) противоположните снимки не са едно и също
 RATIO_WARN = 1.15  # пропорциите на снимката и мерките се разминават повече: предупреждение
 RATIO_DROP = 1.25  # още повече: снимката не е ползвана (под ъгъл или друга страна)
+MARK_WALL = 0.015  # тъмно петно по-близо до ръба (дял от размера) не е отвор
 SURE_MARGIN = 0.01  # с толкова по-добро съвпадение от следващото обръщане е ясно как е обърната снимката
 ROUND_RMS = 0.02  # очертание, нормирано до квадрат, по-близко до кръг: кръгло
 
@@ -69,6 +70,7 @@ class Frame:
         self.q = np.asarray(shot["outer"], float) * [1.0, -1.0]
         self.holes = [np.asarray(h, float) * [1.0, -1.0] for h in shot.get("holes", [])]
         self.marks = [np.asarray(m, float) * [1.0, -1.0] for m in shot.get("marks", []) if len(m) >= 4]
+        self.lines = shot.get("lines") or {}
         self.size = tuple(shot["size"])
         poly = largest(Polygon(self.q).buffer(0))
         rect = poly.minimum_rotated_rectangle
@@ -217,15 +219,30 @@ def layout(shots: dict, sizes: tuple[float, float, float] | None = None, flips: 
             cands = [(su * ou, sv * ov) for su in (1, -1) for sv in (1, -1)]
             scores = [iou(base, frames[other].normalized(a, b)) for a, b in cands]
             k = int(np.argmax(scores))
+            near = [j for j, sc in enumerate(scores) if sc >= scores[k] - SURE_MARGIN]
+            decided = [False, False]  # по u и по v: от линиите през цялата ширина (шев, граница капачка/тяло)
+            if len(near) > 1:  # почти симетрично очертание: кое обръщане пасва на линиите вътре
+                cu, cv = cands[k]
+                for i in (0, 1):
+                    mine = (cu, cv)[i]
+                    same = line_match(frames[primary], (eu, ev)[i], frames[other], mine)
+                    flip = line_match(frames[primary], (eu, ev)[i], frames[other], -mine)
+                    if abs(same - flip) >= 1:
+                        decided[i] = True
+                        if flip > same:
+                            cu, cv = (-cu, cv) if i == 0 else (cu, -cv)
+                k = next((j for j, c in enumerate(cands) if np.allclose(c[0], cu) and np.allclose(c[1], cv)), k)
             orient[other] = [view, *cands[k]]
             quality[other] = round(float(scores[k]), 3)
-            rest = max((sc for j, sc in enumerate(scores) if j != k), default=0.0)
-            # Отвор само на тази снимка се добавя, само ако формата казва ясно как е обърната (иначе може да е от
-            # грешната страна или петно; пропуснат отвор се добавя на ръка, а грешен би развалил детайла).
-            sure[other] = bool(scores[k] - rest > SURE_MARGIN)
             ck = cands[k]
             alts[other] = [[int(round(float(a @ ck[0]))), int(round(float(b @ ck[1])))] for (a, b), sc in
                            zip(cands, scores) if sc >= scores[k] - SURE_MARGIN]  # fmt: skip
+            # Ос, решена от линиите, не е под съмнение.
+            alts[other] = [al for al in alts[other] if not (decided[0] and al[0] < 0) and not (decided[1] and al[1] < 0)]
+            rest = max((sc for j, sc in enumerate(scores) if j != k), default=0.0)
+            # Отвор само на тази снимка се добавя, само ако е ясно как е обърната (от очертанието или линиите вътре;
+            # иначе може да е от грешната страна; пропуснат отвор се добавя на ръка, а грешен би развалил детайла).
+            sure[other] = bool(scores[k] - rest > SURE_MARGIN) or len(alts[other]) == 1
             if scores[k] < FUSE_IOU:
                 warnings.append(f"Снимката {TITLE[other]} не съвпада добре със снимката {TITLE[primary]}: ползвам "
                                 f"само {TITLE[primary]}. Ако е друга страна, снимайте я отново.")  # fmt: skip
@@ -236,6 +253,40 @@ def layout(shots: dict, sizes: tuple[float, float, float] | None = None, flips: 
            "iou": quality, "sure": sure, "alts": alts, "warnings": warnings}  # fmt: skip
     out["round"] = {"top": is_round(frames, orient, "top"), "end": is_round(frames, orient, "end")}
     return out
+
+
+def axis_profile(f: Frame, e: np.ndarray) -> np.ndarray | None:
+    """Профилът на линиите на снимката по посоката e (от по-малкото към по-голямото по e)."""
+    if not f.lines:
+        return None
+    if abs(float(e @ f.l)) > 0.5:
+        prof, sign = f.lines.get("l"), float(e @ f.l)
+    else:
+        prof, sign = f.lines.get("s"), float(e @ f.s)
+    if not prof:
+        return None
+    prof = np.asarray(prof, float)
+    return prof if sign > 0 else prof[::-1]
+
+
+def full_lines(prof: np.ndarray | None) -> list[float]:
+    """Местата (0..1) на линиите през цялата ширина (шев, граница капачка/тяло), без самите краища."""
+    if prof is None:
+        return []
+    n = len(prof)
+    out = []
+    for i in range(int(0.06 * n), int(0.94 * n)):
+        if prof[i] >= 0.9 and prof[i] == prof[max(0, i - 4):i + 5].max():
+            if not out or i / n - out[-1] > 0.03:
+                out.append(i / n)
+    return out
+
+
+def line_match(a: Frame, ea: np.ndarray, b: Frame, eb: np.ndarray) -> int:
+    """Колко от линиите през цялата ширина на основната снимка по оста ea имат линия наблизо (до 8%) на другата
+    снимка по оста eb. Печатът и отворите не пресичат цялата ширина, затова не участват."""
+    la, lb = full_lines(axis_profile(a, ea)), full_lines(axis_profile(b, eb))
+    return sum(1 for x in la if any(abs(x - y) <= 0.08 for y in lb))
 
 
 def log_aspect(f: Frame, eu: np.ndarray, ev: np.ndarray) -> float:
@@ -521,8 +572,10 @@ def combine(shots: dict, lay: dict, L: float, W: float, H: float, solid, fuse_pa
                 if fused is not None:
                     extra = lay.get("sure", {}).get(others[0], False)
                     holes = hole_union(p["holes"], q["holes"], extra, p["outer"], q["outer"])
+                    alts = [[1, 1]] if extra else lay.get("alts", {}).get(others[0], [[1, 1]])
                     if not extra:
-                        holes += confirmed(p, q, lay.get("alts", {}).get(others[0], [[1, 1]]), U, V)
+                        holes += confirmed(p, q, alts, U, V)
+                    holes += mark_pairs(p, q, holes, alts, U, V)
                     p = p | {"outer": fused["outer"], "holes": holes}
                     used.append(others[0])
         out[view] = {"outer": p["outer"], "holes": p["holes"], "U": U, "V": V, "from": used}
@@ -564,6 +617,35 @@ def hole_union(a: list, b: list, extra: bool = True, outer_a=None, outer_b=None)
         out.append(np.asarray(u.exterior.coords)[:-1])
     if extra:
         out += [np.asarray(g) for k, g in enumerate(b) if k not in used]
+    return out
+
+
+def mark_pairs(p: dict, q: dict, holes: list, alts: list, U: float, V: float) -> list:
+    """Тъмно петно на едно и също място на двете противоположни снимки: отвор през детайла, през който от нито една
+    страна не се вижда масата (тесен и дълбок, встрани от средата на кадъра). Ако не е ясно как е обърната втората
+    снимка (alts), петното трябва да съвпадне само при едно от възможните обръщания."""
+    out = []
+    have = [largest(Polygon(h).buffer(0)) for h in holes]
+    edge = largest(Polygon(p["outer"]).buffer(0)).exterior
+    for m in p.get("marks", []):
+        mp = largest(Polygon(m).buffer(0))
+        if mp.area <= 0 or any(mp.intersection(h).area > 0.3 * mp.area for h in have):
+            continue
+        if edge.distance(mp) < MARK_WALL * max(U, V):
+            continue  # до самия ръб: сянка на стена (изрез, стъпало), видяна от перспективата, а не отвор
+        hits = []
+        for su, sv in alts:
+            for n in q.get("marks", []):
+                n = np.asarray(n)
+                c = np.c_[n[:, 0] if su > 0 else U - n[:, 0], n[:, 1] if sv > 0 else V - n[:, 1]]
+                nq = largest(Polygon(c).buffer(0))
+                if nq.area > 0 and mp.intersection(nq).area >= 0.4 * min(mp.area, nq.area):
+                    hits.append(nq)
+                    break
+        if len(hits) == 1:
+            u = largest(mp.union(hits[0]))
+            out.append(np.asarray(u.exterior.coords)[:-1])
+            have.append(u)
     return out
 
 

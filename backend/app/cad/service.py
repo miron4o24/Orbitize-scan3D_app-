@@ -135,8 +135,56 @@ def assemble(job: Path, values: dict, flips: dict | None = None) -> dict:
     lay = P.layout(sh, (L, W, H), flips)
     views, warnings = P.views_mm(sh, lay, L, W, H)
     d = AS.assemble(views, L, W, H)
+    xs = [D.coord(d, lid) for lid, spec in d["levels"].items() if spec["axis"] == "x"]
+    for x in seams(job, sh, lay, L, W):
+        if all(abs(x - lx) > 0.04 * L for lx in xs):  # не е ръбът на стъпало
+            d = D.add_split(d, x)
     d["flips"] = flips
     return response(job, d, lay["warnings"] + warnings)
+
+
+SEAM_COVER = 0.9  # колко от ширината трябва да пресича линия, за да е граница между части
+
+
+def seams(job: Path, sh: dict, lay: dict, L: float, W: float) -> list[float]:
+    """Границите между две части по дължината (капачка и тяло, два материала): права линия през цялата ширина на
+    предмета на снимката отгоре (рязка смяна на яркостта по дължината в поне 90% от ширината; надписите и отворите
+    не я пресичат цялата). Ако има и снимка отдолу, там трябва да има линия наблизо (до 10% от дължината); иначе
+    е рисунка само отгоре. Връща X в мм (до две)."""
+    from scipy import ndimage
+
+    from .vision import load
+
+    found = {}
+    for name in ("top", "bottom"):
+        o = lay["orient"].get(name)
+        if o is None or o["view"] != "top" or name not in sh:
+            continue
+        A = P.placement(sh[name], o, L, W)["A"]
+        im = np.asarray(load(photo_path(job, name)).convert("L"), np.float32)
+        im = ndimage.gaussian_filter(im, 1.0)
+        step = L / 500
+        us = np.arange(0.06 * L, 0.94 * L, step)
+        vs = np.linspace(0.12 * W, 0.88 * W, 60)
+        uu, vv = np.meshgrid(us, vs, indexing="ij")
+        px = A[:, :2] @ np.stack([uu.ravel(), vv.ravel()]) + A[:, 2:3]
+        g = ndimage.map_coordinates(im, [px[1], px[0]], order=1).reshape(len(us), len(vs))
+        k = max(2, round(0.4 / step))
+        diff = np.abs(g[k:] - g[:-k])
+        thr = max(3 * float(np.median(diff)), 6.0)
+        cover = ndimage.uniform_filter1d((diff > thr).mean(1), 3)
+        half = max(1, round(2.0 / step))
+        peaks = [float(us[i + k // 2]) for i in range(len(cover))
+                 if cover[i] >= SEAM_COVER and cover[i] == cover[max(0, i - half):i + half + 1].max()]  # fmt: skip
+        merged = []
+        for x in peaks:
+            if not merged or x - merged[-1] > 2.0:
+                merged.append(x)
+        found[name] = merged
+    top = found.get("top", [])
+    if "bottom" in found:
+        top = [x for x in top if any(abs(x - y) <= 0.1 * L for y in found["bottom"])]
+    return top[:2]
 
 
 def edit(job: Path, raw: dict, op: dict) -> dict:

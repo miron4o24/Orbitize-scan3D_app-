@@ -15,7 +15,7 @@ from . import design as D
 RESERVED = {"cq", "math", "plane", "outline", "cut_tool", "rounded_rect", "round_view", "body", "result", "top",
             "side", "end", "profile", "top_solid", "side_solid", "end_solid", "lambda", "None", "True", "False"}
 FEATURE_KEYS = {"hole": ("d", "depth"), "rect": ("w", "h", "depth", "r"), "slot": ("len", "w", "depth"),
-                "fillet": ("r",), "chamfer": ("c",)}  # fmt: skip
+                "fillet": ("r",), "chamfer": ("c",), "split": ()}  # fmt: skip
 
 
 # --- Проверка на описанието от приложението ------------------------------------------------------------------------
@@ -78,6 +78,12 @@ def clean(raw: dict) -> dict:
                 if f[key] not in d["dims"]:
                     raise D.DesignError("Елемент с непознат размер.")
                 g[key] = f[key]
+        if t == "split":
+            if not level_ok(d, f.get("at"), "x"):
+                raise D.DesignError("Непозната граница между части.")
+            g.update({"axis": "x", "at": f["at"], "view": "top"})
+            d["features"].append(g)
+            continue
         if t in ("fillet", "chamfer"):
             if f.get("edges") not in D.EDGE_SETS:
                 raise D.DesignError("Непознати ръбове.")
@@ -291,6 +297,12 @@ def code(d: dict) -> str:
             note = D.label(d, f) + (f", {D.FACE_NAME[f['face']]}" if f.get("face") else "")
             lines.append(f"body = body.cut(cut_tool('{f['axis']}', '{f['side']}', {u}, {v}, {size}, {depth}, {sk}))"
                          f"  # {_txt(note, 80)}")  # fmt: skip
+    splits = [f for f in feats if f["t"] == "split"]
+    if splits:
+        lines += ["", "# --- Части (например капачка и тяло): отделни тела ---"]
+        for f in splits:
+            lines.append(f"body = body.copyWorkplane(cq.Workplane(plane('x', {lv(f['at'])}))).split(keepTop=True, "
+                         "keepBottom=True)")  # fmt: skip
     lines += ["", "result = body", ""]
     return "\n".join(lines)
 
@@ -373,7 +385,7 @@ def build(raw: dict, out: Path) -> dict:
     bb = shape.BoundingBox()
     size = max(bb.xlen, bb.ylen, bb.zlen)
     cq.exporters.export(wp, str(out / "part.stl"), tolerance=max(0.005, size / 4000), angularTolerance=0.08)
-    mesh = glb(out / "part.stl", out / "part.glb")
+    mesh = glb(out / "part.stl", out / "part.glb", shape)
     s = D.summary(d)
     report = {"size_mm": [round(bb.xlen, 3), round(bb.ylen, 3), round(bb.zlen, 3)],
               "volume_mm3": round(float(shape.Volume()), 1), "solids": len(shape.Solids()),
@@ -393,12 +405,27 @@ def failure_text(d: dict, e: Exception) -> str:
     return "Моделът не се построи с тези размери: проверете дали отворите и изрезите са в детайла."
 
 
-def glb(stl: Path, dest: Path):
-    """GLB за прегледа в приложението: сив, в мм."""
+PART_COLORS = ([186, 192, 200, 255], [150, 196, 236, 255], [214, 190, 150, 255])  # сиво, синьо, бежово
+
+
+def glb(stl: Path, dest: Path, shape=None):
+    """GLB за прегледа в приложението, в мм: всяко тяло (капачка, тяло) в свой цвят."""
     import numpy as np
     import trimesh
 
     mesh = trimesh.load(stl, force="mesh")
-    mesh.visual = trimesh.visual.ColorVisuals(mesh, face_colors=np.tile([186, 192, 200, 255], (len(mesh.faces), 1)))
-    mesh.export(dest)
-    return mesh
+    solids = shape.Solids() if shape is not None else []
+    if len(solids) <= 1:
+        mesh.visual = trimesh.visual.ColorVisuals(mesh, face_colors=np.tile(PART_COLORS[0], (len(mesh.faces), 1)))
+        mesh.export(dest)
+        return mesh
+    parts = []
+    solids = sorted(solids, key=lambda x: -x.Volume())  # най-голямата част (тялото) е сива, по-малките (капачка) в цвят
+    for k, sol in enumerate(solids):
+        vs, fs = sol.tessellate(max(0.005, max(sol.BoundingBox().xlen, sol.BoundingBox().ylen) / 4000), 0.08)
+        m = trimesh.Trimesh(np.array([(v.x, v.y, v.z) for v in vs]), np.array(fs), process=True)
+        m.visual = trimesh.visual.ColorVisuals(m, face_colors=np.tile(PART_COLORS[k % len(PART_COLORS)], (len(m.faces), 1)))
+        parts.append(m)
+    whole = trimesh.util.concatenate(parts)
+    whole.export(dest)
+    return whole

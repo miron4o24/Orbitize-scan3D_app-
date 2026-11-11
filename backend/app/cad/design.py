@@ -275,6 +275,8 @@ def label(d: dict, f: dict) -> str:
         return f"Заобляне на {EDGE_SETS[f['edges']]}"
     if t == "chamfer":
         return f"Фаска на {EDGE_SETS[f['edges']]}"
+    if t == "split":
+        return "Граница между две части (например капачка и тяло)"
     return t
 
 
@@ -344,6 +346,8 @@ def used_dims(d: dict) -> list[str]:
             p = f.get(key)
             if p and p["lvl"] in d["levels"]:
                 take(d["levels"][p["lvl"]]["dim"])
+        if f.get("at") in d["levels"]:
+            take(d["levels"][f["at"]]["dim"])
     for r in radii:
         take(r)
     return order
@@ -469,6 +473,19 @@ def add_feature(d: dict, spec: dict) -> dict:
         f["depth"] = add_dim(d, "t", None, "Дълбочина", f"Измерете дълбочината от {FACE_NAME[face]}",
                              "С дълбокомера на шублера.", show={"feature": fid})  # fmt: skip
     d["features"].append(f)
+    return d
+
+
+def add_split(d: dict, x: float) -> dict:
+    """Граница между две части по дължината (капачка и тяло, два материала): моделът става две тела, разделени при
+    x (оценка в мм). Мери се от по-близкия край."""
+    d = copy.deepcopy(d)
+    fid = new_feature_id(d, "split")
+    lvl = level_for(d, "x", x, "Граница между частите", "границата между частите", view="top", merge=False)
+    if lvl in ("x0", end_level("x")):
+        return d
+    d["dims"][d["levels"][lvl]["dim"]]["show"]["feature"] = fid
+    d["features"].append({"id": fid, "t": "split", "axis": "x", "at": lvl, "view": "top"})
     return d
 
 
