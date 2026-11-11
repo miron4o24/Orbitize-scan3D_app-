@@ -12,7 +12,7 @@ from . import fit
 ROUND_RMS = 0.02  # кръгъл изглед: отклонение от кръг под 2% от радиуса
 TURNED_SYM = 0.93  # очертание, огледално на себе си поне толкова (IoU), е от струг
 TURNED_DIAM = 0.08  # W и H в рамките на 8%: кръгло сечение
-RADIUS_GROUP = 0.25  # радиуси в рамките на 25% са един размер
+RADIUS_GROUP = 0.12  # радиуси в рамките на 12%, заоблени в една посока, са един размер
 DIAM_GROUP = 0.04
 
 
@@ -76,15 +76,18 @@ def profile_corners(outer: np.ndarray, U: float, V: float) -> list[tuple[float, 
     return [(u, v - R, r) for u, v, r in reversed(run)]  # обратно на часовника горе е отдясно наляво
 
 
-def assemble(views: dict, L: float, W: float, H: float) -> dict:
-    """views: {"top"|"side"|"end": {"outer", "holes", "U", "V"}} в мм на изгледа, в осите на детайла."""
+def assemble(views: dict, L: float, W: float, H: float, flat: bool = False) -> dict:
+    """views: {"top"|"side"|"end": {"outer", "holes", "U", "V"}} в мм на изгледа, в осите на детайла. flat: плосък
+    детайл (кука, пластина): само очертанието отгоре, с една дебелина навсякъде."""
+    if flat:
+        views = {k: v for k, v in views.items() if k == "top"}
     views = {k: {"outer": np.asarray(v["outer"], float), "holes": [np.asarray(h, float) for h in v["holes"]],
                  "U": v["U"], "V": v["V"], "each": [np.asarray(e, float) for e in v.get("each", [])]}
              for k, v in views.items()}  # fmt: skip
     if is_turned(views, L, W, H):
         return turned(views, L, W, H)
     d = D.new("block", L, W, H)
-    radius_dims: list[tuple[float, str]] = []
+    radius_dims: list[tuple[float, str, bool]] = []
     top_tabs: list[dict] = []
     for name in ("top", "side", "end"):
         if name not in views:
@@ -106,11 +109,14 @@ def assemble(views: dict, L: float, W: float, H: float) -> dict:
                 if name == "top":
                     top_tabs = tabs
         if cs is None:
+            r = fit.rounded_box(v["outer"], v["U"], v["V"])
+            if r is not None:  # овал или правоъгълник със заоблени ъгли, които разпознаването на прави не хваща
+                cs = [(0.0, 0.0, r), (v["U"], 0.0, r), (v["U"], v["V"], r), (0.0, v["V"], r)]
+        if cs is None:
             d["views"][name] = free_view(d, v, a, b, name)
-            d["notes"].append(f"Очертанието {D.VIEW_NAME[name]} не е от прави и дъги: взето е от снимката (оценено).")
             continue
         d["views"][name] = view_pts(d, cs, a, b, v["U"], v["V"], name, radius_dims)
-    if top_tabs and "side" not in views:
+    if top_tabs and "side" not in views and not flat:
         # По-тесният край обикновено е по-тънък със същото (без снимка отпред не се вижда): оценка, която се мери.
         tabs = [t | {"lo": min((t["lo"] + t["hi"]) / 2, 0.3 * H), "hi": min((t["lo"] + t["hi"]) / 2, 0.3 * H)}
                 for t in top_tabs]  # fmt: skip
@@ -148,10 +154,13 @@ def each_tabs(v: dict) -> list[dict]:
 def view_pts(d: dict, cs: list, a: str, b: str, U: float, V: float, name: str, radius_dims: list) -> dict:
     """Ъглите (u, v, r) в мм -> изгледът на описанието: нива (стъпала) и размери за радиусите."""
     pts = []
-    for u, w, r in cs:
+    n = len(cs)
+    for k, (u, w, r) in enumerate(cs):
         lu = D.level_for(d, a, clamp(u, U), step_name(a), step_what(a), view=name)
         lv = D.level_for(d, b, clamp(w, V), step_name(b), step_what(b), view=name)
-        rid = radius_dim(d, radius_dims, r, name) if r > 0 else None
+        (pu, pw, _), (nu, nw, _) = cs[k - 1], cs[(k + 1) % n]
+        outward = (u - pu) * (nw - w) - (w - pw) * (nu - u) > 0  # изпъкнал ъгъл (обратно на часовника)
+        rid = radius_dim(d, radius_dims, r, name, outward) if r > 0 else None
         if pts and pts[-1][:2] == [lu, lv]:  # два ъгъла на едно място (под допуска): един
             continue
         pts.append([lu, lv, rid])
@@ -191,32 +200,27 @@ def step_what(axis: str) -> str:
     return {"x": "ръба на стъпалото", "y": "ръба на стъпалото", "z": "ръба на стъпалото", "r": ""}[axis]
 
 
-def radius_dim(d: dict, known: list, r: float, view: str) -> str:
-    """Размерът за заоблен ъгъл: близките радиуси в един изглед са един размер (едно мерене); в различните изгледи
-    са различни ръбове (например ъглите отгоре и заоблените страни), затова и различни размери."""
-    for value, i in known:
-        if d["dims"][i]["show"].get("view") == view and abs(value - r) <= RADIUS_GROUP * max(value, r):
+def radius_dim(d: dict, known: list, r: float, view: str, outward: bool = True) -> str:
+    """Размерът за заоблен ъгъл: близките радиуси в един изглед, заоблени в една посока, са един размер (едно
+    мерене); в различните изгледи са различни ръбове (например ъглите отгоре и заоблените страни), а вътрешната и
+    външната дъга на завой (кука) са различни радиуси, затова и различни размери."""
+    for value, i, out in known:
+        if (d["dims"][i]["show"].get("view") == view and out == outward
+                and abs(value - r) <= RADIUS_GROUP * max(value, r)):  # fmt: skip
             return i
     i = D.add_dim(d, "r", r, "Радиус на заоблен ъгъл", "Радиус на заобления ъгъл",
                   "Сравнете с радиусомер или свредла; ако не можете да го измерите, оставете оценката.", "radius",
                   optional=True, show={"view": view, "radius": True})  # fmt: skip
-    known.append((r, i))
+    known.append((r, i, outward))
     return i
 
 
 def free_view(d: dict, v: dict, a: str, b: str, view: str) -> dict:
-    """Свободна форма: опростеното очертание, с нива, които не се питат (оценени от снимката)."""
-    poly = Polygon(v["outer"]).buffer(0).simplify(0.01 * max(v["U"], v["V"]))
-    pts = []
-    for u, w in list(poly.exterior.coords)[:-1]:
-        row = []
-        for ax, val, size in ((a, u, v["U"]), (b, w, v["V"])):
-            lvl = D.level_for(d, ax, clamp(val, size), "Точка от формата", "точката", view=view, merge=False)
-            if lvl in d["levels"]:
-                d["dims"][d["levels"][lvl]["dim"]]["hidden"] = True
-            row.append(lvl)
-        pts.append(row + [None])
-    return {"pts": pts, "free": True}
+    """Свободна форма (кука, дъга): гладка крива през точки от очертанието на снимката (fit.smooth_outline), които
+    следват общите размери и не се питат."""
+    pts, corners = fit.smooth_outline(v["outer"], v["U"], v["V"])
+    rows = [[D.frac_level(a, u, v["U"]), D.frac_level(b, w, v["V"]), None] for u, w in pts]
+    return {"pts": rows, "free": True, "curve": True, "corners": corners}
 
 
 def add_hole(d: dict, pts: np.ndarray, axis: str, view: str, size: float) -> None:
@@ -297,12 +301,16 @@ def turned(views: dict, L: float, W: float, H: float) -> dict:
     d = D.new("turned", L, W, H)
     top = views["top"]
     prof = profile_corners(top["outer"], top["U"], top["V"])
+    if prof is None:  # гладък цилиндър или капсула, които разпознаването на прави едва не хваща: еднакви краища
+        r = fit.rounded_box(top["outer"], top["U"], top["V"])
+        if r is not None:
+            prof = [(0.0, top["V"] / 2, r), (top["U"], top["V"] / 2, r)]
     if prof is None:
         prof = [(x, r, 0.0) for x, r in fit.turned_profile(top["outer"], top["U"], top["V"])]
     Dm = D.value(d, "D")
     # Радиусите по групи: най-големият е D/2, другите са нови диаметри за измерване.
     radii: list[tuple[float, str]] = [(Dm / 2, "rD")]
-    rounds: list[tuple[float, str]] = []
+    rounds: list[tuple[float, str, bool]] = []
 
     def r_level(r: float) -> str:
         for value, lvl in radii:
@@ -322,13 +330,13 @@ def turned(views: dict, L: float, W: float, H: float) -> dict:
             return None
         if abs(rad - at_r) <= 0.07 * at_r:  # цял полукръг (заоблен край на капсула): точно половината диаметър
             rad = math.floor(at_r * 100) / 100
-            for value, i in rounds:
+            for value, i, _ in rounds:
                 if abs(value - rad) < 1e-6:
                     return i
             i = D.add_dim(d, "r", rad, "Радиус на заобления край", "Радиус на заобления край",
                           "Ако краят е полукръг, оставете оценката (половината диаметър).", "radius", optional=True,
                           show={"view": "profile", "radius": True})  # fmt: skip
-            rounds.append((rad, i))
+            rounds.append((rad, i, True))
             return i
         return radius_dim(d, rounds, rad, "profile")
 

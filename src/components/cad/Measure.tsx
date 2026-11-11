@@ -12,10 +12,11 @@ import { font, makeStyles, radius, space } from '@/theme';
 
 export const mmText = (v: number) => `${Math.round(v * 100) / 100}`.replace('.', ',');
 
-/* Милиметри от полето (запетая или точка); undefined за празно или извън 0 до 1000. */
-export function mmOf(t: string): number | undefined {
+/* Милиметри от полето (запетая или точка); undefined за празно или извън 0 до 1000. zero: 0 е позволено (стъпало,
+   отвор или заобляне, което го няма; ъгъл без заобляне), но не и за общите размери. */
+export function mmOf(t: string, zero = false): number | undefined {
   const v = Number(t.trim().replace(',', '.'));
-  return t.trim() && Number.isFinite(v) && v > 0 && v <= 1000 ? v : undefined;
+  return t.trim() && Number.isFinite(v) && (zero ? v >= 0 : v > 0) && v <= 1000 ? v : undefined;
 }
 
 /* Заглавието: името без "(от ... края)" - посоката се вижда по линията на снимката, която може да е завъртяна. */
@@ -28,6 +29,7 @@ export function Measure({
   index,
   count,
   kicker = 'Инженерен CAD · мярка',
+  zero = true,
   answer,
   busy,
   error,
@@ -38,6 +40,7 @@ export function Measure({
   stamp: string;
   question: CadQuestion;
   kicker?: string;
+  zero?: boolean; // 0 е позволено (не за общите размери)
   index: number;
   count: number;
   answer: number | null | undefined; // undefined: още не е отговорено; null: пропуснато
@@ -47,7 +50,7 @@ export function Measure({
   onBack: () => void;
 }) {
   const s = useStyles();
-  const [text, setText] = useState(answer ? mmText(answer) : '');
+  const [text, setText] = useState(answer != null ? mmText(answer) : '');
   const [invalid, setInvalid] = useState(false);
   const field = useRef<TextInputInstance>(null);
   // Екранът се създава наново за всяка мярка (key в engineer.tsx), затова полето започва с отговора ѝ.
@@ -58,7 +61,7 @@ export function Measure({
   const last = index === count - 1;
 
   function next() {
-    const v = mmOf(text);
+    const v = mmOf(text, zero);
     if (v === undefined) return setInvalid(true);
     onAnswer(v);
   }
@@ -93,7 +96,13 @@ export function Measure({
         <Text style={s.unit}>мм</Text>
       </View>
       {question.est != null && <Small>{`От снимката ≈ ${mmText(question.est)} мм (само ориентир)`}</Small>}
-      {invalid && <ErrorText>Въведете размера в милиметри, от 0 до 1000 (например 12,35).</ErrorText>}
+      {invalid && (
+        <ErrorText>
+          {zero
+            ? 'Въведете размера в милиметри, от 0 до 1000 (например 12,35). 0: няма го (стъпало, отвор) или ъгълът е остър.'
+            : 'Въведете размера в милиметри, над 0 и до 1000 (например 12,35).'}
+        </ErrorText>
+      )}
       {error && <ErrorText>{error}</ErrorText>}
       <Button title={last ? 'Построй модела' : 'Напред'} variant="brand" size="lg" icon={last ? 'cube-outline' : 'arrow-forward'} loading={busy} onPress={next} />
       {question.est != null && (

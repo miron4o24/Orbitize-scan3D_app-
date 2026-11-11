@@ -41,7 +41,8 @@ FACES = {  # стената, от която започва елемент по 
 FACE_NAME = {"top": "горната страна", "bottom": "долната страна", "front": "предната страна",
              "back": "задната страна", "left": "левия край", "right": "десния край"}  # fmt: skip
 EDGE_SETS = {"vertical": "вертикалните ръбове", "top": "ръбовете отгоре", "bottom": "ръбовете отдолу",
-             "all": "всички ръбове", "ends": "краищата"}  # fmt: skip
+             "all": "всички ръбове", "ends": "краищата", "flat": "ръбовете отгоре и отдолу"}  # fmt: skip
+OVERALL = ("L", "W", "H", "D")  # общите размери: само те не могат да са 0
 
 
 class DesignError(ValueError):
@@ -93,7 +94,14 @@ def coord(d: dict, lvl: str) -> float:
         return total(d, lvl[0])
     if lvl[1:] == "c":
         return total(d, lvl[0]) / 2
+    if lvl[1:2] == "~":  # точка от гладка форма: дял от общия размер по оста (мени се с него, не се пита)
+        return total(d, lvl[0]) * float(lvl[2:])
     raise DesignError("Непознато ниво.")
+
+
+def frac_level(axis: str, at: float, size: float) -> str:
+    """Нивото на точка от гладка форма: дял от общия размер."""
+    return f"{axis}~{min(max(at / size, 0.0), 1.0):.5f}"
 
 
 def level_coord(d: dict, lvl: str) -> float:
@@ -187,6 +195,42 @@ def outline(d: dict, view: str) -> list[tuple[float, float, float]]:
     return out
 
 
+def tidy(pts: list) -> list:
+    """Ъглите без повторените (стъпало с мярка 0 изчезва) и без тези по права линия (там няма ъгъл)."""
+    pts = [p for k, p in enumerate(pts) if math.dist(p[:2], pts[k - 1][:2]) > 1e-6] or pts[:1]
+    out = list(pts)
+    changed = True
+    while changed and len(out) > 3:
+        changed = False
+        for k in range(len(out)):
+            a, b, c = out[k - 1], out[k], out[(k + 1) % len(out)]
+            cross = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0])
+            if abs(cross) < 1e-9 * max(1.0, math.dist(a[:2], c[:2]) ** 2):
+                out.pop(k)
+                changed = True
+                break
+    return out
+
+
+def zero(d: dict, dim) -> bool:
+    """Размер, въведен като 0: елементът го няма (отвор, канал, заобляне, фаска, дълбочина)."""
+    return isinstance(dim, str) and dim in d["dims"] and d["dims"][dim]["v"] is not None and float(
+        d["dims"][dim]["v"]) <= 0  # fmt: skip
+
+
+def present(d: dict, f: dict) -> bool:
+    """Елементът се строи: никой от размерите му (без положенията) не е 0, а границата на части е вътре."""
+    if any(zero(d, f.get(k)) for k in ("d", "w", "h", "len", "depth", "r", "c")):
+        return False
+    if f["t"] == "split":
+        for key in ("at", "at2"):
+            if f.get(key) is not None:
+                x = coord(d, f[key])
+                if not 1e-6 < x < total(d, "x") - 1e-6:
+                    return False
+    return True
+
+
 def feature_place(d: dict, f: dict) -> dict:
     """Положението на елемент в мм: ос, страна, център (u, v) в равнината на стената и размерите му."""
     axis = f["axis"]
@@ -216,12 +260,12 @@ def check(d: dict) -> None:
         v = dim["v"]
         if v is None:
             raise DesignError(f"Липсва размерът „{dim['name']}“.")
-        if not 0 < float(v) <= LIMIT:
+        if not (0 < float(v) if i in OVERALL else 0 <= float(v)) or float(v) > LIMIT:
             raise DesignError(f"„{dim['name']}“ трябва да е между 0 и {LIMIT:g} мм.")
     for view, spec in d["views"].items():
         if spec.get("off"):
             continue
-        pts = outline(d, view)
+        pts = tidy(outline(d, view))
         poly = Polygon([(u, v) for u, v, _ in pts])
         if not poly.is_valid or poly.area <= 0:
             names = sorted({d["dims"][d["levels"][p]["dim"]]["name"] for row in spec["pts"] for p in row[:2]
@@ -234,17 +278,24 @@ def check(d: dict) -> None:
         for u, v, _ in pts:
             if not (-1e-6 <= u <= total(d, a) + 1e-6 and -1e-6 <= v <= total(d, b) + 1e-6):
                 raise DesignError(f"Ниво {VIEW_NAME[view]} е извън общите размери: проверете разстоянията до ръбовете.")
+        cut = []  # колко от двете страни на всеки ъгъл взима дъгата
         for k, (u, v, r) in enumerate(pts):
             if r <= 0:
+                cut.append(0.0)
                 continue
             pu, pv, _ = pts[k - 1]
             nu, nv, _ = pts[(k + 1) % len(pts)]
-            room = min(math.dist((u, v), (pu, pv)), math.dist((u, v), (nu, nv)))
             ang = corner_angle((pu, pv), (u, v), (nu, nv))
-            if ang <= 1e-3 or ang >= math.pi - 1e-3 or r / math.tan(ang / 2) > room + 1e-6:
+            if ang <= 1e-3 or ang >= math.pi - 1e-3:
                 raise DesignError(f"Радиусът {r:g} мм е твърде голям за ъгъла {VIEW_NAME[view]}.")
+            cut.append(r / math.tan(ang / 2))
+        for k, (u, v, r) in enumerate(pts):  # двете дъги в краищата на една страна трябва да се съберат на нея
+            nu, nv, nr = pts[(k + 1) % len(pts)]
+            if cut[k] + cut[(k + 1) % len(pts)] > math.dist((u, v), (nu, nv)) + 1e-6:
+                big = r if cut[k] >= cut[(k + 1) % len(pts)] else nr
+                raise DesignError(f"Радиусът {big:g} мм е твърде голям за ъгъла {VIEW_NAME[view]}.")
     for f in d["features"]:
-        if f["t"] in ("hole", "rect", "slot"):
+        if f["t"] in ("hole", "rect", "slot") and present(d, f):
             place = feature_place(d, f)
             a, b = plane_axes(place["axis"])
             if not (0 <= place["u"] <= total(d, a) and 0 <= place["v"] <= total(d, b)):
@@ -288,15 +339,21 @@ def describe(d: dict) -> list[dict]:
         diam = len({p[1] for p in pts if p[1] not in ("r0",)})
         out.append({"id": "body", "view": "profile", "kind": "body",
                     "text": f"Тяло от струг: {diam} диаметър{'а' if diam > 1 else ''} по дължината"})  # fmt: skip
+    if d.get("flat"):
+        out.append({"id": "body", "view": "top", "kind": "body",
+                    "text": "Плосък детайл: очертанието отгоре с една дебелина навсякъде"})  # fmt: skip
     for view in ("top", "side", "end"):
         spec = d["views"].get(view)
-        if not spec or spec.get("off"):
+        if not spec or spec.get("off") or (d.get("flat") and view != "top"):
             continue
         pts = spec["pts"]
         rounded = sum(1 for p in pts if p[2])
         plain = len(pts) == 4 and all(p[0][1:] in "0LWH" and p[1][1:] in "0LWH" for p in pts)
         if spec.get("round"):
             text = "кръг" if abs(total(d, VIEW_AXES[view][0]) - total(d, VIEW_AXES[view][1])) < 1e-6 else "елипса"
+        elif spec.get("curve"):
+            sharp = len(spec.get("corners") or [])
+            text = "гладка форма по снимката" + (f", {sharp} остри ъгъла" if sharp else "")
         elif spec.get("free"):
             text = "форма по снимката (оценена)"
         elif plain:
@@ -394,7 +451,7 @@ def set_values(d: dict, values: dict) -> dict:
             dim["v"], dim["src"] = dim["est"], "skipped"
         else:
             v = float(v)
-            if not 0 < v <= LIMIT:
+            if not (0 < v if i in OVERALL else 0 <= v) or v > LIMIT:
                 raise DesignError(f"„{dim['name']}“ трябва да е между 0 и {LIMIT:g} мм.")
             dim["v"], dim["src"] = round(v, 3), "measured"
     return d

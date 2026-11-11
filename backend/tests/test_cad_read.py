@@ -160,3 +160,41 @@ def test_flat_part_pointing_away(sess, tmp_path):
     assert [(q["id"], q["photo"]) for q in plan] == [("L", "top"), ("W", "top"), ("H", "front")]
     assert not d["views"]["side"].get("round") and not d["views"]["end"].get("round")
     assert solid_iou(truth, measured(d)) > 0.95
+
+
+def test_side_photo_with_the_part_turned_around(sess, tmp_path):
+    """Като сканирането от 22:51: за снимките отпред и отзад флашката е и завъртяна наобратно на масата. Тесният край
+    е отдясно отгоре и трябва да е отдясно и отпред (не при капачката), по формата и вида на двата края."""
+    from shapely.geometry import LineString, Polygon
+
+    truth = D.new("block", 51, 21, 9)
+    xt = D.level_for(truth, "x", 45, "Т", "т", view="top")
+    y1 = D.level_for(truth, "y", 1.5, "Т", "т", view="top")
+    y2 = D.level_for(truth, "y", 19.5, "Т", "т", view="top")
+    truth["views"]["top"]["pts"] = [["x0", "y0", None], [xt, "y0", None], [xt, y1, None], ["xL", y1, None],
+                                    ["xL", y2, None], [xt, y2, None], [xt, "yW", None], ["x0", "yW", None]]  # fmt: skip
+    zt1 = D.level_for(truth, "z", 1.5, "Т", "т", view="side")
+    zt2 = D.level_for(truth, "z", 7.5, "Т", "т", view="side")
+    r = D.add_dim(truth, "r", 4.0, "R", "R")
+    truth["views"]["side"]["pts"] = [["x0", "z0", r], [xt, "z0", None], [xt, zt1, None], ["xL", zt1, None],
+                                     ["xL", zt2, None], [xt, zt2, None], [xt, "zH", None], ["x0", "zH", r]]  # fmt: skip
+    truth = measured(truth)
+    B.build(truth, tmp_path / "truth")
+    mesh = trimesh.load(tmp_path / "truth" / "part.stl", force="mesh")
+    shots = {}
+    for k, n in enumerate(("top", "front", "back", "right", "left", "bottom")):
+        path = tmp_path / f"{n}.jpg"
+        spin = 180.0 if n in ("front", "back") else 2.0
+        CP.shot(mesh, n, yaw=4.0, spin=spin, seed=k + 30).save(path, quality=92, exif=CP.exif())
+        shots[n] = V.segment(sess, path)
+    lay = P.layout(shots, (51, 21, 9))
+    assert lay["ends"]["front"] < -P.END_EVIDENCE  # обърнатата снимка е разпозната
+    views, _ = P.views_mm(shots, lay, 51, 21, 9)
+    d = A.assemble(views, 51, 21, 9)
+    side = Polygon([(u, v) for u, v, _ in D.outline(d, "side")]).buffer(0)
+
+    def height(x):
+        return side.intersection(LineString([(x, -1), (x, 20)])).length
+
+    assert height(49.5) < height(25) - 1.5  # тесният край е отдясно, както отгоре
+    assert height(2.0) > height(49.5) + 1.0  # отляво е заобленият край на капачката, а не стъпалото

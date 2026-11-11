@@ -128,3 +128,97 @@ def test_two_parts_shown_in_their_own_colours(tmp_path, monkeypatch):
     render.picture(tmp_path)
     colours = {tuple(c) for c in np.unique(seen[0].round(), axis=0)}
     assert colours == {tuple(float(v) for v in c[:3]) for c in B.PART_COLORS[:2]}
+
+
+def hook_outline():
+    """Кука като истинската закачалка (54 x 41, рамо 5 мм): дълъг крак, полукръг и къс крак със заоблен край."""
+    from shapely.geometry import LineString
+
+    path = [(2.5, 0.0), (2.5, 28.0)] + [(20.5 - 18 * math.cos(t), 28 + 18 * math.sin(t))
+                                        for t in [i * math.pi / 40 for i in range(41)]] + [(38.5, 16.0)]  # fmt: skip
+    poly = LineString(path).buffer(2.5, cap_style="flat", quad_segs=16)
+    return poly
+
+
+def test_hook_follows_the_photo_as_a_flat_part(tmp_path):
+    """Кука (54 x 41): от прави и дъги или гладка крива, но по очертанието на снимката и без въпроси за "точки от
+    формата". Плосък детайл: само очертанието отгоре, една дебелина и заобляне на ръбовете отгоре и отдолу."""
+    import numpy as np
+
+    from app.cad import assemble as A
+
+    poly = hook_outline()
+    x0, y0, x1, y1 = poly.bounds
+    U, V, H = x1 - x0, y1 - y0, 4.0
+    outer = np.asarray(poly.exterior.coords)[:-1] - [x0, y0]
+    d = A.assemble({"top": {"outer": outer, "holes": [], "U": U, "V": V}}, U, V, H, flat=True)
+    assert not any("формата" in q["name"] for q in D.questions(d))
+    rep = B.build(measured(d), tmp_path / "sharp")
+    assert rep["volume_mm3"] == pytest.approx(poly.area * H, rel=0.02)
+    d = D.add_feature(d, {"t": "fillet", "edges": "flat"})
+    d = D.set_values(d, {d["features"][-1]["r"]: 1.5})
+    rounded = B.build(measured(d), tmp_path / "round")
+    assert 0.85 * poly.area * H < rounded["volume_mm3"] < 0.97 * poly.area * H
+    assert rounded["size_mm"] == pytest.approx([U, V, H], abs=0.05)
+
+
+def test_free_shape_is_a_smooth_curve_not_chopped_lines(tmp_path):
+    """Вълниста форма, която не е от прави и дъги: гладка крива (сплайн) през точките от снимката, а не начупена
+    линия, и точките не се питат."""
+    import numpy as np
+    from shapely.geometry import Polygon
+
+    from app.cad import assemble as A
+
+    t = np.linspace(0, 2 * math.pi, 400, endpoint=False)
+    r = 20 + 3 * np.sin(5 * t) + 1.5 * np.cos(3 * t)
+    poly = Polygon(np.c_[r * np.cos(t), r * np.sin(t)])
+    x0, y0, x1, y1 = poly.bounds
+    U, V = x1 - x0, y1 - y0
+    outer = np.asarray(poly.exterior.coords)[:-1] - [x0, y0]
+    d = A.assemble({"top": {"outer": outer, "holes": [], "U": U, "V": V}}, U, V, 5.0, flat=True)
+    top = d["views"]["top"]
+    assert top.get("curve") and len(top["pts"]) >= 40 and not top["corners"]
+    assert all(q["id"] in ("L", "W", "H") for q in D.questions(d))
+    rep = B.build(measured(d), tmp_path)
+    assert rep["volume_mm3"] == pytest.approx(poly.area * 5.0, rel=0.01)
+    assert "spline" in (tmp_path / "part.py").read_text(encoding="utf-8")
+
+
+def test_zero_means_no_step_no_hole_and_a_sharp_corner(tmp_path):
+    """0 за стъпало, отвор, заобляне или радиус: просто го няма (кутия), а не грешка."""
+    d = D.new("block", 60, 30, 10)
+    x = D.level_for(d, "x", 40, "Стъпало", "стъпалото", view="side")
+    z = D.level_for(d, "z", 6, "Стъпало", "стъпалото", view="side")
+    r = D.add_dim(d, "r", 2, "Радиус на ъгъла", "Радиус")
+    d["views"]["side"]["pts"] = [["x0", "z0", None], ["xL", "z0", None], ["xL", z, r], [x, z, None],
+                                 [x, "zH", None], ["x0", "zH", None]]  # fmt: skip
+    d = D.add_feature(d, {"t": "hole", "face": "top", "through": True, "centered": [True, True]})
+    d = D.add_feature(d, {"t": "fillet", "edges": "vertical"})
+    hole, fillet = d["features"]
+    d = measured(D.set_values(d, {d["levels"][x]["dim"]: 0.0, d["levels"][z]["dim"]: 0.0, r: 0.0, hole["d"]: 0.0,
+                                  fillet["r"]: 0.0}))  # fmt: skip
+    rep = B.build(d, tmp_path)
+    assert rep["volume_mm3"] == pytest.approx(60 * 30 * 10, rel=1e-4)
+    with pytest.raises(D.DesignError):  # общите размери не може да са 0
+        D.set_values(d, {"L": 0.0})
+
+
+def test_oval_end_is_a_rounded_rectangle(tmp_path):
+    """Сечение като на флашка (21 x 9 с полукръгли страни), което разпознаването на прави не хваща: правоъгълник с
+    четири заоблени ъгъла (един радиус за мерене), а не начупена форма."""
+    from shapely.geometry import LineString
+
+    from app.cad import assemble as A
+    import numpy as np
+
+    poly = LineString([(4.5, 4.5), (16.5, 4.5)]).buffer(4.5, quad_segs=24)
+    outer = np.asarray(poly.exterior.coords)[:-1]
+    d = A.assemble({"end": {"outer": outer, "holes": [], "U": 21.0, "V": 9.0}}, 50, 21, 9)
+    end = d["views"]["end"]
+    assert not end.get("free") and len(end["pts"]) == 4
+    radii = {row[2] for row in end["pts"]}
+    assert len(radii) == 1 and None not in radii
+    assert D.value(d, radii.pop()) == pytest.approx(4.5, abs=0.25)
+    rep = B.build(measured(d), tmp_path)
+    assert rep["volume_mm3"] == pytest.approx(poly.area * 50, rel=0.01)

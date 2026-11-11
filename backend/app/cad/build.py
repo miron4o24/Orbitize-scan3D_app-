@@ -31,6 +31,8 @@ def clean(raw: dict) -> dict:
         raise D.DesignError("Непознато описание на детайла.")
     d = {"v": 1, "kind": raw["kind"], "dims": {}, "levels": {}, "views": {}, "features": [],
          "notes": [_txt(n, 300) for n in (raw.get("notes") or [])[:20]]}  # fmt: skip
+    if raw.get("flat"):
+        d["flat"] = True
     if len(raw.get("dims") or {}) > 400 or len(raw.get("levels") or {}) > 400:
         raise D.DesignError("Твърде много размери.")
     for i, dim in (raw.get("dims") or {}).items():
@@ -68,6 +70,11 @@ def clean(raw: dict) -> dict:
             raise D.DesignError("Очертанието трябва да има поне 3 ъгъла.")
         d["views"][view] = {"pts": pts, **({"free": True} if spec.get("free") else {}),
                             **({"round": True} if spec.get("round") and view != "profile" else {})}  # fmt: skip
+        if spec.get("curve") and view != "profile":
+            corners = spec.get("corners") or []
+            if not isinstance(corners, list) or not all(isinstance(i, int) and 0 <= i < len(pts) for i in corners):
+                raise D.DesignError("Непознат ъгъл на очертание.")
+            d["views"][view] |= {"curve": True, "free": True, "corners": sorted(set(corners))}
     for f in (raw.get("features") or [])[:60]:
         t = f.get("t") if isinstance(f, dict) else None
         if t not in FEATURE_KEYS or not D.DIM_ID.match(str(f.get("id", ""))):
@@ -119,11 +126,16 @@ def clean(raw: dict) -> dict:
     return d
 
 
+FRAC = re.compile(r"^[xyz]~(0(\.\d{1,6})?|1(\.0{1,6})?)$")
+
+
 def level_ok(d: dict, lvl, axis: str) -> bool:
     if not isinstance(lvl, str):
         return False
     if lvl in (f"{axis}0", f"{axis}c", D.end_level(axis)):
         return True
+    if FRAC.match(lvl):
+        return lvl[0] == axis
     return lvl in d["levels"] and d["levels"][lvl]["axis"] == axis
 
 
@@ -140,9 +152,25 @@ def plane(axis, at):
     return cq.Plane((at, 0, 0), (0, 1, 0), (1, 0, 0))
 
 
+def tidy(pts):
+    """Без повторените ъгли (размер 0: стъпалото го няма) и без ъглите по права линия."""
+    pts = [p for k, p in enumerate(pts) if math.dist(p[:2], pts[k - 1][:2]) > 1e-6] or pts[:1]
+    k = 0
+    while len(pts) > 3 and k < len(pts):
+        a, b, c = pts[k - 1], pts[k], pts[(k + 1) % len(pts)]
+        cross = (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0])
+        if abs(cross) < 1e-9 * max(1.0, math.dist(a[:2], c[:2]) ** 2):
+            pts.pop(k)
+            k = 0
+        else:
+            k += 1
+    return pts
+
+
 def outline(pl, pts):
     """Затворено очертание от ъгли (u, v, радиус) в равнината `pl`; радиус > 0 заобля ъгъла с дъга, допирателна
     към двете страни."""
+    pts = tidy(list(pts))
     n = len(pts)
 
     def corner(k):
@@ -172,6 +200,20 @@ def outline(pl, pts):
         if mid is not None:
             wp = wp.threePointArc(mid, p2)
         here = p2
+    return wp.close()
+
+
+def curve(pl, pts, corners):
+    """Затворена гладка форма през точките (u, v) в равнината `pl`: сплайн, който се чупи само в острите ъгли
+    (индексите `corners`); между два съседни ъгъла без точки помежду им е права."""
+    n = len(pts)
+    xy = [(u, v) for u, v, *_ in pts]
+    if not corners:
+        return cq.Workplane(pl).spline(xy, periodic=True, includeCurrent=False).close()
+    wp = cq.Workplane(pl).moveTo(*xy[corners[0]])
+    for a, b in zip(corners, corners[1:] + [corners[0] + n]):
+        run = [xy[k % n] for k in range(a + 1, b + 1)]
+        wp = wp.lineTo(*run[0]) if len(run) == 1 else wp.spline(run, includeCurrent=True)
     return wp.close()
 
 
@@ -242,6 +284,8 @@ def code(d: dict) -> str:
             return axis_total_expr(d, ax)
         if rest == "c":
             return f"{axis_total_expr(d, ax)} / 2"
+        if rest[:1] == "~":
+            return f"{axis_total_expr(d, ax)} * {rest[1:]}"
         return names[lvl]
 
     def pts_expr(view: str) -> str:
@@ -263,6 +307,10 @@ def code(d: dict) -> str:
                 a, b = (D.AXIS_TOTAL[k] for k in D.VIEW_AXES[view])
                 lines.append(f"{view}_solid = round_view(plane('{axis}', {at}), {a}, {b}).extrude({size})"
                              f"  # {D.VIEW_NAME[view]}: кръг/елипса")  # fmt: skip
+            elif spec.get("curve"):
+                lines.append(f"{view} = {pts_expr(view)}  # {D.VIEW_NAME[view]}: гладка форма по снимката")
+                lines.append(f"{view}_solid = curve(plane('{axis}', {at}), {view}, {spec.get('corners') or []})"
+                             f".extrude({size})")  # fmt: skip
             else:
                 lines.append(f"{view} = {pts_expr(view)}  # {D.VIEW_NAME[view]}")
                 lines.append(f"{view}_solid = outline(plane('{axis}', {at}), {view}).extrude({size})")
@@ -273,7 +321,7 @@ def code(d: dict) -> str:
             lines.append("body = " + parts[0])
             for p in parts[1:]:
                 lines.append(f"body = body.intersect({p})")
-    feats = d["features"]
+    feats = [f for f in d["features"] if D.present(d, f)]  # с размер 0 ги няма
     edge_feats = [f for f in feats if f["t"] in ("fillet", "chamfer")]
     cut_feats = [f for f in feats if f["t"] in ("rect", "slot")]
     holes = [f for f in feats if f["t"] == "hole"]
@@ -281,6 +329,8 @@ def code(d: dict) -> str:
         lines += ["", "# --- Заобляния и фаски ---"]
         for f in edge_feats:
             op = f"fillet({f['r']})" if f["t"] == "fillet" else f"chamfer({f['c']})"
+            if f["edges"] == "flat":  # до половината от дебелината (точно половината OpenCascade не може)
+                op = f"fillet(min({f['r']}, H * 0.49))" if f["t"] == "fillet" else f"chamfer(min({f['c']}, H * 0.49))"
             lines.append(f"body = {edge_select('body', f['edges'], d['kind'])}.{op}  # {D.label(d, f)}")
     for title, group in (("Изрези, джобове и канали", cut_feats), ("Отвори", holes)):
         if not group:
@@ -338,6 +388,8 @@ def pos_expr(f: dict, key: str, lv) -> str:
 
 
 def edge_select(body: str, edges: str, kind: str) -> str:
+    if edges == "flat":
+        return f'{body}.faces(">Z or <Z").edges()'
     if edges == "vertical":
         return f'{body}.edges("|Z")'
     if edges == "top":
@@ -396,8 +448,11 @@ def build(raw: dict, out: Path) -> dict:
     cq.exporters.export(wp, str(out / "part.stl"), tolerance=max(0.005, size / 4000), angularTolerance=0.08)
     mesh = glb(out / "part.stl", out / "part.glb", shape)
     s = D.summary(d)
+    volume = float(shape.Volume())
+    if any(v.get("curve") for v in d["views"].values()):  # OpenCascade смята обема на сплайн неточно (до 3%): мрежата
+        volume = abs(float(mesh.volume))
     report = {"size_mm": [round(bb.xlen, 3), round(bb.ylen, 3), round(bb.zlen, 3)],
-              "volume_mm3": round(float(shape.Volume()), 1), "solids": len(shape.Solids()),
+              "volume_mm3": round(volume, 1), "solids": len(shape.Solids()),
               "kind": d["kind"], "measured": len(s["measured"]), "estimated": len(s["estimated"]),
               "estimated_names": [d["dims"][i]["name"] for i in s["estimated"]],
               "elements": [x["text"] for x in D.describe(d)], "triangles": int(len(mesh.faces))}  # fmt: skip

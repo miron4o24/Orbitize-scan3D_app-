@@ -228,3 +228,38 @@ def test_outline_check_and_fix_by_tap(client):
     assert client.post(f"/jobs/{job}/cad/outline/top", json={"points": [[1.5, 0.5]]}).status_code == 422
     assert client.post(f"/jobs/{job}/cad/outline/..%2Fx", json={"points": [[0.5, 0.5]]}).status_code in (400, 404)
     assert client.get(f"/jobs/{job}/cad/outline/bottom.jpg").status_code == 400  # няма такава снимка
+
+
+def test_flat_part_from_top_and_bottom_only(client):
+    """Плосък детайл (кука, пластина): само снимки отгоре и отдолу. Третият размер е дебелината (линията е върху
+    чертежа, не върху снимка отстрани в ръка), детайлът е с една дебелина навсякъде и се пита за заоблянето на
+    ръбовете отгоре и отдолу; 0 там значи остри ръбове (и 0 за отвора: няма отвор)."""
+    job = client.post("/jobs").json()["id"]
+    for v in ("top", "bottom"):
+        assert client.put(f"/jobs/{job}/photos/{v}.jpg", content=jpeg()).status_code == 200
+    plan = client.post(f"/jobs/{job}/cad/read", json={"flat": True}).json()
+    assert [(q["id"], q["photo"]) for q in plan["overall"]] == [("L", "top"), ("W", "top"), ("H", None)]
+    assert plan["overall"][2]["name"] == "Дебелина"
+    assert client.get(f"/jobs/{job}/cad/question/H.png").content[:4] == b"\x89PNG"
+    got = client.post(f"/jobs/{job}/cad/read", json={"L": 60, "W": 30, "H": 3, "flat": True}).json()
+    assert got["design"]["flat"] and got["items"][0]["text"].startswith("Плосък детайл")
+    edge = next(f for f in got["design"]["features"] if f["t"] == "fillet")
+    assert edge["edges"] == "flat"
+    hole = next(f for f in got["design"]["features"] if f["t"] == "hole")
+    asked = {q["id"]: q for q in got["questions"]}
+    assert edge["r"] in asked and asked[edge["r"]]["est"] is None  # не се вижда на снимка отгоре: мери се
+    for q in got["questions"]:
+        assert client.get(f"/jobs/{job}/cad/question/{q['id']}.png").status_code == 200
+    values = {q["id"]: q["est"] for q in got["questions"] if q["est"] is not None}
+    sharp = client.post(f"/jobs/{job}/cad/edit", json={"design": got["design"],
+                                                      "op": {"values": values | {edge["r"]: 0, hole["d"]: 0}}}).json()
+    assert sharp["design"]["flat"]  # остава плосък и след промяна
+    built = client.post(f"/jobs/{job}/cad/build", json={"design": sharp["design"]}).json()["report"]["cad"]
+    assert built["size_mm"] == [60.0, 30.0, 3.0]
+    plate = 60 * 30 - (4 - math.pi) * 25 / 2  # два ъгъла R5, без отвор
+    assert built["volume_mm3"] == pytest.approx(plate * 3, rel=2e-3)
+    round_ = client.post(f"/jobs/{job}/cad/edit", json={"design": got["design"],
+                                                       "op": {"values": values | {edge["r"]: 1.0}}}).json()
+    rounded = client.post(f"/jobs/{job}/cad/build", json={"design": round_["design"]}).json()["report"]["cad"]
+    assert rounded["size_mm"] == pytest.approx([60.0, 30.0, 3.0], abs=0.01)
+    assert rounded["volume_mm3"] < built["volume_mm3"] - math.pi * 9 * 3 - 50  # с отвора и заоблените ръбове

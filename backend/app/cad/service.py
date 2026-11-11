@@ -151,6 +151,8 @@ def shots(job: Path) -> dict:
     out.mkdir(exist_ok=True)
     cache = out / "shots.json"
     with lock(job):
+        from . import vision as VI
+
         stored = json.loads(cache.read_text(encoding="utf-8")) if cache.exists() else {}
         result, todo = {}, []
         for name in present(job):
@@ -161,8 +163,6 @@ def shots(job: Path) -> dict:
             else:
                 todo.append((name, path, key))
         if todo:
-            from . import vision as VI
-
             with _busy:
                 sess = session()
                 for name, path, key in todo:
@@ -174,6 +174,12 @@ def shots(job: Path) -> dict:
                                                 "снимайте я отново от по-високо.") from e  # fmt: skip
                         raise D.DesignError(f"На снимката {P.TITLE[name]} не се вижда целият предмет: снимайте я "
                                             "отново, предметът в средата, на контрастна повърхност.") from e  # fmt: skip
+        old = [n for n in result if result[n].get("profiles") != VI.PROFILES]  # от по-стара версия: без изрязване
+        for name in old:
+            im, outer = VI.load(photo_path(job, name)), np.asarray(result[name]["outer"])
+            result[name] |= {"lines": VI.line_profiles(im, outer), "looks": VI.looks(im, outer),
+                             "profiles": VI.PROFILES}  # fmt: skip
+        if todo or old:
             write_json(cache, result)
         return result
 
@@ -247,20 +253,25 @@ def outline_jpg(job: Path, name: str) -> bytes:
     return buf.getvalue()
 
 
+FLAT_RATIO = 0.2  # дебелина под толкова от по-малката страна отгоре: плосък детайл (кука, пластина, шайба)
+
+
 def read(job: Path, L: float | None = None, W: float | None = None, H: float | None = None,
-         flips: dict | None = None) -> dict:  # fmt: skip
+         flips: dict | None = None, flat: bool = False) -> dict:  # fmt: skip
     """Чете снимките. Без мерки: кои общи размери да се измерят и на коя снимка (overall). С мерки (първият
-    вариант на приложението): направо описанието, като assemble."""
+    вариант на приложението): направо описанието, като assemble. flat: плосък детайл (третият размер е дебелина)."""
     if L and W and H:
-        return assemble(job, {"L": L, "W": W, "H": H}, flips)
-    lay = P.layout(shots(job))
+        return assemble(job, {"L": L, "W": W, "H": H}, flips, flat)
+    lay = P.layout(shots(job)) | {"flat": bool(flat)}
     write_json(job / "cad" / "plan.json", lay)
-    return {"photos": present(job), "overall": P.overall(lay), "warnings": lay["warnings"], "round": lay["round"],
+    return {"photos": present(job), "overall": P.overall(lay, flat), "warnings": lay["warnings"], "round": lay["round"],
             "stamp": str(int(time.time() * 1000))}  # fmt: skip
 
 
-def assemble(job: Path, values: dict, flips: dict | None = None) -> dict:
-    """Описанието от снимките и измерените общи размери (L, W, H или D за кръглото сечение)."""
+def assemble(job: Path, values: dict, flips: dict | None = None, flat: bool = False) -> dict:
+    """Описанието от снимките и измерените общи размери (L, W, H или D за кръглото сечение). flat: плосък детайл
+    (избран в приложението или тънък спрямо размерите отгоре): само очертанието отгоре с една дебелина, а ръбовете
+    отгоре и отдолу може да са заоблени. Снимките отстрани на такъв детайл са в ръка и само развалят формата."""
     sh = shots(job)
     try:
         L, W, H = P.resolve(P.layout(sh), {k: v for k, v in values.items() if v})
@@ -269,12 +280,24 @@ def assemble(job: Path, values: dict, flips: dict | None = None) -> dict:
     flips = sanitize_flips(flips)
     lay = P.layout(sh, (L, W, H), flips)
     views, warnings = P.views_mm(sh, lay, L, W, H)
-    d = AS.assemble(views, L, W, H)
+    flat = bool(flat) or H <= FLAT_RATIO * min(L, W)
+    if flat:
+        sides = [P.TITLE[n] for n in ("front", "back", "right", "left")]  # предупрежденията за тях не важат
+        warnings = [w for w in warnings if not any(t in w for t in sides)]
+        lay = lay | {"warnings": [w for w in lay["warnings"] if not any(t in w for t in sides)]}
+    d = AS.assemble(views, L, W, H, flat=flat)
     xs = [D.coord(d, lid) for lid, spec in d["levels"].items() if spec["axis"] == "x"]
     for x, x_bottom in seams(job, sh, lay, L, W, H):
         if all(abs(x - lx) > 0.04 * L for lx in xs):  # не е ръбът на стъпало
             d = D.add_split(d, x, x_bottom)
-    if d["kind"] == "block" and "end" not in views and not d["views"]["end"].get("round"):
+    if flat and d["kind"] == "block":
+        d = D.add_feature(d, {"t": "fillet", "edges": "flat"})
+        f = d["features"][-1]
+        dim = d["dims"][f["r"]]
+        dim["name"] = "Радиус на заоблените ръбове"
+        dim["ask"] = "Радиус на заоблянето по дебелината (ръбовете отгоре и отдолу)"
+        dim["hint"] = "Ако ръбовете са остри, въведете 0. Най-много половината от дебелината."
+    elif d["kind"] == "block" and "end" not in views and not d["views"]["end"].get("round"):
         r = side_rounding(job, sh, lay, L, W, H)
         if r:
             rid = D.add_dim(d, "r", r, "Радиус на заоблените страни", "Радиус на заоблените дълги ръбове",
@@ -283,6 +306,7 @@ def assemble(job: Path, values: dict, flips: dict | None = None) -> dict:
             d["views"]["end"] = {"pts": [["y0", "z0", rid], ["yW", "z0", rid], ["yW", "zH", rid], ["y0", "zH", rid]]}
             d["notes"].append("Заоблените страни са оценени по светлината на снимката: за точност снимайте и края.")
     d["flips"] = flips
+    d["flat"] = flat
     return response(job, d, lay["warnings"] + warnings)
 
 
@@ -455,6 +479,7 @@ def edit(job: Path, raw: dict, op: dict) -> dict:
 
     d = clean(raw)
     d["flips"] = sanitize_flips(raw.get("flips"))
+    d["flat"] = bool(raw.get("flat"))
     if "values" in op:
         vals = {}
         for k, v in (op["values"] or {}).items():
@@ -477,10 +502,11 @@ def edit(job: Path, raw: dict, op: dict) -> dict:
         cur[axis] = not cur[axis]
         flips[view] = cur
         L, W, H = sizes(d)
-        return assemble(job, {"L": L, "W": W, "H": H}, flips)
+        return assemble(job, {"L": L, "W": W, "H": H}, flips, d["flat"])
     else:
         raise D.DesignError("Непозната промяна.")
     d["flips"] = sanitize_flips(raw.get("flips"))
+    d["flat"] = bool(raw.get("flat"))
     return response(job, d)
 
 
@@ -564,7 +590,7 @@ def question_png(job: Path, dim: str) -> bytes:
     from .vision import load
 
     lay = json.loads(plan_path.read_text(encoding="utf-8"))
-    q = next((q for q in P.overall(lay) if q["id"] == dim), None)
+    q = next((q for q in P.overall(lay, lay.get("flat", False)) if q["id"] == dim), None)
     if q is None:
         raise D.DesignError("Непознат размер.")
     if q["photo"] is None:

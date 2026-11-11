@@ -42,6 +42,7 @@ RATIO_DROP = 1.25  # още повече: снимката не е ползва�
 MARK_WALL = 0.015  # тъмно петно по-близо до ръба (дял от размера) не е отвор
 SURE_MARGIN = 0.01  # с толкова по-добро съвпадение от следващото обръщане е ясно как е обърната снимката
 ROUND_RMS = 0.02  # очертание, нормирано до квадрат, по-близко до кръг: кръгло
+END_EVIDENCE = 0.3  # снимката отстрани пасва на снимката отгоре обърната с поне толкова по-добре: обърнат е
 
 
 def rot(axis: str, deg: float) -> np.ndarray:
@@ -66,7 +67,7 @@ MOVE = {
 
 
 class Frame:
-    """Очертанието на една снимка с неговите оси: l по дължината на най-малкия описан правоъгълник, s напряко."""
+    """Очертанието на една снимка с неговите оси: l по дължината (fit.main_axes), s напряко."""
 
     def __init__(self, shot: dict):
         self.q = np.asarray(shot["outer"], float) * [1.0, -1.0]
@@ -76,16 +77,11 @@ class Frame:
         self.marks = [m for m, _ in pairs]
         self.mark_info = [i for _, i in pairs]
         self.lines = shot.get("lines") or {}
+        self.looks = shot.get("looks") or {}
         self.size = tuple(shot["size"])
-        poly = largest(Polygon(self.q).buffer(0))
-        rect = poly.minimum_rotated_rectangle
-        rx, ry = rect.exterior.coords.xy
-        edges = [(rx[k + 1] - rx[k], ry[k + 1] - ry[k]) for k in range(2)]
-        e = max(edges, key=lambda v: math.hypot(*v))
-        phi = (math.degrees(math.atan2(e[1], e[0])) + 90) % 180 - 90
-        self.phi = phi
-        self.l = np.array([math.cos(math.radians(phi)), math.sin(math.radians(phi))])
-        self.s = np.array([-self.l[1], self.l[0]])
+        from .fit import main_axes
+
+        self.l, self.s, self.phi = main_axes(self.q)
 
     def ext(self, e: np.ndarray) -> float:
         return float(np.ptp(self.q @ e))
@@ -205,6 +201,7 @@ def layout(shots: dict, sizes: tuple[float, float, float] | None = None, flips: 
     quality: dict[str, float] = {}
     sure: dict[str, bool] = {}  # обръщането на снимката е ясно (несиметричен предмет)
     alts: dict[str, list] = {}  # обръщанията (по u, по v), които пасват почти еднакво добре
+    ends: dict[str, float] = {}  # same_end на основната снимка отстрани (за проверка)
     for view in VIEWS:
         members = [n for n in orient if orient[n][0] == view]
         if not members:
@@ -213,6 +210,10 @@ def layout(shots: dict, sizes: tuple[float, float, float] | None = None, flips: 
         _, eu, ev = orient[primary]
         if view in ("side", "end") and resting_down(frames[primary].normalized(eu, ev, aspect=True)):
             ev = -ev
+        if view == "side":  # кой край е кой: приложението казва как да се обърне детайлът, но човек може да го завърти
+            ends[primary] = round(same_end(top, orient["top"][1], frames[primary], eu), 3)
+            if ends[primary] < -END_EVIDENCE:
+                eu = -eu
         fu, fv = (flips or {}).get(view, [False, False])
         eu, ev = (-eu if fu else eu), (-ev if fv else ev)
         orient[primary] = [view, eu, ev]
@@ -255,9 +256,59 @@ def layout(shots: dict, sizes: tuple[float, float, float] | None = None, flips: 
             orient[n].append(n == primary)
     out = {"orient": {n: {"view": v[0], "eu": [float(x) for x in v[1]], "ev": [float(x) for x in v[2]],
                           "primary": bool(v[3])} for n, v in orient.items()},
-           "iou": quality, "sure": sure, "alts": alts, "warnings": warnings}  # fmt: skip
+           "iou": quality, "sure": sure, "alts": alts, "warnings": warnings, "ends": ends}  # fmt: skip
     out["round"] = {"top": is_round(frames, orient, "top"), "end": is_round(frames, orient, "end")}
     return out
+
+
+def ext_profile(f: Frame, e: np.ndarray, bins: int = 48) -> np.ndarray:
+    """Колко широко е очертанието напряко на e на всяко от bins места по e (от по-малкото към по-голямото по e),
+    като дял от най-широкото."""
+    from .fit import resample
+
+    pts = resample(np.asarray(largest(Polygon(f.q).buffer(0)).exterior.coords), max(f.ext(e) / (bins * 6), 1e-6))
+    n = np.array([-e[1], e[0]])
+    t, w = pts @ e, pts @ n
+    k = np.clip(((t - t.min()) / max(float(np.ptp(t)), 1e-9) * bins).astype(int), 0, bins - 1)
+    out = np.array([float(np.ptp(w[k == i])) if np.any(k == i) else np.nan for i in range(bins)])
+    return out / max(float(np.nanmax(out)), 1e-9)
+
+
+def look_profile(f: Frame, e: np.ndarray) -> tuple[np.ndarray, np.ndarray] | None:
+    """Цветът (Lab, bins x 3) и пъстротата (bins) по посоката e (vision.looks), от по-малкото към по-голямото по e."""
+    key, sign = ("l", float(e @ f.l)) if abs(float(e @ f.l)) > 0.5 else ("s", float(e @ f.s))
+    prof = f.looks.get(key)
+    if not prof:
+        return None
+    lab = np.array([c if c is not None else [np.nan] * 3 for c in prof["lab"]], float)
+    tex = np.array([x if x is not None else np.nan for x in prof["tex"]], float)
+    return (lab, tex) if sign > 0 else (lab[::-1], tex[::-1])
+
+
+def corr(a: np.ndarray, b: np.ndarray) -> float:
+    ok = ~(np.isnan(a) | np.isnan(b))
+    if ok.sum() < 8:
+        return 0.0
+    a, b = a[ok] - a[ok].mean(), b[ok] - b[ok].mean()
+    d = math.sqrt(float((a * a).sum() * (b * b).sum()))
+    return float((a * b).sum()) / d if d > 1e-9 else 0.0
+
+
+def same_end(a: Frame, ea: np.ndarray, b: Frame, eb: np.ndarray) -> float:
+    """Дали посоката eb на снимката b върви като ea на снимката a (обща ос, например дължината отгоре и отпред):
+    > 0 - да, < 0 - обратно, около 0 - не личи. По три белега по дължината на оста, всеки сравнен направо и обърнат:
+    очертанието (стеснен или заоблен край, стъпало), пъстротата (надписи, прозрачна част) и цветът (капачката)."""
+    ext_a, ext_b = ext_profile(a, ea), ext_profile(b, eb)
+    score = corr(ext_a, ext_b) - corr(ext_a, ext_b[::-1])
+    la, lb = look_profile(a, ea), look_profile(b, eb)
+    if la is not None and lb is not None and len(la[1]) == len(lb[1]):
+        score += 0.5 * (corr(la[1], lb[1]) - corr(la[1], lb[1][::-1]))
+        ca, cb = la[0] - np.nanmedian(la[0], 0), lb[0] - np.nanmedian(lb[0], 0)
+        same = float(np.nanmean(np.linalg.norm(ca - cb, axis=1)))
+        flip = float(np.nanmean(np.linalg.norm(ca - cb[::-1], axis=1)))
+        if same + flip > 1e-9:
+            score += 1.5 * (flip - same) / (flip + same)
+    return score
 
 
 def axis_profile(f: Frame, e: np.ndarray) -> np.ndarray | None:
@@ -753,8 +804,9 @@ def fuse(a: dict, b: dict, U: float, V: float) -> dict | None:
     return {"outer": outer, "holes": holes}
 
 
-def overall(lay: dict) -> list[dict]:
-    """Общите размери за мерене, с коя снимка и по коя ос ("u" или "v" на изгледа) е линията."""
+def overall(lay: dict, flat: bool = False) -> list[dict]:
+    """Общите размери за мерене, с коя снимка и по коя ос ("u" или "v" на изгледа) е линията. flat: плосък детайл,
+    само със снимки отгоре и отдолу: третият размер е дебелината."""
     o = lay["orient"]
     rnd = lay["round"]
     primary = {o[n]["view"]: n for n in o if o[n]["primary"]}
@@ -773,6 +825,10 @@ def overall(lay: dict) -> list[dict]:
         out.append(question("H", primary["end"], "v"))
     else:
         out.append(question("H", None, "v"))
+    if flat and out[-1]["id"] == "H":  # снимките отстрани на плосък детайл са в ръка: линията е върху чертежа
+        out[-1] = {"id": "H", "name": "Дебелина", "ask": "Измерете дебелината на детайла.",
+                   "hint": "Шублерът напряко на плоската страна, където детайлът е най-дебел.", "photo": None,
+                   "along": "v"}  # fmt: skip
     return out
 
 

@@ -584,9 +584,10 @@ export type CadReport = {
 export type CadFile = 'part.step' | 'part.py' | 'part.stl' | 'part.glb' | 'drawing.png';
 
 export const cadPrepare = (jobId: string) => call<{ ready: CadPhoto[] }>('POST', `/jobs/${jobId}/cad/prepare`);
-export const cadRead = (jobId: string) => call<CadPlan>('POST', `/jobs/${jobId}/cad/read`, {});
-export const cadAssemble = (jobId: string, sizes: Partial<Record<CadOverallId, number>>) =>
-  call<CadState>('POST', `/jobs/${jobId}/cad/read`, sizes);
+// flat: плосък детайл (кука, пластина) само със снимки отгоре и отдолу: една дебелина навсякъде.
+export const cadRead = (jobId: string, flat = false) => call<CadPlan>('POST', `/jobs/${jobId}/cad/read`, { flat });
+export const cadAssemble = (jobId: string, sizes: Partial<Record<CadOverallId, number>>, flat = false) =>
+  call<CadState>('POST', `/jobs/${jobId}/cad/read`, { ...sizes, flat });
 export const cadEdit = (jobId: string, design: CadDesign, op: CadOp) =>
   call<CadState>('POST', `/jobs/${jobId}/cad/edit`, { design, op });
 export const cadBuild = (jobId: string, design: CadDesign) => call<Job>('POST', `/jobs/${jobId}/cad/build`, { design });
