@@ -139,8 +139,52 @@ def assemble(job: Path, values: dict, flips: dict | None = None) -> dict:
     for x, x_bottom in seams(job, sh, lay, L, W):
         if all(abs(x - lx) > 0.04 * L for lx in xs):  # не е ръбът на стъпало
             d = D.add_split(d, x, x_bottom)
+    if d["kind"] == "block" and "end" not in views and not d["views"]["end"].get("round"):
+        r = side_rounding(job, sh, lay, L, W, H)
+        if r:
+            rid = D.add_dim(d, "r", r, "Радиус на заоблените страни", "Радиус на заоблените дълги ръбове",
+                            "Оценен по светлината на снимката; без снимка отстрани не се вижда точно.", "radius",
+                            optional=True, show={"view": "end", "radius": True})  # fmt: skip
+            d["views"]["end"] = {"pts": [["y0", "z0", rid], ["yW", "z0", rid], ["yW", "zH", rid], ["y0", "zH", rid]]}
+            d["notes"].append("Заоблените страни са оценени по светлината на снимката: за точност снимайте и края.")
     d["flips"] = flips
     return response(job, d, lay["warnings"] + warnings)
+
+
+def side_rounding(job: Path, sh: dict, lay: dict, L: float, W: float, H: float) -> float | None:
+    """Заоблени дълги ръбове без снимка от края: на снимката отгоре (или отдолу, която е по-равномерна, без печат)
+    закръгленият ръб е ивица, в която светлината се мени, а равната страна е еднаква. Широчината на ивицата от двете
+    страни е радиусът (ако е само от едната страна, е сянка или видяна стена, а не заобляне)."""
+    from scipy import ndimage
+
+    from .vision import load
+
+    best = None
+    for name in ("top", "bottom"):
+        o = lay["orient"].get(name)
+        if o is None or o["view"] != "top" or name not in sh:
+            continue
+        A = P.placement(sh[name], o, L, W)["A"]
+        im = np.asarray(load(photo_path(job, name)).convert("L"), np.float32)
+        us = np.linspace(0.3 * L, 0.6 * L, 60)
+        vs = np.arange(0.0, W, W / 230)
+        uu, vv = np.meshgrid(us, vs, indexing="ij")
+        px = A[:, :2] @ np.stack([uu.ravel(), vv.ravel()]) + A[:, 2:3]
+        prof = np.median(ndimage.map_coordinates(im, [px[1], px[0]], order=1).reshape(len(us), len(vs)), 0)
+        mid = (vs > 0.35 * W) & (vs < 0.65 * W)
+        flat = float(np.median(prof[mid]))
+        mad = float(np.median(np.abs(prof[mid] - flat))) * 1.48
+        if mad > 0.03 * flat:
+            continue  # печат или неравна светлина по средата: не става
+        off = np.abs(prof - flat) >= max(3 * mad, 0.03 * flat, 3.0)
+        a, b = vs < 0.3 * W, vs > 0.7 * W
+        w0 = float(vs[a][off[a]].max()) if off[a].any() else 0.0
+        w1 = float(W - vs[b][off[b]].min()) if off[b].any() else 0.0
+        if min(w0, w1) < 0.15 * H:
+            continue
+        if best is None or mad < best[0]:
+            best = (mad, min((w0 + w1) / 2, 0.45 * H))
+    return round(best[1], 2) if best else None
 
 
 SEAM_COVER = 0.9  # колко от ширината трябва да пресича линия, за да е граница между части
