@@ -414,7 +414,9 @@ def failure_text(d: dict, e: Exception) -> str:
     return "Моделът не се построи с тези размери: проверете дали отворите и изрезите са в детайла."
 
 
-PART_COLORS = ([186, 192, 200, 255], [150, 196, 236, 255], [214, 190, 150, 255])  # сиво, синьо, бежово
+# Частите в ясно различни цветове (и под силната светлина на прегледа): тялото светлосиво, капачката оранжева
+# (цветът на приложението), трета част синя.
+PART_COLORS = ([200, 204, 212, 255], [242, 120, 32, 255], [40, 110, 220, 255])
 
 
 def glb(stl: Path, dest: Path, shape=None):
@@ -442,6 +444,8 @@ def glb(stl: Path, dest: Path, shape=None):
         m.visual = trimesh.visual.ColorVisuals(m, face_colors=np.tile(PART_COLORS[k % len(PART_COLORS)], (len(m.faces), 1)))
         shown.append(trimesh.graph.smooth_shade(m, angle=np.radians(30), facet_minarea=None))
     whole = trimesh.util.concatenate(shown) if len(shown) > 1 else shown[0]
-    dest.write_bytes(M.glb(whole))
-    whole.export(dest.with_name("display.ply"))
+    whole.export(dest.with_name("display.ply"))  # в мм, Z нагоре (за модела в историята: service.build)
+    upright = whole.copy()
+    upright.apply_transform(M.Y_UP)  # glTF е с Y нагоре: прегледът и историята показват детайла еднакво
+    dest.write_bytes(M.glb(upright))
     return whole

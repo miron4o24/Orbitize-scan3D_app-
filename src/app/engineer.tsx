@@ -200,8 +200,7 @@ export default function Engineer() {
       finished.current = true;
       const size = report.cad?.size_mm.map(mmText).join(' × ');
       if (editing) {
-        const local = modelFile(editing.id);
-        if (local.exists) local.delete(); // новият модел се изтегля наново
+        for (const local of [modelFile(editing.id), modelFile(editing.id, true)]) if (local.exists) local.delete(); // новият се изтегля наново
         updateScan(editing.id, {
           report,
           longestMm: report.real_mm ?? undefined,

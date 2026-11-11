@@ -88,3 +88,43 @@ def test_names_cannot_break_out_of_comments(tmp_path):
     d["dims"]["L"]["name"] = "x\nimport os\nos.system('echo hacked')"
     text = B.code(B.clean(d))
     assert "\nimport os" not in text and "\nos.system" not in text
+
+
+def test_two_parts_shown_in_their_own_colours(tmp_path, monkeypatch):
+    """Капачка и тяло (граница по диагонал): прегледът (part.glb, с височината нагоре като всеки glTF) и картинката в
+    историята показват двете части в два ясно различни цвята, без смесване там, където се допират."""
+    import json
+    import shutil
+    import struct
+
+    import numpy as np
+    import trimesh
+
+    from app import render
+
+    d = measured(D.add_split(D.new("block", 50, 20, 8), 35.0, 31.0))
+    out = tmp_path / "cad" / "out"
+    assert B.build(d, out)["solids"] == 2
+    shown = trimesh.load(out / "part.glb", force="mesh", process=False)
+    assert np.allclose(shown.extents, [50, 8, 20], atol=0.01)  # височината по Y: прегледът е изправен като историята
+    raw = (out / "part.glb").read_bytes()  # цветовете на върховете (COLOR_0) от самия файл
+    n = struct.unpack("<I", raw[12:16])[0]
+    gltf = json.loads(raw[20:20 + n])
+    acc = gltf["accessors"][gltf["meshes"][0]["primitives"][0]["attributes"]["COLOR_0"]]
+    start = gltf["bufferViews"][acc["bufferView"]].get("byteOffset", 0) + acc.get("byteOffset", 0)
+    k = {"VEC3": 3, "VEC4": 4}[acc["type"]]
+    colors = np.frombuffer(raw[20 + n + 8:], np.float32, acc["count"] * k, start).reshape(-1, k)
+    assert len(np.unique(colors.round(4), axis=0)) == 2
+    shutil.copy(out / "display.ply", tmp_path / "model.ply")  # моделът в историята (service.build)
+    seen = []
+    sample = render.surface
+
+    def spy(job, mesh, count):
+        pts, col, nrm = sample(job, mesh, count)
+        seen.append(col)
+        return pts, col, nrm
+
+    monkeypatch.setattr(render, "surface", spy)
+    render.picture(tmp_path)
+    colours = {tuple(c) for c in np.unique(seen[0].round(), axis=0)}
+    assert colours == {tuple(float(v) for v in c[:3]) for c in B.PART_COLORS[:2]}

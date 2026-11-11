@@ -10,6 +10,7 @@ job/cad/out/        - последният построен детайл: part.s
 мерките, по една, с линия върху снимката -> build. Всичко става веднага (секунди), не в опашката на сканиранията."""
 
 import json
+import logging
 import os
 import shutil
 import threading
@@ -30,6 +31,9 @@ _session = None
 _session_lock = threading.Lock()
 _busy = threading.BoundedSemaphore(2)  # най-много две четения на снимки наведнъж (процесорът е общ със сканиранията)
 _job_locks: dict[str, threading.Lock] = {}
+
+
+log = logging.getLogger("uvicorn.error")
 
 
 def lock(job: Path) -> threading.Lock:
@@ -498,21 +502,51 @@ def build(job: Path, raw: dict) -> dict:
         shutil.rmtree(out, ignore_errors=True)
         os.replace(work, out)
         response(job, d)
-        # Моделът в историята е същият като прегледа: цветни части, остри ръбове (без сливане на върховете при
-        # зареждане: main.result), най-дълга страна 100 като всеки модел; истинският размер е real_mm.
-        display = out / "display.ply"
-        model = trimesh.load(display if display.exists() else out / "part.stl", force="mesh", process=False)
-        real = float(max(model.extents))
-        model.apply_translation(-model.bounds.mean(0) * [1, 1, 0] - [0, 0, model.bounds[0][2]])
-        model.apply_scale(100.0 / real)
-        tmp = job / "model.tmp.ply"
-        model.export(tmp)
-        os.replace(tmp, job / "model.ply")
+        real = history_model(job, out)
         solid = trimesh.load(out / "part.stl", force="mesh")  # затворено (за обема и повърхнината в отчета)
         solid.apply_translation(-solid.bounds.mean(0) * [1, 1, 0] - [0, 0, solid.bounds[0][2]])
         solid.apply_scale(100.0 / real)
     return M.report(solid) | {"ai": "cad", "real_mm": round(real, 3), "object": "", "suitable": True,
                               "cad": report}  # fmt: skip
+
+
+def history_model(job: Path, out: Path) -> float:
+    """Моделът в историята (model.ply) е същият като прегледа: цветни части, остри ръбове (без сливане на върховете
+    при зареждане: main.result), най-дълга страна 100 като всеки модел. Връща истинския размер (real_mm)."""
+    import trimesh
+
+    display = out / "display.ply"
+    model = trimesh.load(display if display.exists() else out / "part.stl", force="mesh", process=False)
+    real = float(max(model.extents))
+    model.apply_translation(-model.bounds.mean(0) * [1, 1, 0] - [0, 0, model.bounds[0][2]])
+    model.apply_scale(100.0 / real)
+    tmp = job / "model.tmp.ply"
+    model.export(tmp)
+    os.replace(tmp, job / "model.ply")
+    return real
+
+
+def refresh(job: Path) -> bool:
+    """Детайл, построен преди цветните части и острите ръбове в прегледа (без display.ply): прегледът и моделът в
+    историята се правят наново от същото тяло (part.py, записан при строенето), така че да изглежда като новите.
+    Размерите и файловете за изработка не се променят. False, ако не стане: остава старият вид."""
+    from .build import glb, solid
+
+    out = job / "cad" / "out"
+    if (out / "display.ply").exists() or not (out / "part.py").exists():
+        return False
+    try:
+        with lock(job):
+            if not (out / "display.ply").exists():
+                glb(out / "part.stl", out / "part.glb", solid((out / "part.py").read_text(encoding="utf-8")))
+                history_model(job, out)
+        return True
+    except Exception as e:  # стар или повреден детайл: показва се както досега
+        log.warning("cad refresh of %s: %s", job.name, e)
+        return False
+
+
+PREVIEW_STYLE = 2  # видът на прегледа (build.glb): при промяна запазените прегледи се правят наново
 
 
 def preview(job: Path) -> Path:
@@ -525,7 +559,7 @@ def preview(job: Path) -> Path:
     from .build import clean
 
     d = draft(job)
-    stamp = hashlib.sha1(json.dumps(d, sort_keys=True).encode()).hexdigest()[:16]
+    stamp = hashlib.sha1(json.dumps([PREVIEW_STYLE, d], sort_keys=True).encode()).hexdigest()[:16]
     out = job / "cad" / "preview"
     glb = out / "part.glb"
     if glb.exists() and (out / "stamp").exists() and (out / "stamp").read_text() == stamp:
