@@ -130,7 +130,7 @@ def segment(sess, path) -> dict:
     """Очертанието на детайла на снимката: {"outer": [[x, y], ...], "holes": [...], "size": [w, h]} в пиксели на
     смалената снимка (load), x надясно, y надолу. ValueError: на снимката няма детайл."""
     im = load(path)
-    field_, _solid, box = cutout(sess, im)
+    field_, solid, box = cutout(sess, im)
     outer, holes = contours(field_)
     off = np.array([box[0], box[1]], float)
     o = outer + off
@@ -138,7 +138,40 @@ def segment(sess, path) -> dict:
     if o[:, 0].min() < edge or o[:, 1].min() < edge or o[:, 0].max() > im.size[0] - edge or             o[:, 1].max() > im.size[1] - edge:  # fmt: skip
         raise ValueError("cut")
     return {"outer": np.round(outer + off, 2).tolist(), "holes": [np.round(h + off, 2).tolist() for h in holes],
-            "size": list(im.size), "f35": focal35(path)}  # fmt: skip
+            "size": list(im.size), "f35": focal35(path),
+            "marks": [np.round(m + off, 2).tolist() for m in dark_marks(np.asarray(im.crop(box), np.float32), solid)]}  # fmt: skip
+
+
+def dark_marks(rgb: np.ndarray, solid: np.ndarray) -> list[np.ndarray]:
+    """Тъмни компактни петна върху детайла (пиксели x, y на изрязването): отвор, през който от тази страна не се
+    вижда (дълбок и тесен, встрани от средата на кадъра), изглежда като тъмно петно. Само потвърждават отвор от
+    другата снимка (photos.hole_union), затова надписи и рисунки не пречат."""
+    inner = ndimage.binary_erosion(solid, iterations=4)
+    if inner.sum() < 400:
+        return []
+    gray = rgb.mean(-1)
+    vals = gray[inner]
+    med = float(np.median(vals))
+    mad = float(np.median(np.abs(vals - med))) * 1.4826 + 3.0
+    cand = inner & (gray < med - max(4 * mad, 35.0))
+    cand = ndimage.binary_opening(cand, iterations=1)
+    lab, n = ndimage.label(cand)
+    area = solid.sum()
+    out = []
+    for k in range(1, n + 1):
+        blob = lab == k
+        a = blob.sum()
+        if not MIN_HOLE * area <= a <= 0.08 * area:
+            continue
+        ys, xs = np.nonzero(blob)
+        hull = Polygon(np.c_[xs, ys]).convex_hull
+        if hull.area <= 0 or a / hull.area < 0.7:
+            continue
+        cs = measure.find_contours(np.pad(blob.astype(float), 1), 0.5)
+        if cs:
+            c = max(cs, key=len)[:, ::-1] - 1
+            out.append(c)
+    return out[:30]
 
 
 def focal35(path) -> float | None:
