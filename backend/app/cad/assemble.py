@@ -84,6 +84,7 @@ def assemble(views: dict, L: float, W: float, H: float) -> dict:
         return turned(views, L, W, H)
     d = D.new("block", L, W, H)
     radius_dims: list[tuple[float, str]] = []
+    top_tabs: list[dict] = []
     for name in ("top", "side", "end"):
         if name not in views:
             continue
@@ -99,23 +100,19 @@ def assemble(views: dict, L: float, W: float, H: float) -> dict:
         if cs is not None:
             cs = fit.symmetric_round(cs, v["U"], v["V"])
             if name == "top":  # по-тесен край (флашка, химикалка): къси стъпала, които ъглите не хващат
-                cs = fit.apply_tabs(cs, fit.end_tabs(v["outer"], v["U"], v["V"]), v["U"], v["V"])
+                top_tabs = fit.end_tabs(v["outer"], v["U"], v["V"])
+                cs = fit.apply_tabs(cs, top_tabs, v["U"], v["V"])
         if cs is None:
             d["views"][name] = free_view(d, v, a, b, name)
             d["notes"].append(f"Очертанието {D.VIEW_NAME[name]} не е от прави и дъги: взето е от снимката (оценено).")
             continue
-        pts = []
-        for u, w, r in cs:
-            lu = D.level_for(d, a, clamp(u, v["U"]), step_name(a), step_what(a), view=name)
-            lv = D.level_for(d, b, clamp(w, v["V"]), step_name(b), step_what(b), view=name)
-            rid = radius_dim(d, radius_dims, r, name) if r > 0 else None
-            if pts and pts[-1][:2] == [lu, lv]:  # два ъгъла на едно място (под допуска): един
-                continue
-            pts.append([lu, lv, rid])
-        if len(pts) >= 2 and pts[0][:2] == pts[-1][:2]:
-            pts.pop()
-        pts = tidy(pts)
-        d["views"][name] = {"pts": pts} if len(pts) >= 3 else {"pts": D.box(a, b)}
+        d["views"][name] = view_pts(d, cs, a, b, v["U"], v["V"], name, radius_dims)
+    if top_tabs and "side" not in views:
+        # По-тесният край обикновено е по-тънък със същото (без снимка отпред не се вижда): оценка, която се мери.
+        tabs = [t | {"lo": min((t["lo"] + t["hi"]) / 2, 0.3 * H), "hi": min((t["lo"] + t["hi"]) / 2, 0.3 * H)}
+                for t in top_tabs]  # fmt: skip
+        cs = fit.apply_tabs([(0.0, 0.0, 0.0), (L, 0.0, 0.0), (L, H, 0.0), (0.0, H, 0.0)], tabs, L, H)
+        d["views"]["side"] = view_pts(d, cs, "x", "z", L, H, "side", radius_dims)
     group_holes(d)
     try:
         D.check(d)
@@ -129,6 +126,22 @@ def assemble(views: dict, L: float, W: float, H: float) -> dict:
         d["notes"].append("Очертанията от снимките не се събраха: започваме от кутия; добавете елементите ръчно.")
     D.unused_cleanup(d)
     return d
+
+
+def view_pts(d: dict, cs: list, a: str, b: str, U: float, V: float, name: str, radius_dims: list) -> dict:
+    """Ъглите (u, v, r) в мм -> изгледът на описанието: нива (стъпала) и размери за радиусите."""
+    pts = []
+    for u, w, r in cs:
+        lu = D.level_for(d, a, clamp(u, U), step_name(a), step_what(a), view=name)
+        lv = D.level_for(d, b, clamp(w, V), step_name(b), step_what(b), view=name)
+        rid = radius_dim(d, radius_dims, r, name) if r > 0 else None
+        if pts and pts[-1][:2] == [lu, lv]:  # два ъгъла на едно място (под допуска): един
+            continue
+        pts.append([lu, lv, rid])
+    if len(pts) >= 2 and pts[0][:2] == pts[-1][:2]:
+        pts.pop()
+    pts = tidy(pts)
+    return {"pts": pts} if len(pts) >= 3 else {"pts": D.box(a, b)}
 
 
 def tidy(pts: list) -> list:
