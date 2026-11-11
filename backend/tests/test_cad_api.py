@@ -107,7 +107,29 @@ def test_read_measure_build_and_download(client):
         assert r.status_code == 200 and len(r.content) > 100
     assert b"ISO-10303" in client.get(f"/jobs/{job}/cad/file/part.step").content[:200]
     assert client.get(f"/jobs/{job}/cad/file/../status.json").status_code == 404
-    assert client.get(f"/jobs/{job}/result.glb").status_code == 200  # прегледът в приложението
+    glb = client.get(f"/jobs/{job}/result.glb")  # прегледът в приложението
+    assert glb.status_code == 200
+    import json
+    import struct
+
+    n = struct.unpack("<I", glb.content[12:16])[0]
+    attrs = json.loads(glb.content[20:20 + n])["meshes"][0]["primitives"][0]["attributes"]
+    # Остри ръбове и цвят: с общи нормали през ръбовете (както при сканиране) детайлът изглеждаше размазан.
+    assert {"NORMAL", "COLOR_0"} <= set(attrs)
+    import numpy as np
+    import trimesh
+
+    shown = trimesh.load(io.BytesIO(glb.content), file_type="glb", force="mesh", process=False)
+    corner = np.isclose(np.abs(shown.vertex_normals).max(1), 1.0, atol=1e-3).mean()
+    assert corner > 0.5  # по равните стени нормалите са точно перпендикулярни, не наклонени към ръбовете
+    # Детайл, построен преди display.ply: острите ръбове се разделят при изпращане.
+    from app import jobs
+
+    (jobs.job_dir(job) / "cad" / "out" / "display.ply").unlink()
+    old = client.get(f"/jobs/{job}/result.glb")
+    assert old.status_code == 200
+    shown = trimesh.load(io.BytesIO(old.content), file_type="glb", force="mesh", process=False)
+    assert np.isclose(np.abs(shown.vertex_normals).max(1), 1.0, atol=1e-3).mean() > 0.5
 
 
 def test_add_remove_and_through(client):

@@ -498,14 +498,20 @@ def build(job: Path, raw: dict) -> dict:
         shutil.rmtree(out, ignore_errors=True)
         os.replace(work, out)
         response(job, d)
-        model = trimesh.load(out / "part.stl", force="mesh")
+        # Моделът в историята е същият като прегледа: цветни части, остри ръбове (без сливане на върховете при
+        # зареждане: main.result), най-дълга страна 100 като всеки модел; истинският размер е real_mm.
+        display = out / "display.ply"
+        model = trimesh.load(display if display.exists() else out / "part.stl", force="mesh", process=False)
         real = float(max(model.extents))
         model.apply_translation(-model.bounds.mean(0) * [1, 1, 0] - [0, 0, model.bounds[0][2]])
         model.apply_scale(100.0 / real)
         tmp = job / "model.tmp.ply"
         model.export(tmp)
         os.replace(tmp, job / "model.ply")
-    return M.report(model) | {"ai": "cad", "real_mm": round(real, 3), "object": "", "suitable": True,
+        solid = trimesh.load(out / "part.stl", force="mesh")  # затворено (за обема и повърхнината в отчета)
+        solid.apply_translation(-solid.bounds.mean(0) * [1, 1, 0] - [0, 0, solid.bounds[0][2]])
+        solid.apply_scale(100.0 / real)
+    return M.report(solid) | {"ai": "cad", "real_mm": round(real, 3), "object": "", "suitable": True,
                               "cad": report}  # fmt: skip
 
 

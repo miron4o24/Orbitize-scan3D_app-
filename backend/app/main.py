@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import io
 import json
+import math
 import os
 import re
 import shutil
@@ -510,7 +511,13 @@ def result(job_id: str, fmt: str, longest_mm: float | None = Query(None, gt=0, l
     if existing(job_id, p)["state"] != "done":
         raise HTTPException(409, "Моделът още не е готов.")
     job = jobs.job_dir(job_id)
-    mesh = trimesh.load(job / "model.ply", force="mesh")
+    # Детайл от инженерния режим: върховете по острите ръбове са нарочно разделени (остри ръбове, цветни части);
+    # сливането им при зареждане (както за сканиране) би го показало размазан и закръглен.
+    out = job / "cad" / "out"
+    cad = (out / "display.ply").exists() and fmt == "glb"
+    mesh = trimesh.load(job / "model.ply", force="mesh", process=not cad)
+    if fmt == "glb" and not cad and (out / "part.stl").exists():  # построен преди display.ply: само острите ръбове
+        mesh = trimesh.graph.smooth_shade(mesh, angle=math.radians(30), facet_minarea=None)
     textured = TX.load(job) if fmt == "glb" and texture else None
     if textured is None:
         mesh = M.smooth(mesh, smooth)

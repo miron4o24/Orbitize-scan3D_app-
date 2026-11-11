@@ -418,23 +418,30 @@ PART_COLORS = ([186, 192, 200, 255], [150, 196, 236, 255], [214, 190, 150, 255])
 
 
 def glb(stl: Path, dest: Path, shape=None):
-    """GLB за прегледа в приложението, в мм: всяко тяло (капачка, тяло) в свой цвят."""
+    """GLB за прегледа в приложението, в мм: всяко тяло (капачка, тяло) в свой цвят, с нормали, при които острите
+    ръбове (над 30°) са остри, а заоблените повърхности гладки. Без нормали прегледът сам решаваше как да осветява, а
+    с общи нормали през ръбовете (както при сканиране) детайлът изглеждаше размазан и закръглен. Записва и
+    display.ply (същото, за модела в историята: service.build)."""
     import numpy as np
     import trimesh
 
-    mesh = trimesh.load(stl, force="mesh")
-    solids = shape.Solids() if shape is not None else []
-    if len(solids) <= 1:
-        mesh.visual = trimesh.visual.ColorVisuals(mesh, face_colors=np.tile(PART_COLORS[0], (len(mesh.faces), 1)))
-        mesh.export(dest)
-        return mesh
+    from .. import mesh as M
+
+    solids = sorted(shape.Solids(), key=lambda x: -x.Volume()) if shape is not None else []
     parts = []
-    solids = sorted(solids, key=lambda x: -x.Volume())  # най-голямата част (тялото) е сива, по-малките (капачка) в цвят
-    for k, sol in enumerate(solids):
-        vs, fs = sol.tessellate(max(0.005, max(sol.BoundingBox().xlen, sol.BoundingBox().ylen) / 4000), 0.08)
-        m = trimesh.Trimesh(np.array([(v.x, v.y, v.z) for v in vs]), np.array(fs), process=True)
+    if len(solids) <= 1:
+        parts.append(trimesh.load(stl, force="mesh"))
+    else:  # най-голямата част (тялото) е сива, по-малките (капачка) в цвят
+        for sol in solids:
+            bb = sol.BoundingBox()
+            vs, fs = sol.tessellate(max(0.005, max(bb.xlen, bb.ylen, bb.zlen) / 4000), 0.08)
+            parts.append(trimesh.Trimesh(np.array([(v.x, v.y, v.z) for v in vs]), np.array(fs), process=True))
+    shown = []
+    for k, m in enumerate(parts):
+        trimesh.repair.fix_normals(m)
         m.visual = trimesh.visual.ColorVisuals(m, face_colors=np.tile(PART_COLORS[k % len(PART_COLORS)], (len(m.faces), 1)))
-        parts.append(m)
-    whole = trimesh.util.concatenate(parts)
-    whole.export(dest)
+        shown.append(trimesh.graph.smooth_shade(m, angle=np.radians(30), facet_minarea=None))
+    whole = trimesh.util.concatenate(shown) if len(shown) > 1 else shown[0]
+    dest.write_bytes(M.glb(whole))
+    whole.export(dest.with_name("display.ply"))
     return whole
