@@ -65,6 +65,68 @@ def present(job: Path) -> list[str]:
     return [n for n in P.NAMES if photo_path(job, n)]
 
 
+KEPT = 10  # толкова от последните изоставени детайли на собственика се пазят за проверка
+
+
+def kept_root() -> Path:
+    from .. import jobs
+
+    return jobs.DATA.parent / "cad-kept"  # извън DATA: не е задача (jobs.count, почистването)
+
+
+def keep_abandoned(job: Path) -> bool:
+    """Незавършен детайл на собственика, изоставен в приложението (то трие задачата): снимките и прочетеното от тях
+    (cad/*.json) се пазят, последните KEPT, за да може да се види какво не е разчетено, вместо да се гадае.
+    Моделите и останалото не се пазят."""
+    if not present(job):
+        return False
+    root = kept_root()
+    dest = root / job.name
+    try:
+        shutil.rmtree(dest, ignore_errors=True)
+        (dest / "cad").mkdir(parents=True)
+        for f in sorted((job / "photos").glob("*.jp*g")):
+            shutil.copy2(f, dest / f.name)
+        for f in sorted((job / "cad").glob("*.json")):
+            shutil.copy2(f, dest / "cad" / f.name)
+        write_json(dest / "kept.json", {"time": time.time(), "photos": present(job)})
+        old = sorted((d for d in root.iterdir() if d.is_dir()), key=lambda d: d.stat().st_mtime, reverse=True)
+        for d in old[KEPT:]:
+            shutil.rmtree(d, ignore_errors=True)
+        return True
+    except OSError as e:
+        log.warning("keeping abandoned %s: %s", job.name, e)
+        return False
+
+
+def kept_list() -> list[dict]:
+    root = kept_root()
+    if not root.exists():
+        return []
+    out = []
+    for d in sorted(root.iterdir(), key=lambda d: d.stat().st_mtime, reverse=True):
+        info = d / "kept.json"
+        if d.is_dir() and info.exists():
+            out.append({"id": d.name} | json.loads(info.read_text(encoding="utf-8")))
+    return out
+
+
+def kept_zip(job_id: str) -> bytes | None:
+    """Пазените снимки и прочетеното от тях като zip (без компресия: JPEG не се свива)."""
+    import io
+    import zipfile
+
+    d = kept_root() / job_id
+    if not (d / "kept.json").exists():
+        return None
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        for f in sorted(d.rglob("*")):
+            if f.is_file():
+                z.write(f, f.relative_to(d).as_posix())
+    return buf.getvalue()
+
+
 def write_json(path: Path, data) -> None:
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
@@ -114,6 +176,75 @@ def shots(job: Path) -> dict:
                                             "отново, предметът в средата, на контрастна повърхност.") from e  # fmt: skip
             write_json(cache, result)
         return result
+
+
+CUT_ERRORS = {
+    "cut": "Така очертанието стига до ръба на снимката: докоснете самия детайл, не повърхността или ръката.",
+    "no sam": "Поправката с докосване още не е налична на сървъра: снимайте тази страна отново.",
+    "no object": "Там не се вижда детайл: докоснете върху самия детайл.",
+}
+
+
+def retrace(job: Path, name: str, points: list[list[float]]) -> None:
+    """Очертанието на снимката `name` наново, по точките, които потребителят е докоснал върху детайла (x, y от 0 до
+    1; с трето число 0 - "това не е детайлът"), когато автоматичното е грешно (ръка, телефон, сянка). Без точки:
+    отново автоматичното. Важи, докато снимката не се смени."""
+    from . import vision as VI
+
+    name = P.LEGACY.get(name, name)
+    path = photo_path(job, name) if name in P.NAMES else None
+    if not path:
+        raise D.DesignError("Няма такава снимка.")
+    shots(job)  # останалите снимки (и кешът) са готови
+    try:
+        with _busy:
+            got = VI.segment(session(), path, points or None)
+    except ValueError as e:
+        raise D.DesignError(CUT_ERRORS.get(str(e), CUT_ERRORS["no object"])) from e
+    key = [path.name, path.stat().st_mtime, path.stat().st_size]
+    cache = job / "cad" / "shots.json"
+    with lock(job):
+        stored = json.loads(cache.read_text(encoding="utf-8")) if cache.exists() else {}
+        stored[name] = got | {"key": key, **({"points": points} if points else {})}
+        write_json(cache, stored)
+
+
+OUTLINE_SIDE = 1400  # дългата страна на снимката с очертанието за проверка в приложението
+
+
+def outline_jpg(job: Path, name: str) -> bytes:
+    """Снимката (цялата, не завъртяна) с очертанието, което е изрязано от нея: за проверка в приложението, където
+    докосване върху нея (дял от ширината и височината) е точка за retrace."""
+    import io
+
+    from PIL import ImageDraw
+
+    from .vision import load
+
+    name = P.LEGACY.get(name, name)
+    path = photo_path(job, name) if name in P.NAMES else None
+    if not path:
+        raise D.DesignError("Няма такава снимка.")
+    sh = shots(job)
+    if name not in sh:
+        raise D.DesignError("Снимката още не е прочетена.")
+    im = load(path)
+    k = OUTLINE_SIDE / max(im.size)
+    im = im.resize((round(im.size[0] * k), round(im.size[1] * k)))
+    d = ImageDraw.Draw(im)
+    w = max(3, round(im.size[0] / 300))
+    for poly in [sh[name]["outer"]] + sh[name]["holes"]:
+        xy = [(x * k, y * k) for x, y in poly]
+        d.line(xy + [xy[0]], fill=(20, 20, 20), width=w + 4, joint="curve")  # тъмна подложка: видимо и на светло
+        d.line(xy + [xy[0]], fill=R.ACCENT, width=w, joint="curve")
+    for p in sh[name].get("points", []):
+        x, y, r = p[0] * im.size[0], p[1] * im.size[1], 3 * w
+        ok = len(p) < 3 or p[2]
+        d.ellipse((x - r, y - r, x + r, y + r), fill=(40, 200, 90) if ok else (230, 50, 50), outline="white",
+                  width=max(2, w // 2))  # fmt: skip
+    buf = io.BytesIO()
+    im.save(buf, "JPEG", quality=85)
+    return buf.getvalue()
 
 
 def read(job: Path, L: float | None = None, W: float | None = None, H: float | None = None,

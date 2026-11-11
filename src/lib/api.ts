@@ -592,6 +592,12 @@ export const cadEdit = (jobId: string, design: CadDesign, op: CadOp) =>
 export const cadBuild = (jobId: string, design: CadDesign) => call<Job>('POST', `/jobs/${jobId}/cad/build`, { design });
 export const cadQuestionUrl = (jobId: string, dim: string, stamp: string) => `${API_URL}/jobs/${jobId}/cad/question/${dim}.png?s=${stamp}`;
 export const cadPhotoUrl = (jobId: string, photo: CadPhoto, stamp: string) => `${API_URL}/jobs/${jobId}/cad/photo/${photo}.jpg?s=${stamp}`;
+// Снимката с очертанието, изрязано от нея (за проверка преди мерките), и поправката му с докосване: точки x, y от 0 до 1
+// върху снимката; трето число 0 - "това не е предметът". Без точки: отново автоматичното.
+export type CadPoint = [number, number] | [number, number, 0];
+export const cadOutlineUrl = (jobId: string, photo: CadPhoto, stamp: string) => `${API_URL}/jobs/${jobId}/cad/outline/${photo}.jpg?s=${stamp}`;
+export const cadRetrace = (jobId: string, photo: CadPhoto, points: CadPoint[]) =>
+  call<{ ok: boolean }>('POST', `/jobs/${jobId}/cad/outline/${photo}`, { points });
 export const downloadCadPreview = (jobId: string, dest: File) =>
   retrying(() => File.downloadFileAsync(`${API_URL}/jobs/${jobId}/cad/preview.glb`, dest, { headers: headers(), idempotent: true }));
 export const downloadCadFile = (jobId: string, name: CadFile, dest: File) =>
