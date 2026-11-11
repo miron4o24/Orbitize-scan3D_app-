@@ -12,8 +12,8 @@ from pathlib import Path
 
 from . import design as D
 
-RESERVED = {"cq", "math", "plane", "outline", "cut_tool", "rounded_rect", "body", "result", "top", "side", "end",
-            "profile", "top_solid", "side_solid", "end_solid", "lambda", "None", "True", "False"}
+RESERVED = {"cq", "math", "plane", "outline", "cut_tool", "rounded_rect", "round_view", "body", "result", "top",
+            "side", "end", "profile", "top_solid", "side_solid", "end_solid", "lambda", "None", "True", "False"}
 FEATURE_KEYS = {"hole": ("d", "depth"), "rect": ("w", "h", "depth", "r"), "slot": ("len", "w", "depth"),
                 "fillet": ("r",), "chamfer": ("c",)}  # fmt: skip
 
@@ -66,7 +66,8 @@ def clean(raw: dict) -> dict:
             pts.append([u, v, r])
         if not 3 <= len(pts) <= 200:
             raise D.DesignError("Очертанието трябва да има поне 3 ъгъла.")
-        d["views"][view] = {"pts": pts, **({"free": True} if spec.get("free") else {})}
+        d["views"][view] = {"pts": pts, **({"free": True} if spec.get("free") else {}),
+                            **({"round": True} if spec.get("round") and view != "profile" else {})}  # fmt: skip
     for f in (raw.get("features") or [])[:60]:
         t = f.get("t") if isinstance(f, dict) else None
         if t not in FEATURE_KEYS or not D.DIM_ID.match(str(f.get("id", ""))):
@@ -177,6 +178,14 @@ def cut_tool(axis, side, u, v, size, depth, sketch):
     return sketch(cq.Workplane(plane(axis, at)).center(u, v)).extrude(hi - lo)
 
 
+def round_view(pl, u, v):
+    """Кръг или елипса, вписани в правоъгълника u x v на равнината `pl` (от 0 до u и до v)."""
+    wp = cq.Workplane(pl).center(u / 2, v / 2)
+    if abs(u - v) < 1e-6:
+        return wp.circle(u / 2)
+    return wp.ellipse(u / 2, v / 2)
+
+
 def rounded_rect(w, h, r):
     def draw(wp):
         if r and r > 0:
@@ -237,11 +246,16 @@ def code(d: dict) -> str:
         parts = []
         for view, axis, size in (("top", "z", "H"), ("side", "y", "W"), ("end", "x", "L")):
             spec = d["views"].get(view)
-            if not spec or is_box(view, spec):
+            if not spec or (is_box(view, spec) and not spec.get("round")):
                 continue
             at = "W" if axis == "y" else "0"
-            lines.append(f"{view} = {pts_expr(view)}  # {D.VIEW_NAME[view]}")
-            lines.append(f"{view}_solid = outline(plane('{axis}', {at}), {view}).extrude({size})")
+            if spec.get("round"):
+                a, b = (D.AXIS_TOTAL[k] for k in D.VIEW_AXES[view])
+                lines.append(f"{view}_solid = round_view(plane('{axis}', {at}), {a}, {b}).extrude({size})"
+                             f"  # {D.VIEW_NAME[view]}: кръг/елипса")  # fmt: skip
+            else:
+                lines.append(f"{view} = {pts_expr(view)}  # {D.VIEW_NAME[view]}")
+                lines.append(f"{view}_solid = outline(plane('{axis}', {at}), {view}).extrude({size})")
             parts.append(f"{view}_solid")
         if not parts:
             lines.append("body = cq.Workplane(plane('z', 0)).moveTo(L / 2, W / 2).rect(L, W).extrude(H)")

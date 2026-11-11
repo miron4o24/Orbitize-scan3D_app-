@@ -6,7 +6,7 @@ import { useState } from 'react';
 import { Text, View } from 'react-native';
 
 import { Button, Card, ErrorText, Note, Row, Section, Small } from '@/components/ui';
-import { authHeaders, cadPhotoUrl, downloadCadFile, errorText, type CadFile, type CadReport } from '@/lib/api';
+import { authHeaders, cadPhotoUrl, downloadCadFile, errorText, type CadFile, type CadPhoto, type CadReport } from '@/lib/api';
 import { font, makeStyles, radius, space } from '@/theme';
 
 import { mmText } from './Measure';
@@ -79,10 +79,26 @@ export function CadPanel({ scanId, jobId, cad, stamp }: { scanId: string; jobId:
       />
       <Text style={s.label}>Проверка върху снимките</Text>
       <Small>Оранжевото е построеният детайл. Трябва да лежи точно върху ръбовете на снимката.</Small>
-      {(['top', 'side'] as const).map((v) => (
-        <Image key={v} source={{ uri: cadPhotoUrl(jobId, v, stamp), headers: authHeaders() }} style={s.photo} contentFit="contain" transition={150} />
+      {(['top', 'front', 'right'] as const).map((v) => (
+        <CheckPhoto key={v} jobId={jobId} photo={v} stamp={stamp} />
       ))}
     </Section>
+  );
+}
+
+/* Снимка с построения детайл върху нея; ако тази страна не е снимана, не се показва. */
+function CheckPhoto({ jobId, photo, stamp }: { jobId: string; photo: CadPhoto; stamp: string }) {
+  const s = useStyles();
+  const [missing, setMissing] = useState(false);
+  if (missing) return null;
+  return (
+    <Image
+      source={{ uri: cadPhotoUrl(jobId, photo, stamp), headers: authHeaders() }}
+      style={s.photo}
+      contentFit="contain"
+      transition={150}
+      onError={() => setMissing(true)}
+    />
   );
 }
 

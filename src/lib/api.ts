@@ -494,10 +494,25 @@ export const ownerUsers = (q: string) => call<OwnerUser[]>('GET', `/owner/users?
 export const setPro = (userId: string, pro: boolean) => call<{ id: string; pro: boolean }>('PUT', `/owner/users/${userId}/pro`, { pro });
 
 // --- Инженерният режим: мерене по указания (сървър app/cad) ---------------------------------------------------------
-// Снимките (top.jpg, side.jpg, по желание end.jpg) се качват с uploadPhoto; сървърът ги чете и предлага описание на
-// детайла, в което всеки размер е въпрос с оценка от снимките. Моделът се строи само от числата.
+// До шест снимки (top.jpg задължително; front, back, right, left, bottom по желание) се качват с uploadPhoto. Сървърът
+// ги чете (cadRead), казва кои общи размери да се измерят (всеки с линия върху снимка), после с тях предлага
+// описание на детайла (cadAssemble), в което всеки размер е въпрос с оценка от снимките. Моделът е само от числата.
 
-export type CadView = 'top' | 'side' | 'end';
+export type CadPhoto = 'top' | 'front' | 'back' | 'right' | 'left' | 'bottom';
+export type CadOverallId = 'L' | 'W' | 'H' | 'D';
+export type CadOverall = {
+  id: CadOverallId;
+  name: string;
+  ask: string;
+  hint: string;
+  photo: CadPhoto | null; // снимката с линията (null: схема)
+};
+export type CadPlan = {
+  photos: CadPhoto[];
+  overall: CadOverall[];
+  warnings: string[];
+  stamp: string;
+};
 export type CadDimKind = 'length' | 'position' | 'diameter' | 'radius';
 export type CadDim = {
   v: number | null;
@@ -517,7 +532,7 @@ export type CadDesign = {
   dims: Record<string, CadDim>;
   features: CadFeature[];
   notes: string[];
-  flips?: Partial<Record<'side' | 'end', [boolean, boolean]>>;
+  flips?: Partial<Record<'side' | 'end', [boolean, boolean]>>; // обръщане на ръка на изгледите отпред и отстрани
   [key: string]: unknown; // нивата и изгледите: приложението само ги връща на сървъра
 };
 export type CadQuestion = {
@@ -538,7 +553,7 @@ export type CadState = {
   questions: CadQuestion[];
   notes: string[];
   warnings: string[];
-  views: CadView[];
+  views: CadPhoto[]; // снимките, които има
   stamp: string; // за картинките: нова стойност при всяка промяна
 };
 export type CadFace = 'top' | 'bottom' | 'front' | 'back' | 'left' | 'right';
@@ -556,7 +571,7 @@ export type CadOp =
   | { remove: string }
   | { add: CadAdd }
   | { through: [string, boolean] }
-  | { flip: ['side' | 'end', 0 | 1] };
+  | { flip: [CadPhoto, 0 | 1] }; // обръща изгледа на тази снимка (и на противоположната) ляво-дясно или горе-долу
 export type CadReport = {
   size_mm: [number, number, number];
   volume_mm3: number;
@@ -568,13 +583,15 @@ export type CadReport = {
 };
 export type CadFile = 'part.step' | 'part.py' | 'part.stl' | 'part.glb' | 'drawing.png';
 
-export const cadRead = (jobId: string, L: number, W: number, H: number) =>
-  call<CadState>('POST', `/jobs/${jobId}/cad/read`, { L, W, H });
+export const cadPrepare = (jobId: string) => call<{ ready: CadPhoto[] }>('POST', `/jobs/${jobId}/cad/prepare`);
+export const cadRead = (jobId: string) => call<CadPlan>('POST', `/jobs/${jobId}/cad/read`, {});
+export const cadAssemble = (jobId: string, sizes: Partial<Record<CadOverallId, number>>) =>
+  call<CadState>('POST', `/jobs/${jobId}/cad/read`, sizes);
 export const cadEdit = (jobId: string, design: CadDesign, op: CadOp) =>
   call<CadState>('POST', `/jobs/${jobId}/cad/edit`, { design, op });
 export const cadBuild = (jobId: string, design: CadDesign) => call<Job>('POST', `/jobs/${jobId}/cad/build`, { design });
 export const cadQuestionUrl = (jobId: string, dim: string, stamp: string) => `${API_URL}/jobs/${jobId}/cad/question/${dim}.png?s=${stamp}`;
-export const cadPhotoUrl = (jobId: string, view: CadView, stamp: string) => `${API_URL}/jobs/${jobId}/cad/photo/${view}.jpg?s=${stamp}`;
+export const cadPhotoUrl = (jobId: string, photo: CadPhoto, stamp: string) => `${API_URL}/jobs/${jobId}/cad/photo/${photo}.jpg?s=${stamp}`;
 export const downloadCadPreview = (jobId: string, dest: File) =>
   retrying(() => File.downloadFileAsync(`${API_URL}/jobs/${jobId}/cad/preview.glb`, dest, { headers: headers(), idempotent: true }));
 export const downloadCadFile = (jobId: string, name: CadFile, dest: File) =>

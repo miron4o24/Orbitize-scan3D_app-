@@ -1,13 +1,13 @@
 """Инженерният режим върху папката на задачата (крайните точки са в main.py):
 
-job/photos/top.jpg, side.jpg и по желание end.jpg  - качените снимки (както при сканиране)
-job/cad/views.json  - прочетените очертания (мм) и как се връщат към снимката; пресмята се наново само при нови
-                      снимки или мерки
+job/photos/top.jpg, front.jpg, back.jpg, right.jpg, left.jpg, bottom.jpg  - снимките (както при сканиране); нужна е
+                      само отгоре, другите са по желание (колкото повече, толкова по-сигурно)
+job/cad/shots.json  - очертанията на детайла на всяка снимка в пиксели (изрязването се прави веднъж на снимка)
 job/cad/draft.json  - текущото описание (от него са картинките към въпросите и наложените очертания)
 job/cad/out/        - последният построен детайл: part.step, part.py, part.stl, part.glb, drawing.png
 
-Всичко става веднага (секунди), не в опашката на сканиранията: четенето на снимките е изрязване с IS-Net (по
-няколко секунди на снимка), а строенето е CadQuery."""
+Редът: read (без мерки) -> общите размери, всеки с линия върху снимка -> assemble (с тях) -> "Какво виждам" ->
+мерките, по една, с линия върху снимката -> build. Всичко става веднага (секунди), не в опашката на сканиранията."""
 
 import json
 import os
@@ -20,10 +20,10 @@ import numpy as np
 
 from . import assemble as AS
 from . import design as D
+from . import photos as P
 from . import render as R
 
-VIEWS = ("top", "side", "end")
-REQUIRED = ("top", "side")
+VIEWS = P.NAMES + tuple(P.LEGACY)  # имената на снимките (и от първия вариант: side, end)
 FILES = {"part.step": "model/step", "part.py": "text/x-python; charset=utf-8", "part.stl": "model/stl",
          "part.glb": "model/gltf-binary", "drawing.png": "image/png"}  # fmt: skip
 _session = None
@@ -47,72 +47,96 @@ def session():
         return _session
 
 
-def photo_path(job: Path, view: str) -> Path | None:
-    for ext in ("jpg", "jpeg"):
-        p = job / "photos" / f"{view}.{ext}"
-        if p.exists():
-            return p
+def photo_path(job: Path, name: str) -> Path | None:
+    names = [name] + [old for old, new in P.LEGACY.items() if new == name]
+    for n in names:
+        for ext in ("jpg", "jpeg"):
+            p = job / "photos" / f"{n}.{ext}"
+            if p.exists():
+                return p
     return None
 
 
+def present(job: Path) -> list[str]:
+    return [n for n in P.NAMES if photo_path(job, n)]
+
+
+def write_json(path: Path, data) -> None:
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def response(job: Path, d: dict, warnings: list[str] | None = None) -> dict:
-    """Това, което приложението показва: описанието, разпознатото, въпросите и кои изгледи имат снимка."""
+    """Това, което приложението показва: описанието, разпознатото, въпросите и кои снимки има."""
     out = job / "cad"
     out.mkdir(exist_ok=True)
-    tmp = out / "draft.json.tmp"
-    tmp.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
-    os.replace(tmp, out / "draft.json")
+    write_json(out / "draft.json", d)
     stamp = str(int(time.time() * 1000))
-    views = [v for v in VIEWS if photo_path(job, v)]
     return {"design": d, "items": D.describe(d), "questions": D.questions(d), "notes": d.get("notes", []),
-            "warnings": warnings or [], "views": views, "stamp": stamp}  # fmt: skip
+            "warnings": warnings or [], "views": present(job), "stamp": stamp}  # fmt: skip
 
 
-def read(job: Path, L: float, W: float, H: float, flips: dict | None = None) -> dict:
-    """Чете снимките (или прочетеното преди със същите мерки) и предлага описанието."""
-    for v in REQUIRED:
-        if not photo_path(job, v):
-            raise D.DesignError("Липсва снимка " + {"top": "отгоре", "side": "отстрани"}[v] + ".")
+def shots(job: Path) -> dict:
+    """Очертанията на детайла на всички снимки (в пиксели), прочетени веднъж на снимка."""
+    if not photo_path(job, "top"):
+        raise D.DesignError("Липсва снимката отгоре.")
     out = job / "cad"
     out.mkdir(exist_ok=True)
-    cache = out / "views.json"
-    sizes = {"top": (L, W), "side": (L, H), "end": (W, H)}
+    cache = out / "shots.json"
     with lock(job):
         stored = json.loads(cache.read_text(encoding="utf-8")) if cache.exists() else {}
-        views, warnings = {}, []
-        todo = []
-        for v in VIEWS:
-            path = photo_path(job, v)
-            if not path:
-                continue
-            key = [path.stat().st_mtime, *sizes[v]]
-            if v in stored and stored[v].get("key") == key:
-                views[v] = stored[v]
+        result, todo = {}, []
+        for name in present(job):
+            path = photo_path(job, name)
+            key = [path.name, path.stat().st_mtime, path.stat().st_size]
+            if name in stored and stored[name].get("key") == key:
+                result[name] = stored[name]
             else:
-                todo.append((v, path, key))
+                todo.append((name, path, key))
         if todo:
             from . import vision as VI
 
             with _busy:
                 sess = session()
-                for v, path, key in todo:
+                for name, path, key in todo:
                     try:
-                        got = VI.read(sess, path, *sizes[v])
+                        result[name] = VI.segment(sess, path) | {"key": key}
                     except ValueError as e:
-                        raise D.DesignError(f"На снимката {D.VIEW_NAME[v]} не се вижда детайл: снимайте отново, "
-                                            "детайлът в средата, на контрастна повърхност.") from e  # fmt: skip
-                    views[v] = {"key": key, "outer": got.outer.tolist(), "holes": [h.tolist() for h in got.holes],
-                                "U": got.U, "V": got.V, "transform": got.transform(), "warnings": got.warnings}  # fmt: skip
-            tmp = cache.with_suffix(".tmp")
-            tmp.write_text(json.dumps(views), encoding="utf-8")
-            os.replace(tmp, cache)
-        for v in views.values():
-            warnings += v.get("warnings", [])
-        geo = {k: {"outer": np.asarray(v["outer"]), "holes": [np.asarray(h) for h in v["holes"]], "U": v["U"],
-                   "V": v["V"]} for k, v in views.items()}  # fmt: skip
-        d = AS.assemble(geo, L, W, H, flips)
-        d["flips"] = flips or {}
-        return response(job, d, warnings)
+                        if str(e) == "cut":
+                            raise D.DesignError(f"На снимката {P.TITLE[name]} предметът не се събира целият в кадъра: "
+                                                "снимайте я отново от по-високо.") from e  # fmt: skip
+                        raise D.DesignError(f"На снимката {P.TITLE[name]} не се вижда целият предмет: снимайте я "
+                                            "отново, предметът в средата, на контрастна повърхност.") from e  # fmt: skip
+            write_json(cache, result)
+        return result
+
+
+def read(job: Path, L: float | None = None, W: float | None = None, H: float | None = None,
+         flips: dict | None = None) -> dict:  # fmt: skip
+    """Чете снимките. Без мерки: кои общи размери да се измерят и на коя снимка (overall). С мерки (първият
+    вариант на приложението): направо описанието, като assemble."""
+    if L and W and H:
+        return assemble(job, {"L": L, "W": W, "H": H}, flips)
+    lay = P.layout(shots(job))
+    write_json(job / "cad" / "plan.json", lay)
+    return {"photos": present(job), "overall": P.overall(lay), "warnings": lay["warnings"], "round": lay["round"],
+            "stamp": str(int(time.time() * 1000))}  # fmt: skip
+
+
+def assemble(job: Path, values: dict, flips: dict | None = None) -> dict:
+    """Описанието от снимките и измерените общи размери (L, W, H или D за кръглото сечение)."""
+    sh = shots(job)
+    try:
+        L, W, H = P.resolve(P.layout(sh), {k: v for k, v in values.items() if v})
+    except ValueError as e:
+        raise D.DesignError("Въведете общите размери в милиметри.") from e
+    flips = sanitize_flips(flips)
+    lay = P.layout(sh, (L, W, H), flips)
+    views, warnings = P.views_mm(sh, lay, L, W, H)
+    d = AS.assemble(views, L, W, H)
+    d["flips"] = flips
+    return response(job, d, lay["warnings"] + warnings)
 
 
 def edit(job: Path, raw: dict, op: dict) -> dict:
@@ -135,19 +159,26 @@ def edit(job: Path, raw: dict, op: dict) -> dict:
         d = set_through(d, str(fid), bool(through))
     elif "flip" in op:
         view, axis = op["flip"]
+        view = {"front": "side", "back": "side", "right": "end", "left": "end"}.get(view, view)
         if view not in ("side", "end") or axis not in (0, 1):
             raise D.DesignError("Непознато обръщане.")
         flips = d["flips"]
         cur = flips.get(view, [False, False])
         cur[axis] = not cur[axis]
         flips[view] = cur
-        L, W, H = (D.value(d, "L"), D.value(d, "D"), D.value(d, "D")) if d["kind"] == "turned" else \
-            (D.value(d, "L"), D.value(d, "W"), D.value(d, "H"))  # fmt: skip
-        return read(job, L, W, H, flips)
+        L, W, H = sizes(d)
+        return assemble(job, {"L": L, "W": W, "H": H}, flips)
     else:
         raise D.DesignError("Непозната промяна.")
     d["flips"] = sanitize_flips(raw.get("flips"))
     return response(job, d)
+
+
+def sizes(d: dict) -> tuple[float, float, float]:
+    """(L, W, H) на описанието (детайл от струг: W = H = D)."""
+    if d["kind"] == "turned":
+        return D.value(d, "L"), D.value(d, "D"), D.value(d, "D")
+    return D.value(d, "L"), D.value(d, "W"), D.value(d, "H")
 
 
 def sanitize_flips(f) -> dict:
@@ -184,33 +215,76 @@ def draft(job: Path) -> dict:
     return json.loads(p.read_text(encoding="utf-8"))
 
 
-def question_png(job: Path, dim: str) -> bytes:
-    d = draft(job)
-    if dim not in d["dims"]:
-        raise D.DesignError("Непознат размер.")
-    return png(R.question(d, dim))
-
-
-def photo_jpg(job: Path, view: str) -> bytes:
-    """Снимката на изгледа с очертанието от текущото описание."""
-    from PIL import Image
-
+def view_photos(job: Path, d: dict) -> dict:
+    """{изглед на описанието: {"image", "A", "name"}}: основната снимка на всеки изглед и как мм от изгледа отиват на
+    нея (по размерите на описанието). Празно, ако снимките още не са прочетени."""
     from .vision import load
 
+    cache = job / "cad" / "shots.json"
+    if not cache.exists():
+        return {}
+    sh = {k: v for k, v in json.loads(cache.read_text(encoding="utf-8")).items() if photo_path(job, k)}
+    if "top" not in sh:
+        return {}
+    L, W, H = sizes(d)
+    lay = P.layout(sh, (L, W, H), d.get("flips") or {})
+    out = {}
+    for name, o in lay["orient"].items():
+        if not o["primary"]:
+            continue
+        U, V = P.view_sizes(o["view"], L, W, H)
+        out[o["view"]] = {"image": load(photo_path(job, name)), "A": P.placement(sh[name], o, U, V)["A"],
+                          "name": name}  # fmt: skip
+    return out
+
+
+def question_png(job: Path, dim: str) -> bytes:
+    """Картинката към въпроса: върху снимката с линия, където да се мери. Общите размери преди описанието: от
+    плана на четенето (plan.json)."""
+    draft_path = job / "cad" / "draft.json"
+    if draft_path.exists():
+        d = draft(job)
+        if dim in d["dims"]:
+            return png(R.question(d, dim, view_photos(job, d)))
+    if dim not in P.ASK:
+        raise D.DesignError("Непознат размер.")
+    plan_path = job / "cad" / "plan.json"
+    if not plan_path.exists():
+        raise D.DesignError("Още няма прочетени снимки.")
+    from .vision import load
+
+    lay = json.loads(plan_path.read_text(encoding="utf-8"))
+    q = next((q for q in P.overall(lay) if q["id"] == dim), None)
+    if q is None:
+        raise D.DesignError("Непознат размер.")
+    if q["photo"] is None:
+        return png(R.overall(None, None, 1, 1, dim, q["along"]))
+    sh = shots(job)
+    o = lay["orient"][q["photo"]]
+    f = P.Frame(sh[q["photo"]])
+    U, V = f.ext(o["eu"]), f.ext(o["ev"])  # пиксели като мм: само за положението на линията
+    A = P.placement(sh[q["photo"]], o, U, V)["A"]
+    return png(R.overall(load(photo_path(job, q["photo"])), A, U, V, dim, q["along"], q["photo"]))
+
+
+def photo_jpg(job: Path, name: str) -> bytes:
+    """Снимката с очертанието от текущото описание."""
+    from .vision import load
+
+    name = P.LEGACY.get(name, name)
     d = draft(job)
-    cache = job / "cad" / "views.json"
-    path = photo_path(job, view)
+    cache = job / "cad" / "shots.json"
+    path = photo_path(job, name)
     if not path or not cache.exists():
         raise D.DesignError("Няма такава снимка.")
-    views = json.loads(cache.read_text(encoding="utf-8"))
-    if view not in views:
+    sh = json.loads(cache.read_text(encoding="utf-8"))
+    if name not in sh:
         raise D.DesignError("Снимката още не е прочетена.")
-    im = load(path)
-    try:
-        im = R.overlay(d, view, im, views[view]["transform"], d.get("flips") or {},
-                       outer=np.asarray(views[view]["outer"]))
-    except D.DesignError:
-        im.thumbnail((1100, 1100), Image.LANCZOS)
+    L, W, H = sizes(d)
+    lay = P.layout({k: v for k, v in sh.items() if photo_path(job, k)}, (L, W, H), d.get("flips") or {})
+    o = lay["orient"][name]
+    U, V = P.view_sizes(o["view"], L, W, H)
+    im = R.overlay(d, o["view"], load(path), P.placement(sh[name], o, U, V)["A"])
     import io
 
     buf = io.BytesIO()

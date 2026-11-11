@@ -374,14 +374,17 @@ def nameplate_job(job_id: str, params: NameplateParams, p: Principal = Depends(p
 
 
 # --- Инженерният режим: мерене по указания (app/cad) -------------------------------------------------------------
-# Снимките (top.jpg, side.jpg, по желание end.jpg) се качват като при сканиране; четенето и строенето стават веднага,
-# не в опашката на сканиранията. Безплатно и без външни услуги, затова е за всеки профил.
+# Снимките (top.jpg и по желание front, back, right, left, bottom) се качват като при сканиране; четенето и строенето
+# стават веднага, не в опашката на сканиранията. Безплатно и без външни услуги, затова е за всеки профил.
 
 
 class CadRead(BaseModel):
-    L: float = Field(gt=0, le=CD.LIMIT)
-    W: float = Field(gt=0, le=CD.LIMIT)
-    H: float = Field(gt=0, le=CD.LIMIT)
+    """Без размери: чете снимките и казва кои общи размери да се измерят. С тях: описанието на детайла."""
+
+    L: float | None = Field(default=None, gt=0, le=CD.LIMIT)
+    W: float | None = Field(default=None, gt=0, le=CD.LIMIT)
+    H: float | None = Field(default=None, gt=0, le=CD.LIMIT)
+    D: float | None = Field(default=None, gt=0, le=CD.LIMIT)
     flips: dict | None = None
 
 
@@ -409,10 +412,22 @@ def cad_call(fn, *args):
 
 
 @app.post("/jobs/{job_id}/cad/read")
-def cad_read(job_id: str, body: CadRead, p: Principal = Depends(principal)):
-    """Чете снимките и предлага описанието на детайла: разпознатото и въпросите с оценките от снимките."""
+def cad_read(job_id: str, body: CadRead | None = None, p: Principal = Depends(principal)):
+    """Без размери: чете снимките и връща общите размери за мерене (всеки с линия върху снимка). С измерените общи
+    размери: описанието на детайла - разпознатото и въпросите с оценките от снимките."""
     job = cad_job(job_id, p)
-    return cad_call(CAD.read, job, body.L, body.W, body.H, CAD.sanitize_flips(body.flips))
+    body = body or CadRead()
+    values = {k: v for k, v in (("L", body.L), ("W", body.W), ("H", body.H), ("D", body.D)) if v}
+    if values:
+        return cad_call(CAD.assemble, job, values, CAD.sanitize_flips(body.flips))
+    return cad_call(CAD.read, job)
+
+
+@app.post("/jobs/{job_id}/cad/prepare")
+def cad_prepare(job_id: str, p: Principal = Depends(principal)):
+    """Чете очертанията на вече качените снимки, докато човекът снима следващата: накрая четенето е веднага."""
+    job = cad_job(job_id, p)
+    return {"ready": sorted(cad_call(CAD.shots, job))}
 
 
 @app.post("/jobs/{job_id}/cad/edit")
@@ -432,6 +447,7 @@ def cad_question(job_id: str, dim: str, p: Principal = Depends(principal)):
 
 @app.get("/jobs/{job_id}/cad/photo/{view}.jpg")
 def cad_photo(job_id: str, view: str, p: Principal = Depends(principal)):
+    """Снимката (top, front, back, right, left, bottom) с очертанието от текущото описание."""
     job = cad_job(job_id, p)
     if view not in CAD.VIEWS:
         raise HTTPException(404, "Няма такава снимка.")

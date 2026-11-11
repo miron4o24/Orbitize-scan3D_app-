@@ -18,6 +18,7 @@ import {
   type CadFeatureType,
   type CadItem,
   type CadOp,
+  type CadPhoto,
   type CadState,
 } from '@/lib/api';
 import { parseGlb } from '@/lib/model';
@@ -26,7 +27,27 @@ import { font, makeStyles, radius, space, useColors } from '@/theme';
 // "Какво виждам": снимките с разпознатото очертание, детайлът в 3D по оценките (за да се види, че е разчетен
 // правилно: посоки, стъпала, отвори) и списъкът на елементите, които могат да се махнат, обърнат или добавят.
 
-const VIEW_TITLE = { top: 'Отгоре', side: 'Отстрани', end: 'Откъм края' } as const;
+const PHOTO_TITLE: Record<CadPhoto, string> = {
+  top: 'Отгоре',
+  front: 'Отпред',
+  back: 'Отзад',
+  right: 'Отдясно',
+  left: 'Отляво',
+  bottom: 'Отдолу',
+};
+
+/* Снимките, на които има бутони за обръщане: първата от всяка двойка отстрани (обръщането важи и за другата). */
+function flippable(views: CadPhoto[]): CadPhoto[] {
+  const out: CadPhoto[] = [];
+  for (const pair of [
+    ['front', 'back'],
+    ['right', 'left'],
+  ] as const) {
+    const first = pair.find((p) => views.includes(p));
+    if (first) out.push(first);
+  }
+  return out;
+}
 
 export function Review({
   jobId,
@@ -51,14 +72,15 @@ export function Review({
   const turned = state.design.kind === 'turned';
   const left = state.questions.filter((q) => q.src !== 'measured').length;
   const feature = (id: string) => state.design.features.find((f) => f.id === id);
+  const canFlip = flippable(state.views);
 
   return (
     <Screen>
-      <Header kicker="Инженерен CAD · 2 от 3" title="Какво виждам" sub="Проверете, че детайлът е разчетен правилно. Размерите идват после, с шублера." />
+      <Header kicker="Инженерен CAD · проверка" title="Какво виждам" sub="Проверете, че предметът е разчетен правилно. Подробните мерки идват после, по една." />
 
       <Section label="В 3D (по оценките от снимките)">
         <Preview key={state.stamp} jobId={jobId} stamp={state.stamp} />
-        <Small>Завъртете го с пръст. Ако нещо е наобратно (стъпалото отдолу, отворът в грешния край), обърнете снимката по-долу.</Small>
+        <Small>Завъртете го с пръст. Ако нещо е наобратно (стъпалото отдолу, отворът в грешния край), обърнете снимката отпред или отдясно по-долу.</Small>
       </Section>
 
       <Section label="Разпознато">
@@ -86,8 +108,8 @@ export function Review({
         {state.views.map((v) => (
           <Card key={v} style={s.photoCard}>
             <View style={s.photoHead}>
-              <Text style={s.photoTitle}>{VIEW_TITLE[v]}</Text>
-              {v !== 'top' && (
+              <Text style={s.photoTitle}>{PHOTO_TITLE[v]}</Text>
+              {canFlip.includes(v) && (
                 <View style={s.flipRow}>
                   <Pressable style={s.chip} onPress={() => onOp({ flip: [v, 0] })} disabled={busy} accessibilityRole="button" accessibilityLabel="Обърни ляво-дясно">
                     <Ionicons name="swap-horizontal" size={16} color={c.text2} />
@@ -101,7 +123,7 @@ export function Review({
             <Image source={{ uri: cadPhotoUrl(jobId, v, state.stamp), headers: authHeaders() }} style={s.photo} contentFit="contain" transition={150} />
           </Card>
         ))}
-        <Small>Оранжевото е това, което ще се построи. Ако не пасва на детайла, снимайте отново.</Small>
+        <Small>Оранжевото е това, което ще се построи. Ако не пасва на предмета, снимайте отново.</Small>
         {onRetake && <Button title="Снимай отново" icon="camera-outline" variant="ghost" onPress={onRetake} disabled={busy} />}
       </Section>
 
