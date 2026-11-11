@@ -136,7 +136,7 @@ def assemble(job: Path, values: dict, flips: dict | None = None) -> dict:
     views, warnings = P.views_mm(sh, lay, L, W, H)
     d = AS.assemble(views, L, W, H)
     xs = [D.coord(d, lid) for lid, spec in d["levels"].items() if spec["axis"] == "x"]
-    for x, x_bottom in seams(job, sh, lay, L, W):
+    for x, x_bottom in seams(job, sh, lay, L, W, H):
         if all(abs(x - lx) > 0.04 * L for lx in xs):  # не е ръбът на стъпало
             d = D.add_split(d, x, x_bottom)
     if d["kind"] == "block" and "end" not in views and not d["views"]["end"].get("round"):
@@ -190,7 +190,7 @@ def side_rounding(job: Path, sh: dict, lay: dict, L: float, W: float, H: float) 
 SEAM_COVER = 0.9  # колко от ширината трябва да пресича линия, за да е граница между части
 
 
-def seams(job: Path, sh: dict, lay: dict, L: float, W: float) -> list[float]:
+def seams(job: Path, sh: dict, lay: dict, L: float, W: float, H: float = 0.0) -> list:
     """Границите между две части по дължината (капачка и тяло, два материала): права линия през цялата ширина на
     предмета на снимката отгоре (рязка смяна на яркостта по дължината в поне 90% от ширината; надписите и отворите
     не я пресичат цялата). Ако има и снимка отдолу, там трябва да има линия наблизо (до 10% от дължината); иначе
@@ -225,15 +225,85 @@ def seams(job: Path, sh: dict, lay: dict, L: float, W: float) -> list[float]:
             if not merged or x - merged[-1] > 2.0:
                 merged.append(x)
         found[name] = merged
+        # По-слабите линии (поне 60% от ширината): границата отдолу на размазана снимка.
+        weak = [float(us[i + k // 2]) for i in range(len(cover))
+                if cover[i] >= 0.6 and cover[i] == cover[max(0, i - half):i + half + 1].max()]  # fmt: skip
+        found[name + "_weak"] = weak
+        found[name + "_cover"] = [(float(us[i + k // 2]), float(cover[i])) for i in range(len(cover))]
     out = []
     for x in found.get("top", []):
         if "bottom" not in found:
             out.append((x, None))
             continue
         near = [y for y in found["bottom"] if abs(x - y) <= 0.1 * L]
+        if not near:  # отдолу снимката може да е размазана: по-слаба линия наблизо
+            near = [y for y in found.get("bottom_weak", []) if abs(x - y) <= 0.12 * L]
         if near:  # отдолу границата може да е на друго място: по страните минава по диагонал
             out.append((x, min(near, key=lambda y: abs(x - y))))
-    return out[:2]
+        elif top_cover(found, x) >= 0.97:  # много ясна линия отгоре (печатът не пресича цялата ширина)
+            out.append((x, None))
+    # Две линии една до друга (ръбът на капачката и нещо под прозрачната пластмаса): една граница, по-ясната.
+    out.sort()
+    merged: list = []
+    for x, xb in out:
+        if merged and x - merged[-1][0] <= 0.08 * L:
+            if top_cover(found, x) > top_cover(found, merged[-1][0]):
+                merged[-1] = (x, xb)
+            continue
+        merged.append((x, xb))
+    side = lay["orient"].get(next((n for n in ("front", "back") if n in lay["orient"] and
+                                   lay["orient"][n]["primary"]), ""), None)  # fmt: skip
+    if side is not None:  # отстрани (отпред) границата се вижда цялата: по диагонал или не
+        merged = [(x, xb if xb is not None else slant(job, sh, lay, x, L, H)) for x, xb in merged]
+    return merged[:2]
+
+
+def slant(job: Path, sh: dict, lay: dict, x: float, L: float, H: float) -> float | None:
+    """Къде е границата на долната страна по снимката отпред: на 9 височини най-рязката смяна на светлината по
+    дължината близо до x, права през тях (по най-много съгласни точки). Кой край на правата е горната страна се
+    решава по x от снимката отгоре (отпред симетричен предмет може да е обърнат наопаки)."""
+    from scipy import ndimage
+
+    from .vision import load
+
+    name = next(n for n in ("front", "back") if n in lay["orient"] and lay["orient"][n]["primary"])
+    o = lay["orient"][name]
+    A = P.placement(sh[name], o, L, H)["A"]
+    im = ndimage.gaussian_filter(np.asarray(load(photo_path(job, name)).convert("L"), np.float32), 1.0)
+    us = np.arange(max(0.0, x - 0.15 * L), min(L, x + 0.15 * L), L / 600)
+    pts = []
+    for z in np.linspace(0.1 * H, 0.9 * H, 9):
+        zs = np.linspace(z - 0.04 * H, z + 0.04 * H, 5)
+        uu, zz = np.meshgrid(us, zs, indexing="ij")
+        px = A[:, :2] @ np.stack([uu.ravel(), zz.ravel()]) + A[:, 2:3]
+        g = ndimage.map_coordinates(im, [px[1], px[0]], order=1).reshape(len(us), len(zs)).mean(1)
+        d = np.abs(np.gradient(ndimage.gaussian_filter1d(g, 2)))
+        if d.max() >= 2 * np.median(d) + 0.5:
+            pts.append((float(z), float(us[int(np.argmax(d))])))
+    if len(pts) < 4:
+        return None
+    best = None
+    for i in range(len(pts)):
+        for j in range(i + 1, len(pts)):
+            (z1, x1), (z2, x2) = pts[i], pts[j]
+            k = (x2 - x1) / (z2 - z1)
+            inl = [(z, xx) for z, xx in pts if abs(x1 + k * (z - z1) - xx) < 0.8]
+            if best is None or len(inl) > len(best):
+                best = inl
+    if len(best) < 4:
+        return None
+    zz, xx = np.array(best).T
+    k, c = np.polyfit(zz, xx, 1)
+    ends = (float(c), float(c + k * H))  # при z = 0 и z = H на снимката
+    near = min(ends, key=lambda e: abs(e - x))
+    if abs(near - x) > 0.06 * L:
+        return None  # отпред не е същата граница
+    other = ends[1] if near is ends[0] else ends[0]
+    return float(np.clip(other, 0, L))
+
+
+def top_cover(found: dict, x: float) -> float:
+    return max((c for xx, c in found.get("top_cover", []) if abs(xx - x) < 0.6), default=0.0)
 
 
 def edit(job: Path, raw: dict, op: dict) -> dict:
