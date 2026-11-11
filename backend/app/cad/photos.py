@@ -1,0 +1,615 @@
+"""Снимките на инженерния режим: до шест, всяка отгоре с телефона успореден на масата (нивелирът го пази), а
+предметът обърнат с една от страните си нагоре: отгоре, отпред, отзад, отдясно, отляво и отдолу.
+
+Коя снимка кой изглед на детайла е и как е завъртяна (без да разчитаме, че човекът е спазил посоките точно):
+1. Снимката отгоре определя осите: дължината (X) е по-дългата страна на очертанието, ширината (Y) е напряко,
+   височината (Z) е към телефона.
+2. За всяка друга снимка: как би лежал детайлът, ако е обърнат, както казва приложението (отпред: претърколен от
+   нас, отдясно: изправен на левия край, ...). Оттам е кой изглед е (отгоре, отпред или отстрани) и накъде са осите
+   му на снимката; после всяка ос се изправя по очертанието на тази снимка.
+3. Пропорциите проверяват това: дължина/ширина отгоре, дължина/височина отпред и ширина/височина отстрани трябва да
+   си пасват (а след мерките и с тях). Ако не, се взима подреждането, което пасва: детайлът е бил обърнат иначе.
+4. Накъде е нагоре (височината): детайлът стои на долната си страна, която обикновено е пълна права.
+5. Снимките на две противоположни страни са огледални една на друга: втората се нагласява към първата по най-голямо
+   съвпадение и очертанията им се обединяват. Перспективата (по-близкото изглежда по-голямо) само смалява
+   по-далечните части спрямо най-близката страна, различни при двете снимки, затова обединението е по-вярно.
+6. Перспективата се поправя и направо (views_mm): всяка точка се връща на масата с височината си, взета от формата,
+   сглобена от другите снимки. За всеки изглед се взима по-простото от двете очертания (с и без поправката).
+
+Всичко е в пиксели на снимката с y нагоре (q = (x, -y)), докато не дойдат мерките: тогава всеки изглед става мм."""
+
+import math
+
+import numpy as np
+from PIL import Image, ImageDraw
+from scipy import ndimage
+from shapely.geometry import Polygon
+from skimage import measure
+
+NAMES = ("top", "front", "back", "right", "left", "bottom")
+LEGACY = {"side": "front", "end": "left"}  # имената от първия вариант (три снимки)
+TITLE = {"top": "отгоре", "front": "отпред", "back": "отзад", "right": "отдясно", "left": "отляво", "bottom": "отдолу"}
+VIEWS = ("top", "side", "end")  # изгледите на описанието (design.py)
+PAIRS = {"top": ("top", "bottom"), "side": ("front", "back"), "end": ("right", "left")}  # първата е основната
+AXES = {"top": ("x", "y"), "side": ("x", "z"), "end": ("y", "z")}
+PRIOR_COST = 0.08  # колко (в log на пропорциите) струва да не вярваме на посоките от приложението
+FUSE_IOU = 0.86  # под това съвпадение две противоположни снимки не се усредняват
+MATCH_IOU = 0.8  # под това съвпадение (в мм) противоположните снимки не са едно и също
+RATIO_WARN = 1.15  # пропорциите на снимката и мерките се разминават повече: предупреждение
+ROUND_RMS = 0.02  # очертание, нормирано до квадрат, по-близко до кръг: кръгло
+
+
+def rot(axis: str, deg: float) -> np.ndarray:
+    a = math.radians(deg)
+    c, s = round(math.cos(a), 12), round(math.sin(a), 12)
+    if axis == "x":
+        return np.array([[1, 0, 0], [0, c, -s], [0, s, c]], float)
+    if axis == "y":
+        return np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]], float)
+    return np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]], float)
+
+
+# Как е обърнат детайлът от положението на снимката отгоре (оси на снимката: x надясно, y нагоре, z към телефона).
+MOVE = {
+    "top": np.eye(3),
+    "front": rot("x", -90),  # претърколен от нас: предната страна (към нас) гледа нагоре
+    "back": rot("x", 90),  # към нас: задната страна нагоре
+    "right": rot("y", -90),  # изправен на левия край: десният нагоре
+    "left": rot("y", 90),
+    "bottom": rot("x", 180),
+}
+
+
+class Frame:
+    """Очертанието на една снимка с неговите оси: l по дължината на най-малкия описан правоъгълник, s напряко."""
+
+    def __init__(self, shot: dict):
+        self.q = np.asarray(shot["outer"], float) * [1.0, -1.0]
+        self.holes = [np.asarray(h, float) * [1.0, -1.0] for h in shot.get("holes", [])]
+        self.size = tuple(shot["size"])
+        poly = largest(Polygon(self.q).buffer(0))
+        rect = poly.minimum_rotated_rectangle
+        rx, ry = rect.exterior.coords.xy
+        edges = [(rx[k + 1] - rx[k], ry[k + 1] - ry[k]) for k in range(2)]
+        e = max(edges, key=lambda v: math.hypot(*v))
+        phi = (math.degrees(math.atan2(e[1], e[0])) + 90) % 180 - 90
+        self.phi = phi
+        self.l = np.array([math.cos(math.radians(phi)), math.sin(math.radians(phi))])
+        self.s = np.array([-self.l[1], self.l[0]])
+
+    def ext(self, e: np.ndarray) -> float:
+        return float(np.ptp(self.q @ e))
+
+    def axes(self) -> list[np.ndarray]:
+        return [self.l, -self.l, self.s, -self.s]
+
+    def normalized(self, eu: np.ndarray, ev: np.ndarray, aspect: bool = False) -> Polygon:
+        """Очертанието (с отворите) в осите (eu, ev), от 0 до 1 по всяка ос (aspect: по v до ext_v/ext_u)."""
+        su, sv = self.ext(eu), self.ext(ev)
+        a0, b0 = float((self.q @ eu).min()), float((self.q @ ev).min())
+        kv = sv / su if aspect else 1.0
+
+        def f(p):
+            return np.c_[(p @ eu - a0) / su, (p @ ev - b0) / sv * kv]
+
+        return largest(Polygon(f(self.q), [f(h) for h in self.holes]).buffer(0))
+
+
+def largest(g) -> Polygon:
+    """Многоъгълникът (най-голямото парче, ако buffer(0) е разделил очертанието)."""
+    if g.geom_type == "Polygon":
+        return g
+    return max(getattr(g, "geoms", []), key=lambda p: p.area, default=Polygon())
+
+
+def unit(v) -> np.ndarray:
+    v = np.asarray(v, float)
+    return v / max(np.linalg.norm(v), 1e-12)
+
+
+def expected(name: str, top: Frame) -> tuple[str, np.ndarray, np.ndarray]:
+    """Изгледът и посоките на осите му на снимката `name`, ако детайлът е обърнат, както казва приложението."""
+    snap = round(top.phi / 90) * 90
+    R = MOVE[name] @ rot("z", snap)
+    e = {"x": R[:, 0], "y": R[:, 1], "z": R[:, 2]}  # осите на детайла след обръщането, в осите на снимката
+    normal = max(e, key=lambda k: abs(e[k][2]))
+    view = {"z": "top", "y": "side", "x": "end"}[normal]
+    a, b = AXES[view]
+    return view, e[a][:2], e[b][:2]
+
+
+def snap_axes(f: Frame, eu_star: np.ndarray, ev_star: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Най-близките до очакваните посоки оси на очертанието (eu по eu*, ev перпендикулярна, по ev*)."""
+    eu = max(f.axes(), key=lambda c: float(c @ eu_star))
+    ev = max((c for c in f.axes() if abs(float(c @ eu)) < 0.5), key=lambda c: float(c @ ev_star))
+    return eu, ev
+
+
+def turned90(eu: np.ndarray, ev: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Същото огледално или не, но с разменени оси: (ev, -eu)."""
+    return ev.copy(), -eu
+
+
+def resting_down(poly: Polygon) -> bool:
+    """Очертание (u, v), обърнато наопаки по v: детайлът стои на долната си страна, която обикновено е пълна права
+    по цялата дължина. Ако горната страна е по-пълна от долната с поне 20%, нагоре е надолу."""
+    x0, y0, x1, y1 = poly.bounds
+    U, V = x1 - x0, y1 - y0
+    tol = 0.012 * V
+    pts = np.asarray(poly.exterior.coords)
+    low, high = pts[pts[:, 1] <= y0 + tol], pts[pts[:, 1] >= y1 - tol]
+    bottom = float(np.ptp(low[:, 0])) if len(low) > 1 else 0.0
+    top = float(np.ptp(high[:, 0])) if len(high) > 1 else 0.0
+    return top > 1.2 * bottom + 0.02 * U
+
+
+def iou(a: Polygon, b: Polygon) -> float:
+    return a.intersection(b).area / max(a.union(b).area, 1e-12)
+
+
+def roundness(poly: Polygon) -> float:
+    """Относителното отклонение от кръг на очертание, нормирано до единичен квадрат (елипса също е "кръгла")."""
+    pts = np.asarray(poly.exterior.coords)[:-1]
+    x, y = pts[:, 0], pts[:, 1]
+    A = np.c_[2 * x, 2 * y, np.ones(len(x))]
+    (cx, cy, c), *_ = np.linalg.lstsq(A, x**2 + y**2, rcond=None)
+    r = math.sqrt(max(c + cx**2 + cy**2, 1e-12))
+    return float(np.sqrt(np.mean((np.hypot(x - cx, y - cy) - r) ** 2)) / r)
+
+
+# --- Подреждането ----------------------------------------------------------------------------------------------------
+
+
+def layout(shots: dict, sizes: tuple[float, float, float] | None = None, flips: dict | None = None) -> dict:
+    """shots: {име на снимка: vision.segment(...)}. Връща {"orient": {снимка: {"view", "eu", "ev", "primary"}},
+    "round": {"top": bool, "end": bool}, "warnings": [...], "iou": {снимка: съвпадение с основната}}.
+    sizes: (L, W, H), ако вече са измерени (по-сигурна проверка на пропорциите). flips: {изглед: [по u, по v]} от
+    приложението (обръщане на ръка, след автоматичното)."""
+    if "top" not in shots:
+        raise ValueError("no top")
+    frames = {k: Frame(v) for k, v in shots.items()}
+    top = frames["top"]
+    orient: dict[str, list] = {"top": ["top", top.l.copy(), top.s.copy()]}
+    prior = {}
+    for name, f in frames.items():
+        if name == "top":
+            continue
+        view, eu_s, ev_s = expected(name, top)
+        eu, ev = snap_axes(f, eu_s, ev_s)
+        prior[name] = view
+        orient[name] = [view, eu, ev]
+    # Отдолу е изгледът отгоре: осите по пропорциите на снимката отгоре.
+    r_t = math.log(top.ext(top.l) / max(top.ext(top.s), 1e-9)) if not sizes else math.log(sizes[0] / sizes[1])
+    if "bottom" in orient:
+        _, eu, ev = orient["bottom"]
+        f = frames["bottom"]
+        alt = turned90(eu, ev)
+        if abs(log_aspect(f, *alt) - r_t) + PRIOR_COST < abs(log_aspect(f, eu, ev) - r_t):
+            eu, ev = alt
+        orient["bottom"] = ["top", eu, ev]
+    side_names = [n for n in ("front", "back", "right", "left") if n in orient]
+    best = assign(frames, orient, side_names, r_t, sizes)
+    for name, (view, eu, ev) in best.items():
+        orient[name] = [view, eu, ev]
+    warnings: list[str] = []
+    quality: dict[str, float] = {}
+    for view in VIEWS:
+        members = [n for n in orient if orient[n][0] == view]
+        if not members:
+            continue
+        primary = min(members, key=lambda n: (PAIRS[view].index(n) if n in PAIRS[view] else 9, NAMES.index(n)))
+        _, eu, ev = orient[primary]
+        if view in ("side", "end") and resting_down(frames[primary].normalized(eu, ev, aspect=True)):
+            ev = -ev
+        fu, fv = (flips or {}).get(view, [False, False])
+        eu, ev = (-eu if fu else eu), (-ev if fv else ev)
+        orient[primary] = [view, eu, ev]
+        base = frames[primary].normalized(eu, ev)
+        for other in members:
+            if other == primary:
+                continue
+            _, ou, ov = orient[other]
+            cands = [(su * ou, sv * ov) for su in (1, -1) for sv in (1, -1)]
+            scores = [iou(base, frames[other].normalized(a, b)) for a, b in cands]
+            k = int(np.argmax(scores))
+            orient[other] = [view, *cands[k]]
+            quality[other] = round(float(scores[k]), 3)
+            if scores[k] < FUSE_IOU:
+                warnings.append(f"Снимката {TITLE[other]} не съвпада добре със снимката {TITLE[primary]}: ползвам "
+                                f"само {TITLE[primary]}. Ако е друга страна, снимайте я отново.")  # fmt: skip
+        for n in members:
+            orient[n].append(n == primary)
+    out = {"orient": {n: {"view": v[0], "eu": [float(x) for x in v[1]], "ev": [float(x) for x in v[2]],
+                          "primary": bool(v[3])} for n, v in orient.items()},
+           "iou": quality, "warnings": warnings}  # fmt: skip
+    out["round"] = {"top": is_round(frames, orient, "top"), "end": is_round(frames, orient, "end")}
+    return out
+
+
+def log_aspect(f: Frame, eu: np.ndarray, ev: np.ndarray) -> float:
+    return math.log(f.ext(eu) / max(f.ext(ev), 1e-9))
+
+
+def assign(frames: dict, orient: dict, names: list[str], r_t: float, sizes) -> dict:
+    """Кой изглед (отпред или отстрани) е всяка снимка встрани и коя ос е височината: подреждането, при което
+    пропорциите си пасват (с мерките, ако ги има), като отклонението от посоките на приложението струва PRIOR_COST.
+    Двете снимки на противоположни страни са в един изглед."""
+    if not names:
+        return {}
+    pairs = [p for p in (("front", "back"), ("right", "left")) if any(n in names for n in p)]
+    prior_view = {p: orient[next(n for n in p if n in names)][0] for p in pairs}
+    log_h = math.log(sizes[2] / sizes[0]) if sizes else None  # log(H/L)
+    best, best_score = None, math.inf
+    view_options = [prior_view[p] for p in pairs]
+    alternatives = [view_options]
+    if len(pairs) == 2 and view_options[0] != view_options[1]:
+        alternatives.append(view_options[::-1])
+    elif len(pairs) == 1 and sizes:
+        alternatives.append(["end" if view_options[0] == "side" else "side"])
+    for views in alternatives:
+        changed_views = sum(v != prior_view[p] for v, p in zip(views, pairs))
+        if len(views) == 2 and views[0] == views[1]:
+            continue
+        view_of = {n: views[k] for k, p in enumerate(pairs) for n in p if n in names}
+        for mask in range(1 << len(names)):
+            cand, preds, cost = {}, [], PRIOR_COST * changed_views
+            for i, n in enumerate(names):
+                view = view_of[n]
+                _, eu, ev = orient[n]
+                if mask >> i & 1:
+                    eu, ev = turned90(eu, ev)
+                    cost += PRIOR_COST
+                m = log_aspect(frames[n], eu, ev)
+                # log(H/L): отпред m = log(L/H); отстрани m = log(W/H) = log(L/H) - r_t
+                preds.append(-m if view == "side" else -m - r_t)
+                cand[n] = (view, eu, ev)
+            ref = log_h if log_h is not None else float(np.median(preds))
+            score = sum(abs(p - ref) for p in preds) + cost
+            if score < best_score - 1e-9:
+                best, best_score = cand, score
+    return best
+
+
+def is_round(frames: dict, orient: dict, view: str) -> bool:
+    """Изгледът е кръг (или елипса): отгоре - изправен цилиндър, отстрани - легнал."""
+    names = [n for n, o in orient.items() if o[0] == view and len(o) > 3 and o[3]]
+    if not names:
+        return False
+    f = frames[names[0]]
+    _, eu, ev = orient[names[0]][:3]
+    if abs(log_aspect(f, eu, ev)) > math.log(1.07):
+        return False
+    poly = f.normalized(eu, ev)
+    return roundness(poly) < ROUND_RMS
+
+
+# --- Към мм -----------------------------------------------------------------------------------------------------------
+
+
+def placement(shot: dict, o: dict, U: float, V: float, depth: dict | None = None) -> dict:
+    """Изгледът на снимката в мм: очертанието и отворите (u, v от 0 до U и V) и матрицата A (2 x 3) от мм на изгледа
+    към пиксели на снимката (x надясно, y надолу; без перспективата - за рисуване). depth: височините към
+    телефона (heights), за поправка на перспективата."""
+    f = Frame(shot)
+    eu, ev = np.asarray(o["eu"], float), np.asarray(o["ev"], float)
+    a, b = f.q @ eu, f.q @ ev
+    a0, a1, b0, b1 = float(a.min()), float(a.max()), float(b.min()), float(b.max())
+    ka, kb = (a1 - a0) / U, (b1 - b0) / V
+    A = np.array([[eu[0] * ka, ev[0] * kb, eu[0] * a0 + ev[0] * b0],
+                  [-eu[1] * ka, -ev[1] * kb, -(eu[1] * a0 + ev[1] * b0)]])  # fmt: skip
+
+    def ortho(p):
+        return np.c_[(p @ eu - a0) / ka, (p @ ev - b0) / kb]
+
+    outer, holes = ortho(f.q), [ortho(h) for h in f.holes]
+    ratio = ka / kb
+    if depth is not None:
+        outer, holes, ratio = unproject(shot, f, eu, ev, outer, holes, U, V, math.sqrt(ka * kb), depth)
+    return {"outer": outer, "holes": holes, "A": A, "U": U, "V": V, "ratio": ratio}
+
+
+# --- Перспективата ---------------------------------------------------------------------------------------------------
+# Телефонът е на 15-40 см над масата, затова по-високото на предмета изглежда по-голямо (и по-далеч от средата на
+# кадъра) от по-ниското: краят на легнал цилиндър се издува, стъпалото от двете страни на снимката е с различен
+# мащаб. Поправката: всяка точка от очертанието се връща на масата с височината си към телефона, взета от формата,
+# сглобена от другите снимки (heights), и с фокусното разстояние от EXIF (иначе обичайното за телефон). Два пъти,
+# защото формата се уточнява.
+
+F35_DEFAULT = 26.0  # мм, основната камера на повечето телефони
+GROW = 0.025  # раздуване на изгледите при сглобяване на формата за височините (дял от размера)
+NEAR = {"top": (2, 1), "side": (1, -1), "end": (0, 1)}  # оста към телефона и от коя страна гледа изгледът (det > 0)
+
+
+def hull(views: dict, L: float, W: float, H: float, cells: int = 150) -> tuple[np.ndarray, float]:
+    """Формата като кубчета: сечението на изтеглените изгледи (липсващ изглед: пълен)."""
+    step = max(L, W, H) / cells
+    n = {"x": max(1, math.ceil(L / step)), "y": max(1, math.ceil(W / step)), "z": max(1, math.ceil(H / step))}
+
+    def raster(view: str) -> np.ndarray:
+        a, b = AXES[view]
+        if view not in views:
+            return np.ones((n[a], n[b]), bool)
+        im = Image.new("L", (n[a], n[b]), 0)
+        draw = ImageDraw.Draw(im)
+        v = views[view]
+        draw.polygon([(u / step, w / step) for u, w in np.asarray(v["outer"])], fill=1)
+        for h in v["holes"]:
+            draw.polygon([(u / step, w / step) for u, w in np.asarray(h)], fill=0)
+        return np.asarray(im, bool).T
+
+    # Изгледите са леко раздути (с GROW от размера): малка грешка в един изглед (ъгъл, отрязан от перспективата)
+    # иначе би изрязала колоните на другите и би сменила височините им.
+    grow = max(1, round(GROW * cells))
+    T, F, E = (ndimage.binary_dilation(raster(v), iterations=grow) for v in ("top", "side", "end"))
+    return T[:, :, None] & F[:, None, :] & E[None, :, :], step
+
+
+def heights(occ: np.ndarray, step: float, view: str, mirrored: bool, total: float) -> tuple[np.ndarray, np.ndarray]:
+    """Височините над масата (мм) на най-близката до телефона и на най-далечната точка на всяка колона на изгледа
+    (u, v). Празните колони (извън формата) вземат височините на най-близката пълна: точка от очертанието на
+    снимката, малко извън сглобената форма, е от нейния ръб, а не от масата."""
+    axis, side = NEAR[view]
+    col = np.moveaxis(occ, axis, -1)
+    n = col.shape[-1]
+    has = col.any(-1)
+    if not has.any():
+        return np.zeros(has.shape), np.zeros(has.shape)
+    lo = np.argmax(col, -1) * step  # най-малката координата по оста
+    hi = (n - np.argmax(col[..., ::-1], -1)) * step  # най-голямата
+    if side * (-1 if mirrored else 1) > 0:  # гледаме от положителната страна на оста: близо е най-голямата координата
+        near, far = hi, lo
+    else:
+        near, far = total - lo, total - hi
+    near, far = np.clip(near, 0, total), np.clip(far, 0, total)
+    # Точката от очертанието на снимката е от колона по ръба на формата (гледана от телефона): при права стена
+    # колоната е цялата стена, а при заоблена повърхност (цилиндър, купол) е тънка около най-широкото място. Затова
+    # височината е от най-близката колона по ръба, а не от вътрешна (там куполът е много по-висок).
+    edge = has & ~ndimage.binary_erosion(has, border_value=0)
+    if edge.any() and not edge.all():
+        idx = tuple(ndimage.distance_transform_edt(~edge, return_distances=False, return_indices=True))
+        near, far = near[idx], far[idx]
+    return near, far
+
+
+def normals(p: np.ndarray, hole: bool) -> np.ndarray:
+    """Нормалите навън от материала (y нагоре) в точките на затворено очертание: при отвор - към отвора."""
+    k = max(2, len(p) // 200)
+    t = np.roll(p, -k, axis=0) - np.roll(p, k, axis=0)
+    nrm = np.c_[t[:, 1], -t[:, 0]]
+    nrm /= np.maximum(np.linalg.norm(nrm, axis=1), 1e-9)[:, None]
+    x, y = p[:, 0], p[:, 1]
+    ccw = float(np.dot(x, np.roll(y, -1)) - np.dot(np.roll(x, -1), y)) > 0
+    return nrm * (1 if ccw != hole else -1)
+
+
+def unproject(shot, f: Frame, eu, ev, outer, holes, U, V, scale, depth) -> tuple[np.ndarray, list, float]:
+    """Очертанието (и отворите) в мм, върнати на масата с височината си: точката p от снимката е на масата в
+    c + (p - c) * (Zc - h) / Zc (с точност до мащаба), където c е средата на кадъра и Zc височината на телефона
+    (от фокусното разстояние и мащаба на снимката). Ръбът на очертанието е от най-близката до телефона точка на
+    колоната, освен където стената гледа към телефона (вътре в изрез, далечната страна на отвор): там се вижда
+    стената до долу и ръбът е от най-далечната. Височините по очертанието се изглаждат (преходите стават плавни, без
+    скокове), а размерите се мерят без най-крайните 0,3% от точките; накрая пак се нормира до U x V."""
+    near, far, step = depth["near"], depth["far"], depth["step"]
+    w, h_img = f.size
+    fpx = (shot.get("f35") or F35_DEFAULT) * math.hypot(w, h_img) / 43.27
+    c = np.array([w / 2, -h_img / 2])
+
+    def height(p, uv, hole):
+        iu = np.clip((uv[:, 0] / step).astype(int), 0, near.shape[0] - 1)
+        iv = np.clip((uv[:, 1] / step).astype(int), 0, near.shape[1] - 1)
+        k = max(5, len(p) // 120) | 1
+        seen = np.einsum("ij,ij->i", normals(p, hole), c - p) > 0  # стената гледа към телефона
+        seen = ndimage.median_filter(seen.astype(np.uint8), size=k, mode="wrap") > 0
+        h = np.where(seen, far[iu, iv], near[iu, iv])
+        return ndimage.uniform_filter1d(h, size=k, mode="wrap")
+
+    h_out = height(f.q, outer, False)
+    if not np.any(h_out > 0):
+        return outer, holes, 1.0
+    zc = fpx / scale + float(np.max(h_out))  # мащабът на снимката е при най-близката до телефона част
+
+    def back(p, hh):
+        hh = np.minimum(hh, 0.9 * zc)
+        return c + (p - c) * ((zc - hh) / zc)[:, None]
+
+    q = back(f.q, h_out)
+    hs = [back(hq, height(hq, huv, True)) for hq, huv in zip(f.holes, holes)]
+    a, b = q @ eu, q @ ev
+    a0, a1 = np.percentile(a, [0.3, 99.7])
+    b0, b1 = np.percentile(b, [0.3, 99.7])
+
+    def mm(p):
+        return np.c_[np.clip((p @ eu - a0) / (a1 - a0), 0, 1) * U, np.clip((p @ ev - b0) / (b1 - b0), 0, 1) * V]
+
+    return mm(q), [mm(x) for x in hs], float(((a1 - a0) / U) / ((b1 - b0) / V))
+
+
+def view_sizes(view: str, L: float, W: float, H: float) -> tuple[float, float]:
+    return {"top": (L, W), "side": (L, H), "end": (W, H)}[view]
+
+
+def views_mm(shots: dict, lay: dict, L: float, W: float, H: float) -> tuple[dict, list[str]]:
+    """Изгледите в мм за assemble, всеки по два начина: направо от снимките и с поправена перспектива (по формата
+    от предишното сглобяване, три пъти). За всеки изглед се взима по-простото очертание (с по-малко ъгли):
+    перспективата добавя лъжливи стъпала, които са само в единия вариант, а истинските са и в двата. Две
+    противоположни снимки на един изглед се обединяват."""
+    plain, warn_plain = combine(shots, lay, L, W, H, None, fuse_pairs=True)
+    fixed, warn_fixed = combine(shots, lay, L, W, H, None, fuse_pairs=False)
+    for k in range(3):
+        fixed, warn_fixed = combine(shots, lay, L, W, H, hull(fixed, L, W, H), fuse_pairs=k == 2)
+    out, warnings = {}, []
+    for view, v in plain.items():
+        pick, warn = v, warn_plain.get(view)
+        f = fixed.get(view)
+        if f is not None and complexity(f) < complexity(v):
+            pick, warn = f | {"perspective": True}, warn_fixed.get(view)
+        out[view] = pick
+        if warn:
+            warnings.append(warn)
+    return out, warnings
+
+
+def complexity(v: dict) -> int:
+    """Колко ъгъла има очертанието (по-малко: по-просто); свободна форма е най-сложна."""
+    from .fit import corners
+
+    cs = corners(np.asarray(v["outer"]), v["U"], v["V"])
+    return 1000 if cs is None else len(cs) + sum(1 for c in cs if c[2] > 0)
+
+
+def combine(shots: dict, lay: dict, L: float, W: float, H: float, solid, fuse_pairs: bool) -> tuple[dict, dict]:
+    """Изгледите от снимките (solid: формата като кубчета за височините при поправката на перспективата) и
+    предупрежденията за пропорциите по изгледи."""
+    out, warnings = {}, {}
+    totals = {"top": H, "side": W, "end": L}
+    for view in VIEWS:
+        names = [n for n, o in lay["orient"].items() if o["view"] == view]
+        if not names:
+            continue
+        U, V = view_sizes(view, L, W, H)
+
+        def place(name, view=view, U=U, V=V):
+            o = lay["orient"][name]
+            depth = None
+            if solid is not None:
+                mirrored = o["eu"][0] * o["ev"][1] - o["eu"][1] * o["ev"][0] < 0
+                near, far = heights(solid[0], solid[1], view, mirrored, totals[view])
+                depth = {"near": near, "far": far, "step": solid[1]}
+            return placement(shots[name], o, U, V, depth)
+
+        primary = next(n for n in names if lay["orient"][n]["primary"])
+        p = place(primary)
+        if not 1 / RATIO_WARN <= p["ratio"] <= RATIO_WARN:
+            warnings[view] = (f"Пропорциите на снимката {TITLE[primary]} се разминават с мерките с "
+                              f"{abs(1 - p['ratio']) * 100:.0f}%: снимката може да е под ъгъл или мярка да е грешна.")  # fmt: skip
+        used = [primary]
+        others = [n for n in names if n != primary and lay["iou"].get(n, 0) >= FUSE_IOU]
+        if fuse_pairs and others:
+            q = place(others[0])
+            pa = largest(Polygon(p["outer"]).buffer(0))
+            qa = largest(Polygon(q["outer"]).buffer(0))
+            if iou(pa, qa) >= MATCH_IOU:
+                fused = fuse(p, q, U, V)
+                if fused is not None:
+                    p = p | {"outer": fused["outer"], "holes": hole_union(p["holes"], q["holes"])}
+                    used.append(others[0])
+        out[view] = {"outer": p["outer"], "holes": p["holes"], "U": U, "V": V, "from": used}
+    return out, warnings
+
+
+def hole_union(a: list, b: list) -> list:
+    """Отворите от две противоположни снимки: през проходен отвор с перспектива се вижда само сечението на близкия
+    и далечния ръб, изместено на различни страни на двете снимки. Обединението на двете е по-близо до истинския
+    отвор (средното би го смалило). Отвор само на едната снимка също остава: тесен и дълбок отвор встрани от
+    средата на кадъра може изобщо да не се види през детайла на другата."""
+    out = []
+    used = set()
+    for h in a:
+        ph = largest(Polygon(h).buffer(0))
+        best, k_best = None, None
+        for k, g in enumerate(b):
+            pg = largest(Polygon(g).buffer(0))
+            if k in used or ph.area <= 0 or pg.area <= 0:
+                continue
+            if ph.intersection(pg).area >= 0.5 * min(ph.area, pg.area):
+                best, k_best = pg, k
+                break
+        if best is None:
+            out.append(np.asarray(h))
+            continue
+        used.add(k_best)
+        u = largest(ph.union(best))
+        out.append(np.asarray(u.exterior.coords)[:-1])
+    out += [np.asarray(g) for k, g in enumerate(b) if k not in used]
+    return out
+
+
+def fuse(a: dict, b: dict, U: float, V: float) -> dict | None:
+    """Две очертания на един изглед от противоположни снимки -> едно (обединението им, по знаковите разстояния)."""
+    h = max(U, V) / 1400
+    pad = 12
+    nx, ny = int(math.ceil(U / h)) + 2 * pad, int(math.ceil(V / h)) + 2 * pad
+
+    def sdf(p):
+        im = Image.new("L", (nx, ny), 0)
+        draw = ImageDraw.Draw(im)
+        px = lambda pts: [((u / h) + pad, (v / h) + pad) for u, v in pts]  # noqa: E731
+        draw.polygon(px(p["outer"]), fill=1)
+        for hole in p["holes"]:
+            draw.polygon(px(hole), fill=0)
+        m = np.asarray(im, bool)
+        return ndimage.distance_transform_edt(~m) - ndimage.distance_transform_edt(m)
+
+    # Обединението: перспективата само смалява по-далечното спрямо най-близката страна (след нормирането до
+    # измерения размер), така че всяка от двете снимки може да има само вдлъбнатини, които другата няма.
+    s = np.minimum(sdf(a), sdf(b))
+    cs = measure.find_contours(s, 0.0)
+    polys = []
+    for c in cs:
+        if len(c) < 8:
+            continue
+        pts = np.c_[(c[:, 1] - pad) * h, (c[:, 0] - pad) * h]  # (ред, стълб) -> (u, v)
+        poly = Polygon(pts).buffer(0)
+        if poly.area > 0:
+            polys.append((pts, poly))
+    if not polys:
+        return None
+    outer, op = max(polys, key=lambda t: t[1].area)
+    holes = [pts for pts, poly in polys if poly is not op and op.contains(poly.representative_point())
+             and poly.area >= 0.0015 * op.area]  # fmt: skip
+    outer = np.c_[np.clip(outer[:, 0], 0, U), np.clip(outer[:, 1], 0, V)]
+    return {"outer": outer, "holes": holes}
+
+
+def overall(lay: dict) -> list[dict]:
+    """Общите размери за мерене, с коя снимка и по коя ос ("u" или "v" на изгледа) е линията."""
+    o = lay["orient"]
+    rnd = lay["round"]
+    primary = {o[n]["view"]: n for n in o if o[n]["primary"]}
+    out = []
+    if rnd["top"] and not rnd["end"]:
+        out.append(question("D", "top", "u"))
+    else:
+        out.append(question("L", "top", "u"))
+        if not rnd["end"]:
+            out.append(question("W", "top", "v"))
+    if rnd["end"]:
+        out.append(question("D", primary.get("end"), "u"))
+    elif "side" in primary:
+        out.append(question("H", primary["side"], "v"))
+    elif "end" in primary:
+        out.append(question("H", primary["end"], "v"))
+    else:
+        out.append(question("H", None, "v"))
+    return out
+
+
+ASK = {
+    "L": ("Дължина", "Измерете дължината по оранжевата линия.", "Най-дългата страна, от край до край."),
+    "W": ("Ширина", "Измерете ширината по оранжевата линия.", "Напряко на дължината."),
+    "H": ("Височина", "Измерете височината по оранжевата линия.", "Колко е висок, както лежи на първата снимка."),
+    "D": ("Диаметър", "Измерете диаметъра по оранжевата линия.", "Най-дебелото място на кръглото сечение."),
+}
+
+
+def question(dim: str, photo: str | None, along: str) -> dict:
+    name, ask, hint = ASK[dim]
+    if photo is None:
+        hint += " Няма снимка отстрани: мерете от масата до най-високата точка."
+    return {"id": dim, "name": name, "ask": ask, "hint": hint, "photo": photo, "along": along}
+
+
+def resolve(lay: dict, vals: dict) -> tuple[float, float, float]:
+    """(L, W, H) от мерките на общите размери (D замества двата размера на кръглото сечение)."""
+    rnd = lay["round"]
+    D = vals.get("D")
+    L, W, H = vals.get("L"), vals.get("W"), vals.get("H")
+    if rnd["end"] and D:
+        W = H = D
+        if rnd["top"]:
+            L = L or D
+    elif rnd["top"] and D:
+        L = W = D
+    if not (L and W and H):
+        raise ValueError("missing")
+    return float(L), float(W), float(H)

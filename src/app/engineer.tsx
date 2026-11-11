@@ -6,13 +6,16 @@ import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { Measure, mmOf, mmText } from '@/components/cad/Measure';
+import { Measure, mmText } from '@/components/cad/Measure';
+import { Photos } from '@/components/cad/Photos';
 import { Review } from '@/components/cad/Review';
 import { SHOTS, Shoot } from '@/components/cad/Shoot';
-import { Button, Card, ErrorText, Field, Header, Note, Screen, Section, Small } from '@/components/ui';
+import { Button, Card, ErrorText, Header, Note, Screen, Section, Small } from '@/components/ui';
 import {
+  cadAssemble,
   cadBuild,
   cadEdit,
+  cadPrepare,
   cadRead,
   cancelJob,
   createJob,
@@ -20,9 +23,11 @@ import {
   retrying,
   uploadPhoto,
   type CadOp,
+  type CadOverallId,
+  type CadPhoto,
+  type CadPlan,
   type CadQuestion,
   type CadState,
-  type CadView,
 } from '@/lib/api';
 import { CAD_INFO } from '@/lib/prefs';
 import { createScan, getScan, modelFile, updateScan } from '@/lib/scans';
@@ -30,11 +35,13 @@ import { currentUserId } from '@/lib/session';
 import { font, makeStyles, space } from '@/theme';
 
 // Инженерният режим: мерене по указания (сървър app/cad). Снимките казват какво има (очертания, стъпала, отвори),
-// шублерът казва колко е голямо, а моделът се строи само от числата. 1. Три снимки отгоре с нивелир. 2. Общите
-// размери. 3. Сървърът чете снимките: "Какво виждам" с 3D по оценките. 4. Мерките, по една. 5. Моделът и файловете.
+// шублерът казва колко е голямо, а моделът се строи само от числата.
+// 1. До шест снимки отгоре, всяка с друга страна на предмета нагоре (качват се и се четат, докато се снима).
+// 2. Преглед на снимките. 3. Общите размери, всеки с линия върху снимката. 4. "Какво виждам" с 3D по оценките.
+// 5. Подробните мерки, по една, с линия върху снимката. 6. Моделът и файловете.
 // С ?scan=<id> се отваря построен детайл за промяна на мерките или елементите.
 
-type Phase = 'intro' | 'shoot' | 'overall' | 'reading' | 'review' | 'measure' | 'building';
+type Phase = 'intro' | 'shoot' | 'photos' | 'reading' | 'overall' | 'review' | 'measure' | 'building';
 
 export default function Engineer() {
   useKeepAwake();
@@ -49,9 +56,13 @@ export default function Engineer() {
   });
   const [phase, setPhase] = useState<Phase>(editing ? 'reading' : 'intro');
   const [shot, setShot] = useState(0);
-  const [photos, setPhotos] = useState<Partial<Record<CadView, File>>>({});
-  const [sizes, setSizes] = useState({ L: '', W: '', H: '' });
+  const [single, setSingle] = useState(false); // снимане отново на една снимка от прегледа
+  const [photos, setPhotos] = useState<Partial<Record<CadPhoto, File>>>({});
+  const [uploading, setUploading] = useState(0);
   const [jobId, setJobId] = useState<string | null>(editing?.jobId ?? null);
+  const [plan, setPlan] = useState<CadPlan | null>(null);
+  const [oi, setOi] = useState(0);
+  const [sizes, setSizes] = useState<Partial<Record<CadOverallId, number>>>({});
   const [state, setState] = useState<CadState | null>(null);
   const [asked, setAsked] = useState<CadQuestion[]>([]);
   const [qi, setQi] = useState(0);
@@ -60,6 +71,8 @@ export default function Engineer() {
   const [error, setError] = useState<string | null>(null);
   const finished = useRef(false);
   const jobRef = useRef<string | null>(null);
+  const queue = useRef<Promise<void>>(Promise.resolve());
+  const failed = useRef<Set<CadPhoto>>(new Set());
 
   // Излизане без готов детайл: задачата на сървъра се изтрива (иначе би останала като недовършено сканиране).
   useEffect(
@@ -85,27 +98,65 @@ export default function Engineer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  async function ensureJob(): Promise<string> {
+    if (jobRef.current) return jobRef.current;
+    const id = (await retrying(() => createJob())).id;
+    jobRef.current = id;
+    setJobId(id);
+    return id;
+  }
+
+  // Всяка снимка се качва веднага, една след друга, и сървърът започва да я чете, докато се снима следващата.
+  function upload(photo: CadPhoto, file: File) {
+    setUploading((n) => n + 1);
+    queue.current = queue.current
+      .then(async () => {
+        const id = await ensureJob();
+        await uploadPhoto(id, file);
+        failed.current.delete(photo);
+        cadPrepare(id).catch(() => {}); // само за да е по-бързо накрая; грешките се виждат при четенето
+      })
+      .catch(() => {
+        failed.current.add(photo);
+      })
+      .finally(() => setUploading((n) => n - 1));
+  }
+
   async function read() {
-    const L = mmOf(sizes.L);
-    const W = mmOf(sizes.W);
-    const H = mmOf(sizes.H);
-    if (!L || !W || !H) return setError('Въведете трите общи размера в милиметри, от 0 до 1000.');
     setError(null);
     setPhase('reading');
     try {
-      let id = jobRef.current;
-      if (!id) {
-        id = (await retrying(() => createJob())).id;
-        jobRef.current = id;
-        setJobId(id);
+      await queue.current;
+      const id = await ensureJob();
+      for (const photo of [...failed.current]) {
+        const file = photos[photo];
+        if (file) await uploadPhoto(id, file); // повторен опит за неуспешно качените
+        failed.current.delete(photo);
       }
-      for (const f of Object.values(photos)) if (f) await uploadPhoto(id, f);
-      const st = await cadRead(id, L, W, H);
+      const p = await cadRead(id);
+      setPlan(p);
+      setOi(0);
+      setPhase('overall');
+    } catch (e) {
+      setError(errorText(e));
+      setPhase('photos');
+    }
+  }
+
+  async function assemble(values: Partial<Record<CadOverallId, number>>) {
+    if (!jobId) return;
+    setBusy(true);
+    setError(null);
+    setPhase('reading');
+    try {
+      const st = await cadAssemble(jobId, values);
       setState(st);
       setPhase('review');
     } catch (e) {
       setError(errorText(e));
       setPhase('overall');
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -189,6 +240,18 @@ export default function Engineer() {
     build(next);
   }
 
+  function answerOverall(value: number | null) {
+    if (!plan || value == null) return;
+    const q = plan.overall[oi];
+    const next = { ...sizes, [q.id]: value };
+    setSizes(next);
+    if (oi < plan.overall.length - 1) {
+      setOi(oi + 1);
+      return;
+    }
+    assemble(next);
+  }
+
   // --- Екраните ---
 
   if (phase === 'shoot') {
@@ -205,31 +268,84 @@ export default function Engineer() {
           <Button title="Назад" variant="ghost" onPress={() => setPhase('intro')} />
         </Screen>
       );
+    const photo = SHOTS[shot].photo;
     const done = (file: File | null) => {
-      if (file) setPhotos((p) => ({ ...p, [SHOTS[shot].view]: file }));
-      else
-        setPhotos((p) => {
-          const { [SHOTS[shot].view]: _skip, ...rest } = p;
-          return rest;
-        });
-      if (shot < SHOTS.length - 1) setShot(shot + 1);
-      else setPhase('overall');
+      if (file) {
+        setPhotos((p) => ({ ...p, [photo]: file }));
+        upload(photo, file);
+      }
+      if (single || shot === SHOTS.length - 1) {
+        setSingle(false);
+        setPhase('photos');
+      } else setShot(shot + 1);
     };
-    return <Shoot key={shot} index={shot} folder={folder} onTaken={done} onSkip={() => done(null)} onClose={() => router.back()} />;
+    const close = () => {
+      if (!single) return router.back();
+      setSingle(false);
+      setPhase('photos');
+    };
+    return <Shoot key={`${shot}-${single}`} index={shot} only={single} folder={folder} onTaken={done} onSkip={() => done(null)} onClose={close} />;
   }
+
+  if (phase === 'photos')
+    return (
+      <SafeAreaView style={s.safe} edges={['top']}>
+        <Photos
+          photos={photos}
+          uploading={uploading > 0}
+          error={error}
+          onRetake={(p) => {
+            setShot(SHOTS.findIndex((x) => x.photo === p));
+            setSingle(true);
+            setError(null);
+            setPhase('shoot');
+          }}
+          onNext={read}
+          onBack={() => setPhase('intro')}
+        />
+      </SafeAreaView>
+    );
 
   if (phase === 'reading' || phase === 'building')
     return (
       <SafeAreaView style={s.safe}>
         <View style={s.wait}>
           <ActivityIndicator size="large" />
-          <Text style={s.waitTitle}>{phase === 'reading' ? (editing ? 'Зареждане на детайла…' : 'Чета снимките…') : 'Строя модела…'}</Text>
+          <Text style={s.waitTitle}>
+            {phase === 'building' ? 'Строя модела…' : editing ? 'Зареждане на детайла…' : plan ? 'Сглобявам формата…' : 'Чета снимките…'}
+          </Text>
           <Small>
-            {phase === 'reading' ? 'Очертания, стъпала и отвори. Около половин минута.' : 'Само от вашите мерки. Няколко секунди.'}
+            {phase === 'building'
+              ? 'Само от вашите мерки. Няколко секунди.'
+              : plan
+                ? 'Очертания, стъпала и отвори от всички снимки. Няколко секунди.'
+                : 'Намирам предмета на всяка снимка. До половин минута.'}
           </Small>
         </View>
       </SafeAreaView>
     );
+
+  if (phase === 'overall' && plan && jobId && plan.overall[oi]) {
+    const q = plan.overall[oi];
+    return (
+      <SafeAreaView style={s.safe} edges={['top']}>
+        <Measure
+          key={q.id}
+          jobId={jobId}
+          stamp={plan.stamp}
+          kicker="Общите размери ·"
+          question={{ ...q, est: null, value: sizes[q.id] ?? null, src: 'photo', optional: false, kind: q.id === 'D' ? 'diameter' : 'length' }}
+          index={oi}
+          count={plan.overall.length}
+          answer={sizes[q.id]}
+          busy={busy}
+          error={error ?? (oi === 0 && plan.warnings.length ? plan.warnings.join(' ') : null)}
+          onAnswer={answerOverall}
+          onBack={() => (oi > 0 ? setOi(oi - 1) : setPhase('photos'))}
+        />
+      </SafeAreaView>
+    );
+  }
 
   if (phase === 'review' && state && jobId)
     return (
@@ -245,15 +361,8 @@ export default function Engineer() {
             editing
               ? undefined
               : () => {
-                  // Нови снимки: нова задача на сървъра (иначе пропусната снимка откъм края би останала старата).
-                  if (jobRef.current) cancelJob(jobRef.current).catch(() => {});
-                  jobRef.current = null;
-                  setJobId(null);
-                  setState(null);
-                  setShot(0);
-                  setPhotos({});
                   setError(null);
-                  setPhase('shoot');
+                  setPhase('photos');
                 }
           }
         />
@@ -279,57 +388,6 @@ export default function Engineer() {
       </SafeAreaView>
     );
 
-  if (phase === 'overall')
-    return (
-      <SafeAreaView style={s.safe} edges={['top']}>
-        <Screen>
-          <Header
-            kicker={`${CAD_INFO.label} · снимките са готови`}
-            title="Общите размери"
-            sub="С шублер, в милиметри. От тях се разчита мащабът на снимките."
-          />
-          <Card style={s.card}>
-            {(
-              [
-                ['L', 'Дължина', 'най-дългата страна, както лежи'],
-                ['W', 'Ширина', 'другата страна, гледано отгоре'],
-                ['H', 'Височина', 'от масата до най-високата точка'],
-              ] as const
-            ).map(([key, label, hint]) => (
-              <View key={key} style={s.line}>
-                <View style={s.flex}>
-                  <Text style={s.label}>{label}</Text>
-                  <Small>{hint}</Small>
-                </View>
-                <Field
-                  style={s.mm}
-                  value={sizes[key]}
-                  onChangeText={(t) => setSizes((v) => ({ ...v, [key]: t }))}
-                  keyboardType="decimal-pad"
-                  placeholder="мм"
-                  accessibilityLabel={`${label} в милиметри`}
-                  invalid={!!sizes[key].trim() && !mmOf(sizes[key])}
-                />
-              </View>
-            ))}
-          </Card>
-          <Note>Кръгъл детайл (вал, втулка): ширината и височината са диаметърът.</Note>
-          {error && <ErrorText>{error}</ErrorText>}
-          <Button title="Прочети снимките" variant="brand" size="lg" icon="scan-outline" onPress={read} />
-          <Button
-            title="Снимай отново"
-            variant="ghost"
-            icon="camera-outline"
-            onPress={() => {
-              setShot(0);
-              setPhotos({});
-              setPhase('shoot');
-            }}
-          />
-        </Screen>
-      </SafeAreaView>
-    );
-
   if (phase === 'review' && error)
     return (
       <SafeAreaView style={s.safe} edges={['top']}>
@@ -341,13 +399,14 @@ export default function Engineer() {
       </SafeAreaView>
     );
 
+  const started = Object.keys(photos).length > 0;
   return (
     <SafeAreaView style={s.safe} edges={['top']}>
       <Screen>
         <Header
           kicker={CAD_INFO.label}
-          title="Детайл 1:1 от снимки и шублер"
-          sub="Снимките казват какво има, шублерът казва колко е голямо. Моделът е само от вашите числа."
+          title="Детайл 1:1 от снимки и мерки"
+          sub="Снимките казват каква е формата, вашите мерки казват колко е голяма. Моделът е само от вашите числа."
         />
         <Section label="Как става">
           <Card style={s.card}>
@@ -362,8 +421,21 @@ export default function Engineer() {
             ))}
           </Card>
         </Section>
-        <Note>Нужен е шублер. За плочи, скоби, капаци, кутии, валове и втулки; не за свободни (органични) форми.</Note>
-        <Button title="Започни" variant="brand" size="lg" icon="camera-outline" onPress={() => setPhase('shoot')} />
+        <Note>
+          Нужен е шублер (или линийка за по-груби мерки) и контрастна повърхност: светъл предмет на тъмна маса или обратно. За
+          плочи, скоби, капаци, кутии, валове, цилиндри; не за свободни (органични) форми.
+        </Note>
+        <Button
+          title={started ? 'Към снимките' : 'Започни'}
+          variant="brand"
+          size="lg"
+          icon="camera-outline"
+          onPress={() => {
+            if (started) return setPhase('photos');
+            setShot(0);
+            setPhase('shoot');
+          }}
+        />
         <Button title="Назад" variant="ghost" onPress={() => router.back()} />
       </Screen>
     </SafeAreaView>
@@ -371,10 +443,13 @@ export default function Engineer() {
 }
 
 const STEPS: [string, string][] = [
-  ['Три снимки отгоре', 'Детайлът легнал, на страна и изправен. Нивелирът казва кога телефонът е прав. Контрастна повърхност.'],
-  ['Общите размери', 'Дължина, ширина и височина с шублера.'],
+  [
+    'Снимки от всички страни',
+    'До 6 снимки отгоре: за всяка обръщате предмета с друга страна нагоре. Картинка показва коя и как; нивелирът казва кога телефонът е прав.',
+  ],
+  ['Общите размери', 'Дължина, ширина, височина: оранжева линия върху вашата снимка показва какво да измерите.'],
   ['Какво виждам', 'Сървърът разчита очертанията, стъпалата и отворите; проверявате ги в 3D и добавяте пропуснатото.'],
-  ['Мерките, по една', 'Картинка показва какво точно да измерите. Обикновено 5 до 15 мерки.'],
+  ['Мерките, по една', 'Всяка с линия върху снимката. Каквото не можете да измерите, остава с оценката от снимките.'],
   ['CAD файловете', 'STEP за SolidWorks, Fusion, FreeCAD, Onshape; кодът на модела; STL; чертеж.'],
 ];
 
@@ -383,9 +458,7 @@ const useStyles = makeStyles((c) => ({
   black: { flex: 1, backgroundColor: '#000' },
   flex: { flex: 1 },
   card: { gap: space.lg },
-  line: { flexDirection: 'row', alignItems: 'center', gap: space.md },
   label: { fontFamily: font.medium, fontSize: 15, color: c.text },
-  mm: { width: 104, textAlign: 'right' },
   step: { flexDirection: 'row', gap: space.md, alignItems: 'flex-start' },
   stepNum: {
     width: 22,

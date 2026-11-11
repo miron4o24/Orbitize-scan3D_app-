@@ -1,9 +1,5 @@
-"""Прочетените изгледи (vision.View) -> описанието на детайла (design.py) с оценките от снимките.
-
-Посоките при снимане (приложението ги казва): отгоре - детайлът лежи, левият му край вляво; отстрани - легнал на
-страна, горната му страна към горния край на екрана и същият край вляво; откъм края - изправен на десния си край,
-горната страна към горния край на екрана, тоест гледаме левия край (тогава надясно на снимката е към предния ръб).
-Обръщания (flips) поправят снимка, направена наобратно."""
+"""Изгледите в мм (photos.views_mm: вече в осите на детайла) -> описанието на детайла (design.py) с оценките от
+снимките: стъпала и заоблени ъгли от очертанията, отвори, кръгли изгледи (цилиндър), детайл от струг."""
 
 import math
 
@@ -13,6 +9,7 @@ from shapely.geometry import Polygon
 from . import design as D
 from . import fit
 
+ROUND_RMS = 0.02  # кръгъл изглед: отклонение от кръг под 2% от радиуса
 TURNED_SYM = 0.93  # очертание, огледално на себе си поне толкова (IoU), е от струг
 TURNED_DIAM = 0.08  # W и H в рамките на 8%: кръгло сечение
 RADIUS_GROUP = 0.25  # радиуси в рамките на 25% са един размер
@@ -25,53 +22,64 @@ def mirror_iou(outer: np.ndarray, V: float) -> float:
     return p.intersection(q).area / max(p.union(q).area, 1e-9)
 
 
-def resting_down(outer: np.ndarray, U: float, V: float) -> bool:
-    """Снимката отстрани или откъм края е обърната наопаки (завъртяна на 180°): телефонът, държан над масата, не знае
-    накъде е "горе", а детайлът стои на долната си страна, която обикновено е пълна права по цялата дължина. Ако
-    горната страна на снимката е по-пълна от долната с поне 20%, снимката е наопаки."""
-    tol = 0.012 * V
-    poly = Polygon(outer).buffer(0)
-    edge_pts = np.asarray(poly.exterior.coords)
-    bottom = np.ptp(edge_pts[edge_pts[:, 1] <= tol][:, 0]) if (edge_pts[:, 1] <= tol).sum() > 1 else 0.0
-    top = np.ptp(edge_pts[edge_pts[:, 1] >= V - tol][:, 0]) if (edge_pts[:, 1] >= V - tol).sum() > 1 else 0.0
-    return top > 1.2 * bottom + 0.02 * U
-
-
-def oriented(view: dict, name: str, flips: dict) -> dict:
-    """Изглед в осите на детайла: (u, v) на изгледа -> координати по осите му, с обръщанията."""
-    U, V = view["U"], view["V"]
-    fu, fv = flips.get(name, [False, False])
-    if name in ("side", "end") and resting_down(np.asarray(view["outer"]), U, V):
-        fu, fv = not fu, not fv  # завъртане на 180°: и двете оси
-    if name == "end":
-        fu = not fu  # гледаме левия край: надясно на снимката е към предния ръб (по-малки Y)
-
-    def map_(p):
-        p = np.asarray(p, float)
-        return np.c_[U - p[:, 0] if fu else p[:, 0], V - p[:, 1] if fv else p[:, 1]]
-
-    return {"outer": map_(view["outer"]), "holes": [map_(h) for h in view["holes"]], "U": U, "V": V}
+def is_round(v: dict) -> bool:
+    """Изгледът е кръг или елипса (по нормираните до квадрат очертания)."""
+    pts = np.c_[np.asarray(v["outer"])[:, 0] / v["U"], np.asarray(v["outer"])[:, 1] / v["V"]]
+    if abs(math.log(v["U"] / v["V"])) > math.log(1.07):
+        return False
+    _, _, _, rel = fit.circle_fit(pts)
+    return rel < ROUND_RMS
 
 
 def is_turned(views: dict, L: float, W: float, H: float) -> bool:
-    if abs(W - H) / max(W, H) > TURNED_DIAM or "top" not in views or "side" not in views:
+    """Детайл от струг (вал, втулка, цилиндър легнал по дължината): кръгло сечение (W = H и снимката от края е кръг)
+    и очертанието отгоре огледално спрямо оста. Без снимка от края: и отпред трябва да е същото като отгоре."""
+    if abs(W - H) / max(W, H) > TURNED_DIAM or "top" not in views:
+        return False
+    top = views["top"]
+    if mirror_iou(top["outer"], top["V"]) < TURNED_SYM:
         return False
     if "end" in views:
-        e = views["end"]
-        _, _, _, rel = fit.circle_fit(e["outer"])
+        _, _, _, rel = fit.circle_fit(views["end"]["outer"])
         if rel > 0.03:
             return False
-    top, side = views["top"], views["side"]
-    if mirror_iou(top["outer"], top["V"]) < TURNED_SYM or mirror_iou(side["outer"], side["V"]) < TURNED_SYM:
+        if "side" not in views:
+            return True
+    elif "side" not in views:
+        return False
+    side = views["side"]
+    if mirror_iou(side["outer"], side["V"]) < TURNED_SYM:
         return False
     a, b = Polygon(top["outer"]).buffer(0), Polygon(side["outer"]).buffer(0)
     return a.intersection(b).area / max(a.union(b).area, 1e-9) > 0.9
 
 
-def assemble(views: dict, L: float, W: float, H: float, flips: dict | None = None) -> dict:
-    """views: {"top"|"side"|"end": {"outer", "holes", "U", "V"}} в мм на изгледа (от vision.View)."""
-    flips = flips or {}
-    views = {k: oriented(v, k, flips) for k, v in views.items()}
+def profile_corners(outer: np.ndarray, U: float, V: float) -> list[tuple[float, float, float]] | None:
+    """Горната половина на очертанието на детайл от струг като ъгли (x, радиус, радиус на заобляне) отляво надясно,
+    от същото разпознаване на прави и дъги като при другите изгледи (заоблените краища стават дъги, а не стъпала)."""
+    cs = fit.corners(outer, U, V)
+    if cs is None:
+        return None
+    R = V / 2
+    up = [c[1] > R + 0.02 * V for c in cs]
+    if sum(up) < 2 or all(up):
+        return None
+    n = len(cs)
+    start = next(k for k in range(n) if up[k] and not up[k - 1])
+    run = []
+    k = start
+    while up[k % n] and len(run) < n:
+        run.append(cs[k % n])
+        k += 1
+    if len(run) != sum(up):
+        return None  # горната страна не е едно парче
+    return [(u, v - R, r) for u, v, r in reversed(run)]  # обратно на часовника горе е отдясно наляво
+
+
+def assemble(views: dict, L: float, W: float, H: float) -> dict:
+    """views: {"top"|"side"|"end": {"outer", "holes", "U", "V"}} в мм на изгледа, в осите на детайла."""
+    views = {k: {"outer": np.asarray(v["outer"], float), "holes": [np.asarray(h, float) for h in v["holes"]],
+                 "U": v["U"], "V": v["V"]} for k, v in views.items()}  # fmt: skip
     if is_turned(views, L, W, H):
         return turned(views, L, W, H)
     d = D.new("block", L, W, H)
@@ -84,6 +92,9 @@ def assemble(views: dict, L: float, W: float, H: float, flips: dict | None = Non
         axis = {"top": "z", "side": "y", "end": "x"}[name]
         for h in v["holes"]:
             add_hole(d, h, axis, name, max(v["U"], v["V"]))
+        if is_round(v):
+            d["views"][name] = {"pts": D.box(a, b), "round": True}
+            continue
         cs = fit.corners(v["outer"], v["U"], v["V"])
         if cs is None:
             d["views"][name] = free_view(d, v, a, b, name)
@@ -108,7 +119,8 @@ def assemble(views: dict, L: float, W: float, H: float, flips: dict | None = Non
         # Оценките от снимката не пасват (например стъпало, почти колкото ръба): изгледите стават правоъгълници.
         for name in ("top", "side", "end"):
             a, b = D.VIEW_AXES[name]
-            d["views"][name] = {"pts": D.box(a, b)}
+            if not d["views"].get(name, {}).get("round"):
+                d["views"][name] = {"pts": D.box(a, b)}
         D.unused_cleanup(d)
         d["notes"].append("Очертанията от снимките не се събраха: започваме от кутия; добавете елементите ръчно.")
     D.unused_cleanup(d)
@@ -247,11 +259,14 @@ def group_holes(d: dict) -> None:
 
 def turned(views: dict, L: float, W: float, H: float) -> dict:
     d = D.new("turned", L, W, H)
-    profiles = [fit.turned_profile(views[k]["outer"], views[k]["U"], views[k]["V"]) for k in ("top", "side")]
-    prof = profiles[0]  # отгоре и отстрани са почти еднакви (проверено); отгоре е по-ясно (лежи стабилно)
+    top = views["top"]
+    prof = profile_corners(top["outer"], top["U"], top["V"])
+    if prof is None:
+        prof = [(x, r, 0.0) for x, r in fit.turned_profile(top["outer"], top["U"], top["V"])]
     Dm = D.value(d, "D")
     # Радиусите по групи: най-големият е D/2, другите са нови диаметри за измерване.
     radii: list[tuple[float, str]] = [(Dm / 2, "rD")]
+    rounds: list[tuple[float, str]] = []
 
     def r_level(r: float) -> str:
         for value, lvl in radii:
@@ -266,13 +281,29 @@ def turned(views: dict, L: float, W: float, H: float) -> dict:
         radii.append((r, lid))
         return lid
 
+    def round_dim(rad: float, at_r: float) -> str | None:
+        if rad <= 0:
+            return None
+        if abs(rad - at_r) <= 0.07 * at_r:  # цял полукръг (заоблен край на капсула): точно половината диаметър
+            rad = math.floor(at_r * 100) / 100
+            for value, i in rounds:
+                if abs(value - rad) < 1e-6:
+                    return i
+            i = D.add_dim(d, "r", rad, "Радиус на заобления край", "Радиус на заобления край",
+                          "Ако краят е полукръг, оставете оценката (половината диаметър).", "radius", optional=True,
+                          show={"view": "profile", "radius": True})  # fmt: skip
+            rounds.append((rad, i))
+            return i
+        return radius_dim(d, rounds, rad, "profile")
+
     upper = []
-    for x, r in prof:
+    for x, r, rad in prof:
         lx = D.level_for(d, "x", clamp(x, L), "Рамо по дължината", "рамото", view="profile")
         lr = r_level(r)
+        rid = round_dim(rad, D.coord(d, lr))
         if upper and upper[-1][:2] == [lx, lr]:
             continue
-        upper.append([lx, lr, None])
+        upper.append([lx, lr, rid])
     # Затворен профил: по оста от 0 до L, после горният ръб обратно.
     if not upper or upper[0][0] != "x0":
         upper.insert(0, ["x0", upper[0][1] if upper else "rD", None])
@@ -300,7 +331,11 @@ def turned(views: dict, L: float, W: float, H: float) -> dict:
                                       "view": "end", "d": dim, "u": {"lvl": "yc", "anchor": "center"},
                                       "v": {"lvl": "zc", "anchor": "center"}})  # fmt: skip
                 d["notes"].append("Отворът по оста е взет като проходен: ако не е, сменете го на глух.")
+    if "end" not in views:
+        d["notes"].append("Няма снимка от края: приех, че сечението е кръгло. Ако не е, снимайте и края.")
     for k in ("top", "side"):
+        if k not in views:
+            continue
         for h in views[k]["holes"]:
             c = fit.robust_circle(h)
             if c is not None:

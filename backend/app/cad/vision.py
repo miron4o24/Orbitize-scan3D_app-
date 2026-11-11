@@ -1,20 +1,19 @@
-"""Снимка -> очертанието на детайла в мм.
+"""Снимка -> очертанието на детайла в пиксели на снимката.
 
 Снимките са направени с телефона успоредно на масата (приложението чака нивелира), затова изображението е почти
-ортогонална проекция: мащабът по двете оси идва от измерените общи размери (L и W отгоре, L и H отстрани, W и H
-откъм края), а не от снимката. Изрязването е IS-Net (app/segment.py, без външни услуги) на два прохода: първо къде е
-детайлът в целия кадър, после близко изрязване около него в пълна разделителна способност, за точен ръб.
+ортогонална проекция. Коя страна на детайла е на снимката, как е завъртяна и колко мм е пикселът, се решава по-късно
+(photos.py), от всички снимки и от измерените общи размери. Изрязването е IS-Net (app/segment.py, без външни
+услуги) на два прохода: първо къде е детайлът в целия кадър, после близко изрязване около него в пълна
+разделителна способност, за точен ръб.
 
 Отворите през детайла: мрежата понякога ги запълва, затова се търсят и по цвят: петно вътре в детайла с цвета на
 фона около него, с компактна форма (виждаме масата през отвора)."""
 
 import math
-from dataclasses import dataclass, field
 
 import numpy as np
 from PIL import Image, ImageOps
 from scipy import ndimage
-from shapely import affinity
 from shapely.geometry import Polygon
 from skimage import measure
 
@@ -24,38 +23,6 @@ SIDE = 2400  # дългата страна, до която се смалява 
 MARGIN = 0.3  # поле около детайла при второто изрязване, в размери на детайла
 MIN_HOLE = 0.0015  # отвор под този дял от детайла е шум
 COLOR_HOLE_K = 2.5  # колко близо до цвета на фона (в разсейвания на фона) е пиксел "през отвор"
-
-
-@dataclass
-class View:
-    """Очертанието на детайла в един изглед, в мм на изгледа (u надясно, v нагоре, от 0 до U и V)."""
-
-    outer: np.ndarray  # (n, 2)
-    holes: list[np.ndarray]
-    U: float
-    V: float
-    # Обратно към снимката (за наложеното очертание): пиксел = rot(-angle) около centre на (x0 + u/sx, y1 - v/sy).
-    angle: float
-    centre: tuple[float, float]
-    x0: float
-    y1: float
-    sx: float
-    sy: float
-    image_size: tuple[int, int]
-    warnings: list[str] = field(default_factory=list)
-
-    def to_photo(self, uv: np.ndarray) -> np.ndarray:
-        """Точки в мм на изгледа -> пиксели на (смалената) снимка."""
-        x = self.x0 + uv[:, 0] / self.sx
-        y = self.y1 - uv[:, 1] / self.sy
-        a = math.radians(self.angle)
-        cx, cy = self.centre
-        dx, dy = x - cx, y - cy
-        return np.c_[cx + dx * math.cos(a) - dy * math.sin(a), cy + dx * math.sin(a) + dy * math.cos(a)]
-
-    def transform(self) -> dict:
-        return {"angle": self.angle, "centre": list(self.centre), "x0": self.x0, "y1": self.y1, "sx": self.sx,
-                "sy": self.sy, "U": self.U, "V": self.V, "image_size": list(self.image_size)}  # fmt: skip
 
 
 def load(path) -> Image.Image:
@@ -159,46 +126,26 @@ def contours(field_: np.ndarray) -> tuple[np.ndarray, list[np.ndarray]]:
     return outer_c, holes
 
 
-def read(sess, path, U: float, V: float, prefer_long_u: bool | None = None) -> View:
-    """Изгледът от снимка при измерени размери U (хоризонтално) и V (вертикално) на изгледа, в мм."""
+def segment(sess, path) -> dict:
+    """Очертанието на детайла на снимката: {"outer": [[x, y], ...], "holes": [...], "size": [w, h]} в пиксели на
+    смалената снимка (load), x надясно, y надолу. ValueError: на снимката няма детайл."""
     im = load(path)
     field_, _solid, box = cutout(sess, im)
     outer, holes = contours(field_)
     off = np.array([box[0], box[1]], float)
-    outer, holes = outer + off, [h + off for h in holes]
-    poly = Polygon(outer)
-    rect = poly.minimum_rotated_rectangle
-    rx, ry = rect.exterior.coords.xy
-    edges = [(rx[k + 1] - rx[k], ry[k + 1] - ry[k]) for k in range(2)]
-    long_edge = max(edges, key=lambda e: math.hypot(*e))
-    angle = math.degrees(math.atan2(long_edge[1], long_edge[0]))
-    angle = (angle + 90) % 180 - 90  # най-малкото завъртане до хоризонтала
-    # Дългата страна на изгледа надясно, освен ако измерените размери казват, че е изправен.
-    want_long_u = U >= V if prefer_long_u is None else prefer_long_u
-    if abs(U - V) / max(U, V) < 0.08 and prefer_long_u is None:
-        angle = (angle + 45) % 90 - 45  # почти квадратен: най-малкото завъртане, без да обръщаме
-    elif not want_long_u:
-        angle -= 90
-    c = poly.centroid
-    centre = (c.x, c.y)
+    o = outer + off
+    edge = 3
+    if o[:, 0].min() < edge or o[:, 1].min() < edge or o[:, 0].max() > im.size[0] - edge or             o[:, 1].max() > im.size[1] - edge:  # fmt: skip
+        raise ValueError("cut")
+    return {"outer": np.round(outer + off, 2).tolist(), "holes": [np.round(h + off, 2).tolist() for h in holes],
+            "size": list(im.size), "f35": focal35(path)}  # fmt: skip
 
-    def turn(pts):
-        p = affinity.rotate(Polygon(pts) if len(pts) > 2 else pts, -angle, origin=centre)
-        return np.asarray(p.exterior.coords)[:-1]
 
-    o = turn(outer)
-    hs = [turn(h) for h in holes]
-    x0, x1 = o[:, 0].min(), o[:, 0].max()
-    y0, y1 = o[:, 1].min(), o[:, 1].max()
-    sx, sy = U / (x1 - x0), V / (y1 - y0)
-    warnings = []
-    ratio = sx / sy
-    if not 0.9 <= ratio <= 1.11:
-        warnings.append("Пропорциите на снимката се разминават с мерките с "
-                        f"{abs(1 - ratio) * 100:.0f}%: снимката може да е под ъгъл или мярка да е грешна.")  # fmt: skip
-
-    def mm(p):
-        return np.c_[(p[:, 0] - x0) * sx, (y1 - p[:, 1]) * sy]
-
-    return View(mm(o), [mm(h) for h in hs], U, V, angle, centre, float(x0), float(y1), float(sx), float(sy),
-                im.size, warnings)  # fmt: skip
+def focal35(path) -> float | None:
+    """Фокусното разстояние на камерата като за 35 мм филм (от EXIF), за поправката на перспективата."""
+    try:
+        with Image.open(path) as im:
+            v = im.getexif().get_ifd(0x8769).get(41989)
+        return float(v) if v and 8 <= float(v) <= 200 else None
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None

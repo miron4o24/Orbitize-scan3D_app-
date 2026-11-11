@@ -15,10 +15,13 @@ from shapely.geometry import LineString, Point, Polygon
 TOL = 0.007  # допуск на опростяването, дял от по-големия размер на изгледа
 LONG = 3.5  # права е по-дълга от толкова допуска
 SNAP_DEG = 5.0
-SHARP = 0.02  # ъгъл с радиус под този дял от размера е остър (на снимка не се различава)
+SHARP = 0.035  # ъгъл с радиус под този дял от размера е остър (на снимка не се различава от перспектива)
 CIRCLE_RMS = 0.025
 WINDOW = 0.006  # посоката се мери по прозорец ±толкова от размера
 MIN_EDGE = 0.025  # най-късата права, дял от размера
+LONG_EDGE = 0.1  # права, по-къса от това (дял от размера), може да е парче от дъга
+MERGE_DEG = 8.0  # съседни прави с по-малка чупка (градуси) са една права
+SHARP_TURN = 45.0  # завой (градуси), от който нататък и късата права е ръб, а не парче от дъга
 
 
 def circle_fit(pts: np.ndarray) -> tuple[float, float, float, float]:
@@ -111,19 +114,28 @@ def corners(outer: np.ndarray, U: float, V: float) -> list[tuple[float, float, f
         seg = p[idx]
         c, d = fit_line(seg, seg[0], seg[-1], tol)
         lines.append((c, d, int((i + k) % n), int((i + length - k) % n)))
-    # Съседни почти еднакви прави (прекъснати от шум) се сливат.
+    # Съседни почти еднакви прави (прекъснати от шум или с лека чупка от перспективата) се сливат и се изправят
+    # наново по всичките си точки.
+    def same(l1, l2) -> bool:
+        return (abs(cross2(l1[1], l2[1])) < math.sin(math.radians(MERGE_DEG)) and l1[1] @ l2[1] > 0
+                and point_line_dist(l2[0], l1[0], l1[1]) < 1.5 * tol)  # fmt: skip
+
+    def joined(l1, l2):
+        s0, e1 = l1[2], l2[3]
+        seg = p[(s0 + np.arange(((e1 - s0) % n) + 1)) % n]
+        c, d = fit_line(seg, seg[0], seg[-1], 1.5 * tol)
+        return (c, d, s0, e1)
+
     merged = []
     for ln in lines:
-        if merged and abs(cross2(merged[-1][1], ln[1])) < math.sin(math.radians(2.5)) and merged[-1][1] @ ln[1] > 0                 and point_line_dist(ln[0], merged[-1][0], merged[-1][1]) < tol:
-            c0, d0, s0, _ = merged[-1]
-            merged[-1] = (c0, d0, s0, ln[3])
+        if merged and same(merged[-1], ln):
+            merged[-1] = joined(merged[-1], ln)
             continue
         merged.append(ln)
-    if len(merged) > 2 and abs(cross2(merged[-1][1], merged[0][1])) < math.sin(math.radians(2.5))             and merged[-1][1] @ merged[0][1] > 0 and point_line_dist(merged[0][0], merged[-1][0], merged[-1][1]) < tol:
-        c0, d0, _, e0 = merged[0]
-        merged[0] = (c0, d0, merged[-1][2], e0)
+    if len(merged) > 2 and same(merged[-1], merged[0]):
+        merged[0] = joined(merged[-1], merged[0])
         merged.pop()
-    lines = merged
+    lines = smooth_out(merged, p, size)
     m = len(lines)
     if m < 2:
         return None
@@ -158,12 +170,64 @@ def corners(outer: np.ndarray, U: float, V: float) -> list[tuple[float, float, f
         out.append((float(c[0]), float(c[1]), r if r >= SHARP * size else 0.0))
     if len(out) < 3:
         return None
-    poly = Polygon([(u, v) for u, v, _ in out])
-    if not poly.is_valid:
+    if not Polygon([(u, v) for u, v, _ in out]).is_valid:
         return None
+    poly = Polygon(rounded(out)).buffer(0)
     raw = Polygon(pts).buffer(0)
     iou = poly.intersection(raw).area / max(poly.union(raw).area, 1e-9)
     return out if iou > 0.95 else None
+
+
+def rounded(cs: list[tuple[float, float, float]], steps: int = 12) -> np.ndarray:
+    """Ъглите (u, v, r) -> начупена линия със заоблените ъгли като дъги."""
+    n = len(cs)
+    out = []
+    for k in range(n):
+        u, v, r = cs[k]
+        a = np.array([cs[k - 1][0] - u, cs[k - 1][1] - v])
+        b = np.array([cs[(k + 1) % n][0] - u, cs[(k + 1) % n][1] - v])
+        na, nb = np.linalg.norm(a), np.linalg.norm(b)
+        if r <= 0 or na < 1e-9 or nb < 1e-9:
+            out.append((u, v))
+            continue
+        a, b = a / na, b / nb
+        ang = math.acos(max(-1.0, min(1.0, float(a @ b))))
+        if ang > math.pi - 1e-3 or ang < 1e-3:
+            out.append((u, v))
+            continue
+        t = min(r / math.tan(ang / 2), na, nb)
+        r = t * math.tan(ang / 2)
+        c = np.array([u, v]) + (a + b) / np.linalg.norm(a + b) * r / math.sin(ang / 2)
+        p1, p2 = np.array([u, v]) + a * t, np.array([u, v]) + b * t
+        a1, a2 = math.atan2(*(p1 - c)[::-1]), math.atan2(*(p2 - c)[::-1])
+        da = (a2 - a1 + math.pi) % (2 * math.pi) - math.pi
+        for s_ in np.linspace(0, 1, steps):
+            out.append(tuple(c + r * np.array([math.cos(a1 + da * s_), math.sin(a1 + da * s_)])))
+    return np.asarray(out)
+
+
+def smooth_out(lines: list, p: np.ndarray, size: float) -> list:
+    """Маха правите, които са парчета от дъга: къси (под LONG_EDGE) и с малък завой към двете съседни (под
+    SHARP_TURN). Дъга се разпада на къси прави с малки завои между тях; истинският ръб (стъпало, фаска) е или дълъг,
+    или с ясен завой поне от едната страна, колкото и да е къс. Между останалите прави ъгълът става заоблен с
+    радиуса от дъгата (или полукръг при обръщане на 180°)."""
+    n = len(p)
+    m = len(lines)
+    if m <= 2:
+        return lines
+
+    def length(ln) -> float:
+        return ((ln[3] - ln[2]) % n) * size / 1200
+
+    def turn(a, b) -> float:
+        return abs(math.degrees(math.atan2(cross2(a[1], b[1]), a[1] @ b[1])))
+
+    keep = []
+    for k, ln in enumerate(lines):
+        sharp = max(turn(lines[k - 1], ln), turn(ln, lines[(k + 1) % m])) >= SHARP_TURN
+        if sharp or length(ln) >= LONG_EDGE * size:
+            keep.append(ln)
+    return keep if len(keep) >= 2 else lines
 
 
 def cross2(a, b) -> float:
@@ -210,34 +274,41 @@ def intersect(p1, d1, p2, d2):
 
 
 def robust_circle(pts: np.ndarray, seed: int = 0) -> tuple[float, float, float] | None:
-    """Кръгъл отвор, част от чийто ръб е скрита (сянка в отвора, отблясък): кръгът, на който лежи поне половината
-    очертание по поне половин обиколка (RANSAC и после най-малки квадрати по съгласните точки). None: не е кръг."""
+    """Кръгъл отвор, част от чийто ръб е скрита: кръгът, на който лежи поне 30% от очертанието по поне 150° от
+    обиколката, и в който се побира целият видим отвор. От няколко такива - най-големият: при снимка с перспектива
+    през проходен отвор се вижда сечението на близкия ръб (истинският размер) и по-малкия далечен; сянка в отвора
+    също само смалява видимото. None: не е кръг."""
     n = len(pts)
     if n < 12:
         return None
     rng = np.random.default_rng(seed)
     span = float(np.max(np.ptp(pts, axis=0)))
-    best, best_in = None, None
-    for _ in range(400):
+    area = Polygon(pts).buffer(0).area
+    cands = []
+    for _ in range(500):
         a, b, c = pts[rng.choice(n, 3, replace=False)]
         circ = circle_3(a, b, c)
         if circ is None or not 0.25 * span < circ[2] < 1.5 * span:
             continue
         thr = 0.02 * circ[2] + 0.01
         inl = np.abs(np.hypot(pts[:, 0] - circ[0], pts[:, 1] - circ[1]) - circ[2]) < thr
-        if best_in is None or inl.sum() > best_in.sum():
-            best, best_in = circ, inl
-    if best is None or best_in.sum() < 0.5 * n:
+        if inl.sum() >= 0.3 * n:
+            cands.append((int(inl.sum()), inl))
+    found = []
+    for count, inl in sorted(cands, key=lambda t: -t[0])[:80]:
+        cx, cy, r, _ = circle_fit(pts[inl])
+        if any(math.hypot(cx - fx, cy - fy) < 0.03 * r and abs(r - fr) < 0.03 * r for fx, fy, fr in found):
+            continue
+        ang = np.sort(np.arctan2(pts[inl, 1] - cy, pts[inl, 0] - cx))
+        gaps = np.diff(np.r_[ang, ang[0] + 2 * math.pi])
+        if 2 * math.pi - gaps.max() < math.radians(150):
+            continue
+        if not 0.45 * math.pi * r * r <= area <= 1.08 * math.pi * r * r:  # видимият отвор е в кръга и го запълва
+            continue
+        found.append((cx, cy, r))
+    if not found:
         return None
-    cx, cy, r, _ = circle_fit(pts[best_in])
-    ang = np.sort(np.arctan2(pts[best_in, 1] - cy, pts[best_in, 0] - cx))
-    gaps = np.diff(np.r_[ang, ang[0] + 2 * math.pi])
-    if 2 * math.pi - gaps.max() < math.pi:  # покрива под половин обиколка
-        return None
-    # Отворът е в кръга (сянката го смалява, но не го уголемява).
-    if Polygon(pts).buffer(0).area > math.pi * r * r * 1.08:
-        return None
-    return cx, cy, r
+    return max(found, key=lambda c: c[2])
 
 
 def circle_3(a, b, c):

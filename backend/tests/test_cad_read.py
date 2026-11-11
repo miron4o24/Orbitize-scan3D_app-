@@ -1,7 +1,10 @@
-"""Инженерният режим: четене на снимки (изрязване с IS-Net и очертания) на детайли с известни размери, нарисувани
-като снимки отгоре (tests/cad_photos.py). Оценките от снимките трябва да са в рамките на 2% от размера: те само
-подсказват, но трябва да намерят всеки елемент. Нужни са CadQuery и моделът за изрязване (на сървъра е там)."""
+"""Инженерният режим: четене на снимките (изрязване с IS-Net, кой изглед е коя снимка и как е завъртяна, поправка на
+перспективата) на детайли с известни размери, нарисувани като снимки с телефон отгоре (tests/cad_photos.py: камера
+26 мм, предметът около половината кадър, обърнат с всяка страна нагоре, леко завъртян и изместен). Оценките от
+снимките само подсказват, но трябва да намерят всеки елемент и да питат само за истинските размери. Нужни са
+CadQuery и моделът за изрязване (на сървъра е там)."""
 
+import numpy as np
 import pytest
 
 pytest.importorskip("cadquery")
@@ -15,6 +18,7 @@ import trimesh  # noqa: E402
 from app.cad import assemble as A  # noqa: E402
 from app.cad import build as B  # noqa: E402
 from app.cad import design as D  # noqa: E402
+from app.cad import photos as P  # noqa: E402
 from app.cad import vision as V  # noqa: E402
 
 from . import cad_photos as CP  # noqa: E402
@@ -25,90 +29,114 @@ def sess():
     return S.session()
 
 
-def read_all(sess, mesh, tmp_path, L, W, H):
-    views = {}
-    for k, (name, (U, VV)) in enumerate((("top", (L, W)), ("side", (L, H)), ("end", (W, H)))):
-        path = tmp_path / f"{name}.jpg"
-        CP.photo(mesh, name, angle=[7, -4, 3][k], seed=k).save(path, quality=92)
-        v = V.read(sess, path, U, VV)
-        views[name] = {"outer": v.outer, "holes": v.holes, "U": U, "V": VV}
-    return A.assemble(views, L, W, H)
-
-
-def measured_all(d):
+def measured(d):
     return D.set_values(d, {i: dim["v"] for i, dim in d["dims"].items()})
 
 
-def test_plate_with_step_holes_and_round_corners(sess, tmp_path):
-    truth = D.new("block", 60, 30, 10)
-    r = D.add_dim(truth, "r", 5, "R", "R")
-    truth["views"]["top"]["pts"] = [[u, v, r] for u, v, _ in truth["views"]["top"]["pts"]]
-    x = D.level_for(truth, "x", 40, "С", "с", view="side")
-    z = D.level_for(truth, "z", 6, "С", "с", view="side")
-    truth["views"]["side"]["pts"] = [["x0", "z0", None], ["xL", "z0", None], ["xL", z, None], [x, z, None],
-                                     [x, "zH", None], ["x0", "zH", None]]  # fmt: skip
-    for _ in range(2):
-        truth = D.add_feature(truth, {"t": "hole", "face": "top", "through": True, "centered": [False, True]})
-    h1, h2 = truth["features"]
-    truth = D.set_values(truth, {h1["d"]: 6, h2["d"]: 6, truth["levels"][h1["u"]["lvl"]]["dim"]: 10,
-                                 truth["levels"][h2["u"]["lvl"]]["dim"]: 25})  # fmt: skip
-    B.build(measured_all(truth), tmp_path / "truth")
+def read(sess, truth, tmp_path, names, sizes, yaw=7.0, seed=0):
+    """Снимките `names` на детайла `truth` -> план (общите размери) и описанието при истинските общи размери."""
+    B.build(truth, tmp_path / "truth")
     mesh = trimesh.load(tmp_path / "truth" / "part.stl", force="mesh")
-    d = read_all(sess, mesh, tmp_path, 60, 30, 10)
+    rng = np.random.default_rng(seed)
+    shots = {}
+    for k, n in enumerate(names):
+        path = tmp_path / f"{n}.jpg"
+        off = (float(rng.uniform(-0.08, 0.08)), float(rng.uniform(-0.08, 0.08)))
+        img = CP.shot(mesh, n, yaw=yaw, spin=float(rng.uniform(-4, 4)), seed=k + 10 * seed, offset=off)
+        img.save(path, quality=92, exif=CP.exif())
+        shots[n] = V.segment(sess, path)
+    lay = P.layout(shots)
+    plan = P.overall(lay)
+    L, W, H = sizes
+    lay = P.layout(shots, sizes)
+    views, _ = P.views_mm(shots, lay, L, W, H)
+    return plan, lay, A.assemble(views, L, W, H)
+
+
+def solid_iou(a: dict, b: dict) -> float:
+    sa, sb = B.solid(B.code(B.clean(a))), B.solid(B.code(B.clean(b)))
+    inter = sa.intersect(sb).Volume()
+    return inter / (sa.Volume() + sb.Volume() - inter)
+
+
+def block():
+    """70 x 40 x 20: изрез вдясно, стъпало отпред, два отвора, два ъгъла R6."""
+    d = D.new("block", 70, 40, 20)
+    x55 = D.level_for(d, "x", 55, "Н", "н", view="top")
+    y15 = D.level_for(d, "y", 15, "Н", "н", view="top")
+    y25 = D.level_for(d, "y", 25, "Н", "н", view="top")
+    r = D.add_dim(d, "r", 6, "R", "R")
+    d["views"]["top"]["pts"] = [["x0", "y0", r], ["xL", "y0", None], ["xL", y15, None], [x55, y15, None],
+                                [x55, y25, None], ["xL", y25, None], ["xL", "yW", None], ["x0", "yW", r]]  # fmt: skip
+    x25 = D.level_for(d, "x", 25, "С", "с", view="side")
+    z12 = D.level_for(d, "z", 12, "С", "с", view="side")
+    d["views"]["side"]["pts"] = [["x0", "z0", None], ["xL", "z0", None], ["xL", "zH", None], [x25, "zH", None],
+                                 [x25, z12, None], ["x0", z12, None]]  # fmt: skip
+    d = D.add_feature(d, {"t": "hole", "face": "top", "through": True, "centered": [False, True]})
+    d = D.add_feature(d, {"t": "hole", "face": "top", "through": True, "centered": [False, False]})
+    h1, h2 = d["features"]
+    d = D.set_values(d, {h1["d"]: 8, h2["d"]: 5, d["levels"][h1["u"]["lvl"]]["dim"]: 12,
+                         d["levels"][h2["u"]["lvl"]]["dim"]: 40, d["levels"][h2["v"]["lvl"]]["dim"]: 10})  # fmt: skip
+    return measured(d)
+
+
+def pill(L=140.0, Dm=64.0, r=None):
+    """Легнал цилиндър (като колонка-хапче) със заоблени краища; r = D/2: полукълба."""
+    d = D.new("turned", L, Dm, Dm)
+    rid = D.add_dim(d, "r", r if r is not None else Dm / 2, "R", "R", kind="radius")
+    d["views"]["profile"]["pts"] = [["x0", "r0", None], ["xL", "r0", None], ["xL", "rD", rid], ["x0", "rD", rid]]
+    return measured(d)
+
+
+def test_block_from_six_photos(sess, tmp_path):
+    truth = block()
+    plan, lay, d = read(sess, truth, tmp_path, P.NAMES, (70, 40, 20))
+    assert [(q["id"], q["photo"]) for q in plan] == [("L", "top"), ("W", "top"), ("H", "front")]
+    o = lay["orient"]
+    assert {n: o[n]["view"] for n in o} == {"top": "top", "bottom": "top", "front": "side", "back": "side",
+                                            "right": "end", "left": "end"}  # fmt: skip
     assert d["kind"] == "block"
+    holes = sorted((f for f in d["features"] if f["t"] == "hole"), key=lambda f: D.coord(d, f["u"]["lvl"]))
+    assert len(holes) == 2 and [f["t"] for f in d["features"]] == ["hole", "hole"]
+    # Дълбок отвор на снимка с перспектива се вижда отчасти: оценката е по-малка (диаметърът винаги се мери).
+    assert [D.value(d, f["d"]) for f in holes] == pytest.approx([8, 5], abs=1.2)
+    assert [D.coord(d, f["u"]["lvl"]) for f in holes] == pytest.approx([12, 40], abs=1.0)
     names = {q["name"]: q["est"] for q in D.questions(d)}
-    holes = [f for f in d["features"] if f["t"] == "hole"]
-    assert len(holes) == 2 and holes[0]["d"] == holes[1]["d"]  # еднакви: един размер
-    assert d["dims"][holes[0]["d"]]["est"] == pytest.approx(6, abs=0.3)
-    xs = sorted(D.coord(d, f["u"]["lvl"]) for f in holes)
-    assert xs == pytest.approx([10, 25], abs=0.5)
-    assert all(f["v"]["lvl"] == "yc" for f in holes)  # в средата: не се пита
-    assert names["Стъпало по дължината (от десния край)"] == pytest.approx(20, abs=0.6)
-    assert names["Стъпало по височината (от горната страна)"] == pytest.approx(4, abs=0.3)
-    assert names["Радиус на заоблен ъгъл"] == pytest.approx(5, abs=0.5)
-    assert len(D.questions(d)) == 9  # L, W, H, стъпалото (2), отворите (Ø и 2 положения), радиусът
+    assert names["Стъпало по дължината (от левия край)"] == pytest.approx(25, abs=1.0)
+    assert names["Стъпало по височината (от горната страна)"] == pytest.approx(8, abs=1.2)
+    assert names["Радиус на заоблен ъгъл"] == pytest.approx(6, abs=1.0)
+    end = {tuple(r) for r in d["views"]["end"]["pts"]}
+    assert end == {tuple(r) for r in D.box("y", "z")}  # отстрани е правоъгълник: без лъжливи стъпала
+    assert solid_iou(truth, measured(d)) > 0.95  # камерата е близо (перспектива), а това са само оценките
 
 
-def test_turned_shaft(sess, tmp_path):
-    truth = D.new("turned", 50, 20, 20)
-    x = D.level_for(truth, "x", 30, "Р", "р", view="profile")
-    d2 = D.add_dim(truth, "d", 12, "Д", "Д", kind="diameter")
-    truth["levels"]["Lr1"] = {"axis": "r", "dim": d2, "from": "diameter"}
-    truth["views"]["profile"]["pts"] = [["x0", "r0", None], ["xL", "r0", None], ["xL", "Lr1", None],
-                                        [x, "Lr1", None], [x, "rD", None], ["x0", "rD", None]]  # fmt: skip
-    truth = D.add_feature(truth, {"t": "hole", "face": "left", "through": True})
-    truth = D.set_values(truth, {truth["features"][0]["d"]: 6.0})
-    B.build(measured_all(truth), tmp_path / "truth")
-    mesh = trimesh.load(tmp_path / "truth" / "part.stl", force="mesh")
-    d = read_all(sess, mesh, tmp_path, 50, 20, 20)
+def test_pill_speaker(sess, tmp_path):
+    """Легнал цилиндър със заоблени краища: само дължина и диаметър отначало, после радиусът на краищата."""
+    truth = pill(140, 64, 14)
+    plan, lay, d = read(sess, truth, tmp_path, ("top", "front", "right", "bottom"), (140, 64, 64), seed=1)
+    assert [(q["id"], q["photo"]) for q in plan] == [("L", "top"), ("D", "right")]
     assert d["kind"] == "turned"
-    diam = [q for q in D.questions(d) if q["kind"] == "diameter"]
-    assert sorted(round(q["est"]) for q in diam) == [6, 12]
-    shoulder = next(q for q in D.questions(d) if q["kind"] == "position")
-    assert shoulder["est"] == pytest.approx(20, abs=0.6)
+    asked = D.questions(d)
+    assert [q["id"] for q in asked if q["kind"] != "radius"] == ["L", "D"]
+    radius = [q for q in asked if q["kind"] == "radius"]
+    assert len(radius) == 1 and radius[0]["est"] == pytest.approx(14, abs=2.5)
+    assert solid_iou(truth, measured(d)) > 0.975
 
 
-def test_plate_with_slot_and_square_cutout(sess, tmp_path):
-    """Канал и правоъгълен изрез с остри ъгли: сянката в изреза не бива да прави ъглите му заоблени."""
-    truth = D.new("block", 60, 36, 5)
-    truth = D.add_feature(truth, {"t": "slot", "face": "top", "through": True, "centered": [False, True]})
-    truth = D.add_feature(truth, {"t": "rect", "face": "top", "through": True, "centered": [False, True]})
-    sl, rc = truth["features"]
-    truth = D.set_values(truth, {sl["len"]: 20, sl["w"]: 6, truth["levels"][sl["u"]["lvl"]]["dim"]: 18, rc["w"]: 12,
-                                 rc["h"]: 16, truth["levels"][rc["u"]["lvl"]]["dim"]: 38})  # fmt: skip
-    B.build(measured_all(truth), tmp_path / "truth")
-    mesh = trimesh.load(tmp_path / "truth" / "part.stl", force="mesh")
-    views = {}
-    for k, (name, (U, VV)) in enumerate((("top", (60, 36)), ("side", (60, 5)))):
-        path = tmp_path / f"{name}.jpg"
-        CP.photo(mesh, name, angle=[5, -2][k], seed=k + 20, px_per_mm=12).save(path, quality=92)
-        v = V.read(sess, path, U, VV)
-        views[name] = {"outer": v.outer, "holes": v.holes, "U": U, "V": VV}
-    d = A.assemble(views, 60, 36, 5)
-    slot = next(f for f in d["features"] if f["t"] == "slot")
-    rect = next(f for f in d["features"] if f["t"] == "rect")
-    assert d["dims"][slot["len"]]["est"] == pytest.approx(20, abs=0.6)
-    assert d["dims"][slot["w"]]["est"] == pytest.approx(6, abs=0.4)
-    assert (d["dims"][rect["w"]]["est"], d["dims"][rect["h"]]["est"]) == pytest.approx((12, 16), abs=0.4)
-    assert "r" not in rect  # остри ъгли
-    assert D.coord(d, slot["u"]["lvl"]) == pytest.approx(8, abs=0.5)  # левият край на канала
+def test_capsule_and_upright_cylinder(sess, tmp_path):
+    """Капсула (полукълба в краищата): радиусът е половината диаметър. Изправен цилиндър: кръг отгоре, без
+    лъжливи стъпала отстрани."""
+    truth = pill(150, 66)
+    plan, _, d = read(sess, truth, tmp_path / "capsule", ("top", "front", "right"), (150, 66, 66), seed=2)
+    assert d["kind"] == "turned"
+    asked = D.questions(d)
+    assert [q["id"] for q in asked if q["kind"] != "radius"] == ["L", "D"]
+    assert [q["est"] for q in asked if q["kind"] == "radius"] == [pytest.approx(33, abs=0.05)]
+    up = D.new("block", 60, 60, 90)
+    up["views"]["top"] = {"pts": D.box("x", "y"), "round": True}
+    up = measured(up)
+    plan, _, d = read(sess, up, tmp_path / "upright", ("top", "front", "right"), (60, 60, 90), seed=3)
+    assert [(q["id"], q["photo"]) for q in plan] == [("D", "top"), ("H", "front")]
+    assert d["views"]["top"].get("round")
+    assert [q["id"] for q in D.questions(d)] == ["L", "W", "H"]
+    assert solid_iou(up, measured(d)) > 0.98

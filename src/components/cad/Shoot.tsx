@@ -6,31 +6,28 @@ import { useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { errorText, type CadView } from '@/lib/api';
+import { errorText, type CadPhoto } from '@/lib/api';
 import { font, palettes, radius, space } from '@/theme';
 
+import { ShotGuide } from './ShotGuide';
 import { LEVEL_DEG, useLevel } from './useLevel';
 
-// Трите снимки на инженерния режим. Всяка е отгоре, с телефона успореден на масата (нивелирът го пази), за да е
-// очертанието вярно; детайлът лежи различно за всяка. Сървърът (app/cad/assemble.py) очаква тези посоки.
+// Снимките на инженерния режим: до шест, всяка отгоре с телефона успореден на масата (нивелирът го пази), а
+// предметът обърнат с друга страна нагоре. Картинката (ShotGuide) показва коя страна и как. Сървърът сам разбира
+// как точно е лежал предметът (app/cad/photos.py), затова посоките не трябва да са точни.
 
-export const SHOTS: { view: CadView; title: string; how: string; optional?: boolean }[] = [
+export const SHOTS: { photo: CadPhoto; title: string; how: string; required?: boolean }[] = [
   {
-    view: 'top',
+    photo: 'top',
     title: 'Отгоре',
-    how: 'Детайлът лежи както обикновено. Дългата страна хоризонтално, левият край вляво.',
+    how: 'Сложете предмета на масата, както стои обикновено, с дългата страна наляво-надясно.',
+    required: true,
   },
-  {
-    view: 'side',
-    title: 'Отстрани',
-    how: 'Легнал на страна: горната му страна към горния край на екрана, същият край вляво.',
-  },
-  {
-    view: 'end',
-    title: 'Откъм края',
-    how: 'Изправен на десния си край (виждате левия), горната страна към горния край на екрана. По желание.',
-    optional: true,
-  },
+  { photo: 'front', title: 'Отпред', how: 'Претърколете го от себе си: страната, която гледаше към вас, е нагоре.' },
+  { photo: 'back', title: 'Отзад', how: 'Задната страна нагоре: претърколете го към себе си.' },
+  { photo: 'right', title: 'Отдясно', how: 'Изправете го на левия край: десният край е нагоре.' },
+  { photo: 'left', title: 'Отляво', how: 'Изправете го на десния край: левият край е нагоре.' },
+  { photo: 'bottom', title: 'Отдолу', how: 'Обърнете го с дъното нагоре.' },
 ];
 
 const dark = palettes.dark;
@@ -41,18 +38,21 @@ const GOOD = '#22c55e';
 
 export function Shoot({
   index,
+  only,
   folder,
   onTaken,
   onSkip,
   onClose,
 }: {
   index: number;
+  only?: boolean; // само тази снимка (без "Пропусни" и без брояч)
   folder: Directory;
   onTaken: (file: File) => void;
   onSkip: () => void;
   onClose: () => void;
 }) {
   const shot = SHOTS[index];
+  const single = only != null; // снимане отново на една снимка (от прегледа на снимките)
   const camera = useRef<CameraView>(null);
   const [ready, setReady] = useState(false);
   const [torch, setTorch] = useState(false);
@@ -68,7 +68,7 @@ export function Shoot({
     setMessage(null);
     try {
       const pic = await camera.current.takePictureAsync({ quality: 0.95, shutterSound: false });
-      const dest = new File(folder, `${shot.view}.jpg`);
+      const dest = new File(folder, `${shot.photo}.jpg`);
       if (dest.exists) dest.delete();
       new File(pic.uri).moveSync(dest);
       setTaken(dest);
@@ -86,7 +86,7 @@ export function Shoot({
         <SafeAreaView style={[StyleSheet.absoluteFill, styles.overlay]} pointerEvents="box-none">
           <View style={styles.top}>
             <View style={styles.panel}>
-              <Text style={styles.panelTitle}>Детайлът целият ли се вижда и на фокус?</Text>
+              <Text style={styles.panelTitle}>Предметът целият ли се вижда и на фокус?</Text>
               <Text style={styles.hint}>Ръбовете трябва да са ясни: от тях се разчита формата.</Text>
             </View>
           </View>
@@ -117,9 +117,7 @@ export function Shoot({
               <Ionicons name="close" size={20} color={WHITE} />
             </Pressable>
             <View style={styles.pill}>
-              <Text style={styles.pillText}>
-                {index + 1} от {SHOTS.length} · {shot.title}
-              </Text>
+              <Text style={styles.pillText}>{single ? `Отново · ${shot.title}` : `${index + 1} от ${SHOTS.length} · ${shot.title}`}</Text>
             </View>
             <Pressable
               style={[styles.round, torch && styles.roundOn]}
@@ -131,11 +129,18 @@ export function Shoot({
               <Ionicons name={torch ? 'flash' : 'flash-off'} size={20} color={torch ? DARK_TEXT : WHITE} />
             </Pressable>
           </View>
-          <View style={styles.panel}>
-            <Text style={styles.panelTitle}>{shot.title}</Text>
-            <Text style={styles.hint}>{shot.how}</Text>
-            <Text style={styles.hint}>Телефонът над детайла, успореден на масата. Детайлът да заема около половината кадър.</Text>
+          <View style={[styles.panel, styles.guideRow]}>
+            <ShotGuide photo={shot.photo} width={132} height={70} />
+            <View style={styles.guideText}>
+              <Text style={styles.panelTitle}>Снимка {shot.title.toLowerCase()}</Text>
+              <Text style={styles.hint}>{shot.how}</Text>
+            </View>
           </View>
+          <Text style={styles.under}>
+            {shot.photo === 'top'
+              ? 'Телефонът над предмета, успореден на масата. Предметът в рамката.'
+              : 'Оранжевата страна гледа нагоре, към телефона. Телефонът пак успореден на масата.'}
+          </Text>
           {message && <Text style={styles.warn}>{message}</Text>}
         </View>
 
@@ -166,8 +171,8 @@ export function Shoot({
               <View style={[styles.shutterIn, straight && styles.shutterOk]} />
             </Pressable>
             <View style={styles.side}>
-              {shot.optional && (
-                <Pressable style={styles.skip} onPress={onSkip} accessibilityRole="button">
+              {!shot.required && !single && (
+                <Pressable style={styles.skip} onPress={onSkip} accessibilityRole="button" accessibilityHint="Ако страната е като отсрещната или предметът не стои на нея">
                   <Text style={styles.skipText}>Пропусни</Text>
                 </Pressable>
               )}
@@ -207,13 +212,17 @@ const styles = StyleSheet.create({
   pillText: { color: WHITE, fontSize: 13.5, fontFamily: font.medium },
   panel: { padding: space.lg, gap: 6, borderRadius: radius.md, backgroundColor: GLASS, borderWidth: 1, borderColor: dark.line },
   panelTitle: { color: WHITE, fontSize: 16, fontFamily: font.semibold },
+  guideRow: { flexDirection: 'row', alignItems: 'center', gap: space.md, padding: space.md },
+  guideText: { flex: 1, gap: 4 },
+  under: { color: WHITE, fontSize: 13, lineHeight: 18, fontFamily: font.medium, textAlign: 'center', textShadowColor: '#000', textShadowRadius: 4 },
   hint: { color: dark.text2, fontSize: 13.5, lineHeight: 19, fontFamily: font.regular },
   warn: { color: dark.warning, fontSize: 14.5, lineHeight: 20, fontFamily: font.medium, textAlign: 'center' },
   middle: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center' },
+  // Рамката е по-малка от кадъра: телефонът е по-високо и перспективата (по-близкото изглежда по-голямо) е по-малка.
   frame: {
     position: 'absolute',
-    width: '70%',
-    aspectRatio: 1.6,
+    width: '58%',
+    aspectRatio: 1.45,
     borderRadius: 14,
     borderWidth: 2,
     borderStyle: 'dashed',

@@ -6,9 +6,9 @@ import { Button, ErrorText, Field, Header, Screen, Small } from '@/components/ui
 import { authHeaders, cadQuestionUrl, type CadQuestion } from '@/lib/api';
 import { font, makeStyles, radius, space } from '@/theme';
 
-// Една мярка на екран: картинката от сървъра показва точно какво да се измери (в оранжево, върху формата на
-// детайла), оценката от снимките е само за ориентир. "Не мога да го измеря" оставя оценката и тя е отбелязана като
-// такава в модела, кода и чертежа.
+// Една мярка на екран: картинката от сървъра е снимката на човека с оранжева линия точно там, където да се мери
+// (без снимка на този изглед: чертеж), оценката от снимките е само за ориентир. "Не мога да го измеря" оставя
+// оценката и тя е отбелязана като такава в модела, кода и чертежа.
 
 export const mmText = (v: number) => `${Math.round(v * 100) / 100}`.replace('.', ',');
 
@@ -18,12 +18,16 @@ export function mmOf(t: string): number | undefined {
   return t.trim() && Number.isFinite(v) && v > 0 && v <= 1000 ? v : undefined;
 }
 
+/* Заглавието: името без "(от ... края)" - посоката се вижда по линията на снимката, която може да е завъртяна. */
+const titleOf = (q: CadQuestion) => q.name.replace(/\s*\([^)]*\)\s*$/, '');
+
 export function Measure({
   jobId,
   stamp,
   question,
   index,
   count,
+  kicker = 'Инженерен CAD · мярка',
   answer,
   busy,
   error,
@@ -33,6 +37,7 @@ export function Measure({
   jobId: string;
   stamp: string;
   question: CadQuestion;
+  kicker?: string;
   index: number;
   count: number;
   answer: number | null | undefined; // undefined: още не е отговорено; null: пропуснато
@@ -60,7 +65,11 @@ export function Measure({
 
   return (
     <Screen>
-      <Header kicker={`Инженерен CAD · мярка ${index + 1} от ${count}`} title={question.ask} sub={question.hint || undefined} />
+      <Header
+        kicker={`${kicker} ${index + 1} от ${count}`}
+        title={titleOf(question)}
+        sub={`Измерете по оранжевата линия на снимката, между двете стрелки.${question.hint ? ` ${question.hint}` : ''}`}
+      />
       <View style={s.progress}>
         <View style={[s.bar, { width: `${((index + 1) / count) * 100}%` }]} />
       </View>
@@ -104,7 +113,7 @@ export function Measure({
 const useStyles = makeStyles((c) => ({
   progress: { height: 4, borderRadius: 2, backgroundColor: c.surface2, overflow: 'hidden' },
   bar: { height: 4, borderRadius: 2, backgroundColor: c.accent },
-  picture: { width: '100%', aspectRatio: 1000 / 640, borderRadius: radius.md, backgroundColor: '#fcfcfd' },
+  picture: { width: '100%', aspectRatio: 4 / 3, borderRadius: radius.md, backgroundColor: '#18181b' },
   line: { flexDirection: 'row', alignItems: 'center', gap: space.md },
   input: { flex: 1, fontSize: 28, height: 64, fontFamily: font.semibold, textAlign: 'right' },
   unit: { color: c.muted, fontFamily: font.medium, fontSize: 18 },

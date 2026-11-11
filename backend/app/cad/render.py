@@ -1,14 +1,15 @@
 """Картинки на инженерния режим (PIL, без външни услуги):
 
-- question: изгледът на детайла от описанието, с това, което трябва да се измери, в цвят (размерна линия, отвор,
-  заоблен ъгъл), и оценката от снимките;
-- overlay: очертанието от описанието върху снимката (екранът "Какво виждам" и проверката след мерките);
+- question: това, което трябва да се измери (размерна линия, отвор, заоблен ъгъл) в оранжево, нарисувано върху
+  снимката на човека, ако изгледът има снимка, иначе върху чертеж на изгледа; overall: общите размери върху снимките,
+  преди да има описание;
+- overlay: очертанието от описанието върху снимката (екранът "Какво виждам");
 - drawing: чертеж с изгледите и всички размери (оценените със звездичка)."""
 
 import math
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageEnhance, ImageFont
 from shapely.geometry import Polygon
 
 from . import design as D
@@ -80,13 +81,17 @@ def silhouette(d: dict, view: str) -> np.ndarray:
     """Очертанието на изгледа в мм (u, v), с дъгите."""
     if view == "profile":  # профилът (x, r) огледан около оста: горе R + r, долу R - r
         R = D.value(d, "D") / 2
-        pts = np.array([(u, r) for u, r, _ in D.outline(d, "profile")])
+        pts = arc_outline(D.outline(d, "profile"))  # с дъгите на заоблените ъгли
         top = Polygon(np.c_[pts[:, 0], R + pts[:, 1]]).buffer(0)
         bottom = Polygon(np.c_[pts[:, 0], R - pts[:, 1]]).buffer(0)
         shape = top.union(bottom)
         if shape.geom_type != "Polygon":
             shape = max(shape.geoms, key=lambda g: g.area)
         return np.asarray(shape.exterior.coords)[:-1]
+    if d["views"].get(view, {}).get("round"):
+        U, V = view_size(d, view)
+        t = np.linspace(0, 2 * math.pi, 144, endpoint=False)
+        return np.c_[U / 2 + U / 2 * np.cos(t), V / 2 + V / 2 * np.sin(t)]
     return arc_outline(D.outline(d, view))
 
 
@@ -126,6 +131,8 @@ def features_in(d: dict, view: str) -> list[tuple[dict, np.ndarray]]:
 class Sheet:
     """Изглед в мм върху картинка: v нагоре, с поле за размерните линии."""
 
+    halo = False  # бял кант под линиите (върху снимка)
+
     def __init__(self, im: Image.Image, box: tuple[int, int, int, int], U: float, V: float):
         self.im, self.draw = im, ImageDraw.Draw(im)
         x0, y0, x1, y1 = box
@@ -137,6 +144,15 @@ class Sheet:
     def px(self, u: float, v: float) -> tuple[float, float]:
         return self.ox + u * self.s, self.oy - v * self.s
 
+    def shift(self, a, offset) -> np.ndarray:
+        """Точката a (мм), изместена с offset пиксела, както на изправен чертеж (x надясно, y надолу)."""
+        return np.array(self.px(*a)) + np.asarray(offset, float)
+
+    def stroke(self, xy: list, fill, width: int):
+        if self.halo:
+            self.draw.line(xy, fill=(255, 255, 255), width=width + 4, joint="curve")
+        self.draw.line(xy, fill=fill, width=width, joint="curve")
+
     def poly(self, pts: np.ndarray, fill=None, outline=INK, width=3):
         xy = [self.px(u, v) for u, v in pts]
         self.draw.polygon(xy, fill=fill)
@@ -145,23 +161,24 @@ class Sheet:
     def line(self, a, b, fill=INK, width=2, dash: float | None = None):
         pa, pb = self.px(*a), self.px(*b)
         if not dash:
-            self.draw.line([pa, pb], fill=fill, width=width)
+            self.stroke([pa, pb], fill, width)
             return
         n = max(1, int(math.dist(pa, pb) / dash))
         for k in range(0, n, 2):
             t0, t1 = k / n, min(1.0, (k + 1) / n)
-            self.draw.line([(pa[0] + (pb[0] - pa[0]) * t0, pa[1] + (pb[1] - pa[1]) * t0),
-                            (pa[0] + (pb[0] - pa[0]) * t1, pa[1] + (pb[1] - pa[1]) * t1)], fill=fill, width=width)  # fmt: skip
+            self.stroke([(pa[0] + (pb[0] - pa[0]) * t0, pa[1] + (pb[1] - pa[1]) * t0),
+                         (pa[0] + (pb[0] - pa[0]) * t1, pa[1] + (pb[1] - pa[1]) * t1)], fill, width)  # fmt: skip
 
     def dimension(self, a, b, offset: tuple[float, float], text: str, color=ACCENT, width=4, size=30):
         """Размерна линия от a до b (мм), изместена с offset (пиксели), с текста по средата."""
         pa, pb = np.array(self.px(*a)), np.array(self.px(*b))
-        off = np.array(offset, float)
-        qa, qb = pa + off, pb + off
-        for p, q in ((pa, qa), (pb, qb)):  # изводни линии
-            if np.linalg.norm(off) > 0:
-                self.draw.line([tuple(p), tuple(q + off / max(np.linalg.norm(off), 1) * 8)], fill=color, width=2)
-        self.draw.line([tuple(qa), tuple(qb)], fill=color, width=width)
+        qa, qb = self.shift(a, offset), self.shift(b, offset)
+        off = qa - pa
+        n_off = max(float(np.linalg.norm(off)), 1.0)
+        if np.linalg.norm(off) > 0:  # изводни линии
+            for p, q in ((pa, qa), (pb, qb)):
+                self.stroke([tuple(p), tuple(q + off / n_off * 8)], color, 2)
+        self.stroke([tuple(qa), tuple(qb)], color, width)
         d = qb - qa
         n = np.linalg.norm(d)
         if n > 1:
@@ -171,8 +188,55 @@ class Sheet:
                 back = p + s * d * 18
                 side = np.array([-d[1], d[0]]) * 8
                 self.draw.polygon([tuple(tip), tuple(back + side), tuple(back - side)], fill=color)
-        mid = (qa + qb) / 2 + (off / max(np.linalg.norm(off), 1)) * 26
+        mid = (qa + qb) / 2 + (off / n_off) * 26
         label(self.draw, tuple(mid), text, color, size)
+
+
+class PhotoSheet(Sheet):
+    """Изглед в мм върху снимката: A (2 x 3) е от мм на изгледа към пиксели на снимката. Снимката се изрязва около
+    детайла (с място за размерните линии), смалява се до `size` и леко се притъмнява, за да се виждат линиите."""
+
+    halo = True
+
+    def __init__(self, photo: Image.Image, A, U: float, V: float, size=(1000, 750), margin=0.42, dim: bool = True):
+        A = np.asarray(A, float)
+        corners = np.array([[0, 0], [U, 0], [U, V], [0, V]], float) @ A[:, :2].T + A[:, 2]
+        lo, hi = corners.min(0), corners.max(0)
+        span = float(max(hi - lo))
+        lo, hi = lo - margin * span, hi + margin * span
+        w, h = hi - lo
+        aspect = size[0] / size[1]
+        if w / h < aspect:
+            lo[0] -= (h * aspect - w) / 2
+            w = h * aspect
+        else:
+            lo[1] -= (w / aspect - h) / 2
+            h = w / aspect
+        k = size[0] / w
+        box = (int(round(lo[0])), int(round(lo[1])), int(round(lo[0] + w)), int(round(lo[1] + h)))
+        im = photo.convert("RGB").crop(box).resize(size, Image.LANCZOS)
+        if dim:
+            im = ImageEnhance.Brightness(ImageEnhance.Color(im).enhance(0.7)).enhance(0.88)
+        self.im, self.draw = im, ImageDraw.Draw(im, "RGBA")
+        k = size[0] / (box[2] - box[0])
+        self.A = np.c_[A[:, :2] * k, (A[:, 2] - np.array([box[0], box[1]], float)) * k]
+        self.U, self.V = U, V
+        self.s = k * math.sqrt(abs(float(np.linalg.det(A[:, :2]))))
+
+    def px(self, u: float, v: float) -> tuple[float, float]:
+        p = self.A[:, :2] @ np.array([u, v], float) + self.A[:, 2]
+        return float(p[0]), float(p[1])
+
+    def shift(self, a, offset) -> np.ndarray:
+        # Отместването е "навън" в осите на изгледа (мм), а не на екрана: снимката може да е завъртяна и огледална.
+        off = np.array([offset[0], -offset[1]], float) / self.s
+        return np.array(self.px(*(np.asarray(a, float) + off)))
+
+    def poly(self, pts: np.ndarray, fill=None, outline=INK, width=3):
+        xy = [self.px(u, v) for u, v in pts]
+        if fill is not None and fill != PAPER:
+            self.draw.polygon(xy, fill=ACCENT + (70,))
+        self.stroke(xy + [xy[0]], outline, width)
 
 
 def label(draw: ImageDraw.ImageDraw, at, text: str, color, size=30):
@@ -308,37 +372,89 @@ def annotate(sh: Sheet, d: dict, view: str, dim_id: str, text: str, color=ACCENT
             label(sh.draw, (x, y + 40), f"{what} {text}", color, size)
         return ""
     if dim["kind"] == "radius" or show.get("radius"):
-        pts = D.outline(d, view)
         rows = d["views"][view]["pts"]
-        for k, ((u, v, r), row) in enumerate(zip(pts, rows)):
-            if row[2] != dim_id:
-                continue
-            pu, pv, _ = pts[k - 1]
-            nu, nv, _ = pts[(k + 1) % len(pts)]
-            arc = arc_outline([(pu, pv, 0.0), (u, v, r), (nu, nv, 0.0)], steps=16)[1:-1]
-            if len(arc) >= 2:
-                xy = [sh.px(q[0], q[1]) for q in arc]
-                if highlight:
-                    sh.draw.line(xy, fill=color, width=9, joint="curve")
-                mid = xy[len(xy) // 2]
-                label(sh.draw, (mid[0] + (40 if u > U / 2 else -40), mid[1] + (34 if v < V / 2 else -34)),
-                      "R " + text, color, size)  # fmt: skip
-                if not highlight:
-                    break
+        outline = D.outline(d, view)
+        if view == "profile":  # профилът е (x, радиус): на изгледа горната половина е R + r, долната R - r
+            halves = [[(u, V / 2 + r, rr) for u, r, rr in outline], [(u, V / 2 - r, rr) for u, r, rr in outline]]
+        else:
+            halves = [outline]
+        done = False
+        for pts in halves:
+            for k, ((u, v, r), row) in enumerate(zip(pts, rows)):
+                if row[2] != dim_id or done:
+                    continue
+                pu, pv, _ = pts[k - 1]
+                nu, nv, _ = pts[(k + 1) % len(pts)]
+                arc = arc_outline([(pu, pv, 0.0), (u, v, r), (nu, nv, 0.0)], steps=16)[1:-1]
+                if len(arc) >= 2:
+                    xy = [sh.px(q[0], q[1]) for q in arc]
+                    if highlight:
+                        sh.stroke(xy, color, 9)
+                    mid = xy[len(xy) // 2]
+                    label(sh.draw, (mid[0] + (40 if u > U / 2 else -40), mid[1] + (34 if v < V / 2 else -34)),
+                          "R " + text, color, size)  # fmt: skip
+                    done = not highlight
         return ""
     if feature is not None:  # заобляне или фаска
         label(sh.draw, (sh.im.width / 2, 40), f"{D.label(d, feature)}: {text}", color, size)
     return ""
 
 
-def question(d: dict, dim_id: str) -> Image.Image:
-    """Картинката към въпроса за размера `dim_id`."""
+def question(d: dict, dim_id: str, photos: dict | None = None) -> Image.Image:
+    """Картинката към въпроса за размера `dim_id`: върху снимката на изгледа, ако я има (photos: {изглед: {"image",
+    "A", "name"}} от service), иначе върху чертеж на изгледа."""
     view = view_for(d, dim_id)
+    photos = photos or {}
     if view == "end" and d["kind"] == "turned":
+        if "end" in photos:
+            Dm = D.value(d, "D")
+            sh = PhotoSheet(photos["end"]["image"], photos["end"]["A"], Dm, Dm)
+            turned_end_marks(sh, d, dim_id)
+            photo_caption(sh, photos["end"]["name"])
+            return sh.im
         return turned_end(d, dim_id)
+    src = photos.get("top" if view == "profile" else view)
+    if src is not None:
+        U, V = view_size(d, view)
+        sh = PhotoSheet(src["image"], src["A"], U, V)
+        annotate(sh, d, view, dim_id, value_text(d["dims"][dim_id]))
+        photo_caption(sh, src["name"])
+        return sh.im
     sh = base_view(d, view)
     annotate(sh, d, view, dim_id, value_text(d["dims"][dim_id]))
     caption(sh, f"Изглед {D.VIEW_NAME[view]}")
+    return sh.im
+
+
+def photo_caption(sh: Sheet, name: str):
+    from .photos import TITLE
+
+    f = font(24, bold=True)
+    text = f"Снимка {TITLE.get(name, name)}"
+    l, t, r, b = sh.draw.textbbox((0, 0), text, font=f)
+    label(sh.draw, (24 + (r - l) / 2 + 10, sh.im.height - 36), text, INK, 24)
+
+
+def overall(photo: Image.Image | None, A, U: float, V: float, dim: str, along: str, name: str = "") -> Image.Image:
+    """Общ размер върху снимката (преди да има описание): линия по цялата дължина ("u") или височина ("v") на
+    изгледа, а диаметърът през средата. Без снимка (височина без снимка отстрани): схема."""
+    text = "Ø ?" if dim == "D" else "?"
+    if photo is None:
+        im = Image.new("RGB", (1000, 750), PAPER)
+        sh = Sheet(im, (170, 250, 830, 560), 3.0, 1.0)
+        sh.poly(np.array([[0, 0], [3, 0], [3, 1], [0, 1]], float), fill=FILL, outline=INK, width=4)
+        sh.line((-0.4, 0), (3.4, 0), SOFT, 3)
+        sh.dimension((3, 0), (3, 1), (70, 0), text)
+        caption(sh, "Отстрани: от масата до най-високата точка")
+        return im
+    sh = PhotoSheet(photo, A, U, V)
+    if dim == "D":
+        sh.dimension((0, V / 2), (U, V / 2), (0, 0), text)
+    elif along == "u":
+        sh.dimension((0, 0), (U, 0), (0, 70), text)
+    else:
+        sh.dimension((U, 0), (U, V), (70, 0), text)
+    photo_caption(sh, name)
     return sh.im
 
 
@@ -348,9 +464,18 @@ def turned_end(d: dict, dim_id: str, star: bool = False, size=(1000, 640)) -> Im
     im = Image.new("RGB", size, PAPER)
     m = round(size[1] * 0.16)
     sh = Sheet(im, (m, m, size[0] - m, size[1] - m), Dm, Dm)
-    color = BLUE if star else ACCENT
     t = np.linspace(0, 2 * math.pi, 96)
     sh.poly(np.c_[Dm / 2 + Dm / 2 * np.cos(t), Dm / 2 + Dm / 2 * np.sin(t)], fill=FILL, outline=INK, width=4)
+    turned_end_marks(sh, d, dim_id, star)
+    caption(sh, "Изглед отстрани")
+    return im
+
+
+def turned_end_marks(sh: Sheet, d: dict, dim_id: str, star: bool = False):
+    """Отворите по оста в кръга на края; този с размера `dim_id` е оцветен и с размерна линия."""
+    Dm = D.value(d, "D")
+    color = BLUE if star else ACCENT
+    t = np.linspace(0, 2 * math.pi, 96)
     dim = d["dims"][dim_id]
     for f in d["features"]:
         if f["t"] == "hole" and f["axis"] == "x":
@@ -361,9 +486,8 @@ def turned_end(d: dict, dim_id: str, star: bool = False, size=(1000, 640)) -> Im
                     outline=ACCENT if mark else INK, width=5 if mark else 3)  # fmt: skip
             if hit:
                 value = value_text(dim, star)
-                sh.dimension((Dm / 2 - r, Dm / 2), (Dm / 2 + r, Dm / 2), (0, -(Dm / 2) * sh.s - 40), "Ø " + value, color)
-    caption(sh, "Изглед откъм края")
-    return im
+                off = (0, -(Dm / 2) * sh.s - 40)
+                sh.dimension((Dm / 2 - r, Dm / 2), (Dm / 2 + r, Dm / 2), off, "Ø " + value, color)
 
 
 def caption(sh: Sheet, text: str):
@@ -374,59 +498,26 @@ def caption(sh: Sheet, text: str):
 # --- Върху снимката -------------------------------------------------------------------------------------------------
 
 
-def to_view(d: dict, view: str, pts: np.ndarray, flips: dict, outer: np.ndarray | None = None) -> np.ndarray:
-    """Точки в осите на детайла за изгледа (u, v) -> точки в мм на снимката на изгледа (обратното на
-    assemble.oriented: огледалата са сами себе си обратни)."""
-    U, V = view_size(d, view if view != "profile" else "profile")
-    fu, fv = flips.get(view, [False, False])
-    if view == "end":
-        fu = not fu
-    if outer is not None and view in ("side", "end"):
-        from .assemble import resting_down
-
-        if resting_down(outer, U, V):
-            fu, fv = not fu, not fv
-    p = np.asarray(pts, float)
-    return np.c_[U - p[:, 0] if fu else p[:, 0], V - p[:, 1] if fv else p[:, 1]]
-
-
-def overlay(d: dict, view: str, photo: Image.Image, transform: dict, flips: dict, side: int = 1100,
-            outer: np.ndarray | None = None) -> Image.Image:
-    """Снимката на изгледа с очертанието и отворите от описанието, изрязана около детайла."""
-    from .vision import View
-
-    v = View(np.zeros((0, 2)), [], transform["U"], transform["V"], transform["angle"], tuple(transform["centre"]),
-             transform["x0"], transform["y1"], transform["sx"], transform["sy"], tuple(transform["image_size"]))  # fmt: skip
-    shape_view = "profile" if d["kind"] == "turned" and view in ("top", "side") else view
+def overlay(d: dict, view: str, photo: Image.Image, A, side: int = 1100) -> Image.Image:
+    """Снимката с очертанието и отворите от описанието (изгледът `view` на описанието, A: от мм към снимката)."""
     if d["kind"] == "turned" and view == "end":
         Dm = D.value(d, "D")
+        U = V = Dm
         t = np.linspace(0, 2 * math.pi, 96)
-        rings = [np.c_[Dm / 2 + Dm / 2 * np.cos(t), Dm / 2 + Dm / 2 * np.sin(t)]]
+        polys = [np.c_[Dm / 2 + Dm / 2 * np.cos(t), Dm / 2 + Dm / 2 * np.sin(t)]]
         for f in d["features"]:
             if f["t"] == "hole" and f["axis"] == "x":
                 r = D.value(d, f["d"]) / 2
-                rings.append(np.c_[Dm / 2 + r * np.cos(t), Dm / 2 + r * np.sin(t)])
-        polys = rings
+                polys.append(np.c_[Dm / 2 + r * np.cos(t), Dm / 2 + r * np.sin(t)])
     else:
+        shape_view = "profile" if d["kind"] == "turned" else view
+        U, V = view_size(d, shape_view)
         polys = [silhouette(d, shape_view)] + [p for _, p in features_in(d, shape_view)]
-    im = photo.convert("RGB").copy()
-    draw = ImageDraw.Draw(im, "RGBA")
-    allpx = []
-    width = max(3, round(max(im.size) / 450))
-    for k, pts in enumerate(polys):
-        px = v.to_photo(to_view(d, view, pts, flips, outer))
-        allpx.append(px)
-        xy = [tuple(p) for p in px] + [tuple(px[0])]
-        draw.line(xy, fill=(255, 255, 255, 230), width=width + 4, joint="curve")
-        draw.line(xy, fill=ACCENT + (255,), width=width, joint="curve")
-    allpx = np.vstack(allpx)
-    lo, hi = allpx.min(0), allpx.max(0)
-    pad = 0.18 * float(max(hi - lo))
-    box = (max(0, int(lo[0] - pad)), max(0, int(lo[1] - pad)), min(im.width, int(hi[0] + pad)),
-           min(im.height, int(hi[1] + pad)))  # fmt: skip
-    im = im.crop(box)
-    im.thumbnail((side, side), Image.LANCZOS)
-    return im
+    sh = PhotoSheet(photo, A, U, V, size=(side, round(side * 0.75)), margin=0.16, dim=False)
+    for pts in polys:
+        xy = [sh.px(u, v) for u, v in pts]
+        sh.stroke(xy + [xy[0]], ACCENT, 4)
+    return sh.im
 
 
 # --- Чертеж ---------------------------------------------------------------------------------------------------------
