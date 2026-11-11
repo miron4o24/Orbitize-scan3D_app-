@@ -32,6 +32,8 @@ TITLE = {"top": "отгоре", "front": "отпред", "back": "отзад", "
 VIEWS = ("top", "side", "end")  # изгледите на описанието (design.py)
 PAIRS = {"top": ("top", "bottom"), "side": ("front", "back"), "end": ("right", "left")}  # първата е основната
 AXES = {"top": ("x", "y"), "side": ("x", "z"), "end": ("y", "z")}
+SCALE_COST = 0.5  # на единица log от разликата в мащаба между снимките над SCALE_FREE
+SCALE_FREE = 1.6  # толкова по-отблизо или по-отдалеч от снимката отгоре е нормално (рамката, различни страни)
 PRIOR_COST = 0.08  # колко (в log на пропорциите) струва да не вярваме на посоките от приложението
 FUSE_IOU = 0.86  # под това съвпадение две противоположни снимки не се усредняват
 MATCH_IOU = 0.8  # под това съвпадение (в мм) противоположните снимки не са едно и също
@@ -69,7 +71,10 @@ class Frame:
     def __init__(self, shot: dict):
         self.q = np.asarray(shot["outer"], float) * [1.0, -1.0]
         self.holes = [np.asarray(h, float) * [1.0, -1.0] for h in shot.get("holes", [])]
-        self.marks = [np.asarray(m, float) * [1.0, -1.0] for m in shot.get("marks", []) if len(m) >= 4]
+        info = shot.get("mark_info") or [{} for _ in shot.get("marks", [])]
+        pairs = [(np.asarray(m, float) * [1.0, -1.0], i) for m, i in zip(shot.get("marks", []), info) if len(m) >= 4]
+        self.marks = [m for m, _ in pairs]
+        self.mark_info = [i for _, i in pairs]
         self.lines = shot.get("lines") or {}
         self.size = tuple(shot["size"])
         poly = largest(Polygon(self.q).buffer(0))
@@ -301,6 +306,7 @@ def assign(frames: dict, orient: dict, names: list[str], r_t: float, sizes) -> d
         return {}
     pairs = [p for p in (("front", "back"), ("right", "left")) if any(n in names for n in p)]
     prior_view = {p: orient[next(n for n in p if n in names)][0] for p in pairs}
+    top = frames.get("top")
     log_h = math.log(sizes[2] / sizes[0]) if sizes else None  # log(H/L)
     best, best_score = None, math.inf
     view_options = [prior_view[p] for p in pairs]
@@ -326,6 +332,13 @@ def assign(frames: dict, orient: dict, names: list[str], r_t: float, sizes) -> d
                 # log(H/L): отпред m = log(L/H); отстрани m = log(W/H) = log(L/H) - r_t
                 preds.append(-m if view == "side" else -m - r_t)
                 cand[n] = (view, eu, ev)
+                # Мащабът: телефонът е на подобна височина за всяка снимка (рамката), затова общата с отгоре страна
+                # (дължината отпред, ширината отстрани) е горе-долу със същия размер в пиксели. Подреждане, при което
+                # една снимка би била няколко пъти по-отблизо, е невъзможно (например "високо" 125 мм вместо 8).
+                if top is not None:
+                    shared = top.ext(top.l) if view == "side" else top.ext(top.s)
+                    ratio = abs(math.log(frames[n].ext(eu) / max(shared, 1e-9)))
+                    cost += SCALE_COST * max(0.0, ratio - math.log(SCALE_FREE))
             ref = log_h if log_h is not None else float(np.median(preds))
             score = sum(abs(p - ref) for p in preds) + cost
             if score < best_score - 1e-9:
@@ -369,7 +382,8 @@ def placement(shot: dict, o: dict, U: float, V: float, depth: dict | None = None
     ratio = ka / kb
     if depth is not None:
         outer, holes, ratio = unproject(shot, f, eu, ev, outer, holes, U, V, math.sqrt(ka * kb), depth)
-    return {"outer": outer, "holes": holes, "marks": marks, "A": A, "U": U, "V": V, "ratio": ratio}
+    return {"outer": outer, "holes": holes, "marks": marks, "mark_info": f.mark_info, "A": A, "U": U, "V": V,
+            "ratio": ratio, "ortho": ortho(f.q)}  # fmt: skip
 
 
 # --- Перспективата ---------------------------------------------------------------------------------------------------
@@ -578,7 +592,9 @@ def combine(shots: dict, lay: dict, L: float, W: float, H: float, solid, fuse_pa
                     holes += mark_pairs(p, q, holes, alts, U, V)
                     p = p | {"outer": fused["outer"], "holes": holes}
                     used.append(others[0])
-        out[view] = {"outer": p["outer"], "holes": p["holes"], "U": U, "V": V, "from": used}
+        p_holes = p["holes"] + dark_holes(p, p["holes"], U, V)
+        each = [p["ortho"]] + ([place(others[0])["ortho"]] if others else [])
+        out[view] = {"outer": p["outer"], "holes": p_holes, "U": U, "V": V, "from": used, "each": each}
     return out, warnings
 
 
@@ -617,6 +633,34 @@ def hole_union(a: list, b: list, extra: bool = True, outer_a=None, outer_b=None)
         out.append(np.asarray(u.exterior.coords)[:-1])
     if extra:
         out += [np.asarray(g) for k, g in enumerate(b) if k not in used]
+    return out
+
+
+HOLE_DARK = 0.45  # петно, по-тъмно от това (дял от яркостта на детайла), сиво и с форма на отвор: отвор
+HOLE_SAT = 0.25  # и не цветно (печатът е цветен)
+
+
+def dark_holes(p: dict, holes: list, U: float, V: float) -> list:
+    """Отвор, видян само като много тъмно, сиво петно на основната снимка (през него не се вижда масата, а и на
+    другата снимка не личи): кръгъл или продълговат със заоблени краища, и не до самия ръб. Печат (знаме, лого)
+    е цветен или с остри ъгли, затова не минава."""
+    from .fit import hole_shape
+
+    out = []
+    have = [largest(Polygon(h).buffer(0)) for h in holes]
+    edge = largest(Polygon(p["outer"]).buffer(0)).exterior
+    for m, info in zip(p.get("marks", []), p.get("mark_info", [])):
+        if not info or info.get("dark", 1) > HOLE_DARK or info.get("sat", 1) > HOLE_SAT:
+            continue
+        mp = largest(Polygon(m).buffer(0))
+        if mp.area <= 0 or any(mp.intersection(h).area > 0.3 * mp.area for h in have):
+            continue
+        if edge.distance(mp) < MARK_WALL * max(U, V):
+            continue
+        if hole_shape(np.asarray(m), max(U, V))["t"] not in ("hole", "slot"):
+            continue
+        out.append(np.asarray(mp.exterior.coords)[:-1])
+        have.append(mp)
     return out
 
 

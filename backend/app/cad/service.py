@@ -230,35 +230,42 @@ def seams(job: Path, sh: dict, lay: dict, L: float, W: float, H: float = 0.0) ->
                 if cover[i] >= 0.6 and cover[i] == cover[max(0, i - half):i + half + 1].max()]  # fmt: skip
         found[name + "_weak"] = weak
         found[name + "_cover"] = [(float(us[i + k // 2]), float(cover[i])) for i in range(len(cover))]
+    # Отгоре: линиите една до друга (ръбът на капачката и нещо под прозрачната пластмаса) са една граница - най-ясната;
+    # другите от групата са "вътрешни" (виждат се през пластмасата и отдолу на същото място, затова не са границата).
+    groups: list[list[float]] = []
+    for x in sorted(found.get("top", [])):
+        if groups and x - groups[-1][-1] <= 0.08 * L:
+            groups[-1].append(x)
+        else:
+            groups.append([x])
+    names = [n for n in ("front", "back") if n in lay["orient"] and lay["orient"][n]["view"] == "side"]
     out = []
-    for x in found.get("top", []):
-        if "bottom" not in found:
-            out.append((x, None))
-            continue
-        near = [y for y in found["bottom"] if abs(x - y) <= 0.1 * L]
-        if not near:  # отдолу снимката може да е размазана: по-слаба линия наблизо
-            near = [y for y in found.get("bottom_weak", []) if abs(x - y) <= 0.12 * L]
-        if near:  # отдолу границата може да е на друго място: по страните минава по диагонал
-            out.append((x, min(near, key=lambda y: abs(x - y))))
-        elif top_cover(found, x) >= 0.97:  # много ясна линия отгоре (печатът не пресича цялата ширина)
-            out.append((x, None))
-    # Две линии една до друга (ръбът на капачката и нещо под прозрачната пластмаса): една граница, по-ясната.
-    out.sort()
-    merged: list = []
-    for x, xb in out:
-        if merged and x - merged[-1][0] <= 0.08 * L:
-            if top_cover(found, x) > top_cover(found, merged[-1][0]):
-                merged[-1] = (x, xb)
-            continue
-        merged.append((x, xb))
-    side = lay["orient"].get(next((n for n in ("front", "back") if n in lay["orient"] and
-                                   lay["orient"][n]["primary"]), ""), None)  # fmt: skip
-    if side is not None:  # отстрани (отпред) границата се вижда цялата: по диагонал или не
-        merged = [(x, xb if xb is not None else slant(job, sh, lay, x, L, H)) for x, xb in merged]
-    return merged[:2]
+    for g in groups:
+        x = max(g, key=lambda v: top_cover(found, v))
+        inner = [v for v in g if v != x]
+        bottom = None
+        if "bottom" in found:
+            cands = [y for y in found["bottom"] + found.get("bottom_weak", []) if abs(x - y) <= 0.12 * L
+                     and all(abs(y - v) > 0.6 for v in inner)]  # fmt: skip
+            sides = [v for v in (slant(job, sh, lay, x, L, H, n) for n in names) if v is not None]
+            side = float(np.mean(sides)) if sides and max(sides) - min(sides) <= 1.5 else None
+            if cands and side is not None:  # отдолу и отстрани: линията отдолу, която пасва на диагонала
+                y = min(cands, key=lambda c: abs(c - side))
+                bottom = y if abs(y - side) <= 2.0 else side
+            elif cands:
+                bottom = min(cands, key=lambda c: abs(c - x))
+            elif side is not None:
+                bottom = side
+            elif top_cover(found, x) < 0.97:
+                continue  # не е потвърдена отдолу и не е съвсем ясна отгоре: печат, не граница
+        else:
+            sides = [v for v in (slant(job, sh, lay, x, L, H, n) for n in names) if v is not None]
+            bottom = float(np.mean(sides)) if sides and max(sides) - min(sides) <= 1.5 else None
+        out.append((x, bottom))
+    return out[:2]
 
 
-def slant(job: Path, sh: dict, lay: dict, x: float, L: float, H: float) -> float | None:
+def slant(job: Path, sh: dict, lay: dict, x: float, L: float, H: float, name: str = "front") -> float | None:
     """Къде е границата на долната страна по снимката отпред: на 9 височини най-рязката смяна на светлината по
     дължината близо до x, права през тях (по най-много съгласни точки). Кой край на правата е горната страна се
     решава по x от снимката отгоре (отпред симетричен предмет може да е обърнат наопаки)."""
@@ -266,7 +273,8 @@ def slant(job: Path, sh: dict, lay: dict, x: float, L: float, H: float) -> float
 
     from .vision import load
 
-    name = next(n for n in ("front", "back") if n in lay["orient"] and lay["orient"][n]["primary"])
+    if name not in lay["orient"]:
+        return None
     o = lay["orient"][name]
     A = P.placement(sh[name], o, L, H)["A"]
     im = ndimage.gaussian_filter(np.asarray(load(photo_path(job, name)).convert("L"), np.float32), 1.0)
