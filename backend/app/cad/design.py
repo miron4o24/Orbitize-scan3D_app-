@@ -276,7 +276,7 @@ def label(d: dict, f: dict) -> str:
     if t == "chamfer":
         return f"Фаска на {EDGE_SETS[f['edges']]}"
     if t == "split":
-        return "Граница между две части (например капачка и тяло)"
+        return "Граница между две части (например капачка и тяло)" + (", по диагонал по страните" if f.get("at2") else "")
     return t
 
 
@@ -346,8 +346,9 @@ def used_dims(d: dict) -> list[str]:
             p = f.get(key)
             if p and p["lvl"] in d["levels"]:
                 take(d["levels"][p["lvl"]]["dim"])
-        if f.get("at") in d["levels"]:
-            take(d["levels"][f["at"]]["dim"])
+        for key in ("at", "at2"):
+            if f.get(key) in d["levels"]:
+                take(d["levels"][f[key]]["dim"])
     for r in radii:
         take(r)
     return order
@@ -476,16 +477,30 @@ def add_feature(d: dict, spec: dict) -> dict:
     return d
 
 
-def add_split(d: dict, x: float) -> dict:
+SPLIT_SLANT = 0.6  # мм: граница, по-разместена от това отгоре и отдолу, минава по диагонал по страните
+
+
+def add_split(d: dict, x: float, x_bottom: float | None = None) -> dict:
     """Граница между две части по дължината (капачка и тяло, два материала): моделът става две тела, разделени при
-    x (оценка в мм). Мери се от по-близкия край."""
+    x (оценка в мм) на горната страна и при x_bottom на долната; ако се различават, по страните границата минава
+    по диагонал. Мери се от по-близкия край."""
     d = copy.deepcopy(d)
     fid = new_feature_id(d, "split")
-    lvl = level_for(d, "x", x, "Граница между частите", "границата между частите", view="top", merge=False)
+    slanted = x_bottom is not None and abs(x_bottom - x) > SPLIT_SLANT
+    name = "Граница между частите" + (" отгоре" if slanted else "")
+    lvl = level_for(d, "x", x, name, "границата между частите" + (" на горната страна" if slanted else ""),
+                    view="top", merge=False)  # fmt: skip
     if lvl in ("x0", end_level("x")):
         return d
     d["dims"][d["levels"][lvl]["dim"]]["show"]["feature"] = fid
-    d["features"].append({"id": fid, "t": "split", "axis": "x", "at": lvl, "view": "top"})
+    f = {"id": fid, "t": "split", "axis": "x", "at": lvl, "view": "top"}
+    if slanted:
+        low = level_for(d, "x", x_bottom, "Граница между частите отдолу", "границата между частите на долната страна",
+                        view="side", merge=False)  # fmt: skip
+        if low not in ("x0", end_level("x")):
+            d["dims"][d["levels"][low]["dim"]]["show"]["feature"] = fid
+            f["at2"] = low
+    d["features"].append(f)
     return d
 
 

@@ -82,6 +82,10 @@ def clean(raw: dict) -> dict:
             if not level_ok(d, f.get("at"), "x"):
                 raise D.DesignError("Непозната граница между части.")
             g.update({"axis": "x", "at": f["at"], "view": "top"})
+            if f.get("at2") is not None:
+                if not level_ok(d, f["at2"], "x"):
+                    raise D.DesignError("Непозната граница между части.")
+                g["at2"] = f["at2"]
             d["features"].append(g)
             continue
         if t in ("fillet", "chamfer"):
@@ -301,8 +305,13 @@ def code(d: dict) -> str:
     if splits:
         lines += ["", "# --- Части (например капачка и тяло): отделни тела ---"]
         for f in splits:
-            lines.append(f"body = body.copyWorkplane(cq.Workplane(plane('x', {lv(f['at'])}))).split(keepTop=True, "
-                         "keepBottom=True)")  # fmt: skip
+            if f.get("at2"):  # по диагонал: на горната страна при at, на долната при at2
+                top, low, h = lv(f["at"]), lv(f["at2"]), axis_total_expr(d, "z")
+                lines.append(f"body = body.copyWorkplane(cq.Workplane(cq.Plane(({low}, 0, 0), (0, 1, 0), ({h}, 0, "
+                             f"-({top} - {low}))))).split(keepTop=True, keepBottom=True)")  # fmt: skip
+            else:
+                lines.append(f"body = body.copyWorkplane(cq.Workplane(plane('x', {lv(f['at'])}))).split(keepTop=True, "
+                             "keepBottom=True)")  # fmt: skip
     lines += ["", "result = body", ""]
     return "\n".join(lines)
 
