@@ -23,7 +23,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(jobs, "DATA", tmp_path)
     monkeypatch.setattr(service, "session", lambda: None)
 
-    def fake_segment(sess, path):
+    def fake_segment(sess, path, points=None):
         """Плоча 60 x 30 x 8 мм (10 пиксела на мм): отгоре два ъгъла R5 вдясно и отвор Ø6 на 15 мм от левия край,
         отпред правоъгълник. Както я дава vision.segment: пиксели, y надолу."""
         U, V = (60.0, 30.0) if path.stem == "top" else (60.0, 8.0)
@@ -40,7 +40,8 @@ def client(tmp_path, monkeypatch):
         def px(p):
             return (np.c_[100 + p[:, 0] * 10, 500 - p[:, 1] * 10]).tolist()
 
-        return {"outer": px(outer), "holes": [px(h) for h in holes], "size": [800, 600]}
+        return {"outer": px(outer), "holes": [px(h) for h in holes], "size": [800, 600],
+                "by": "tap" if points else "isnet"}
 
     monkeypatch.setattr(vision, "segment", fake_segment)
     with TestClient(main.app, headers={"Authorization": "Bearer test-token-123"}) as c:
@@ -173,3 +174,57 @@ def test_add_remove_and_through(client):
     client.put(f"/jobs/{other}/photos/front.jpg", content=jpeg())
     r = client.post(f"/jobs/{other}/cad/read", json={})
     assert r.status_code == 400 and "отгоре" in r.json()["detail"]
+
+
+def test_abandoned_part_is_kept_for_the_owner(client, tmp_path, monkeypatch):
+    """Детайл, изоставен в приложението (то трие задачата): снимките и прочетеното остават за проверка, най-много
+    KEPT; моделите не."""
+    import io
+    import zipfile
+
+    from app.cad import service
+
+    monkeypatch.setattr(service, "kept_root", lambda: tmp_path / "kept")
+    monkeypatch.setattr(service, "KEPT", 2)
+    ids = []
+    for _ in range(3):
+        job = client.post("/jobs").json()["id"]
+        for v in ("top", "front"):
+            assert client.put(f"/jobs/{job}/photos/{v}.jpg", content=jpeg()).status_code == 200
+        client.post(f"/jobs/{job}/cad/prepare")
+        assert client.delete(f"/jobs/{job}").status_code == 200
+        assert client.get(f"/jobs/{job}").status_code == 404  # самата задача я няма
+        ids.append(job)
+    kept = client.get("/admin/cad-kept").json()
+    assert [k["id"] for k in kept] == ids[:0:-1]  # последните два, най-новият първи
+    z = zipfile.ZipFile(io.BytesIO(client.get(f"/admin/cad-kept/{ids[-1]}.zip").content))
+    assert {"top.jpg", "front.jpg", "cad/shots.json", "kept.json"} <= set(z.namelist())
+    assert client.get(f"/admin/cad-kept/{ids[0]}.zip").status_code == 404
+
+
+def test_outline_check_and_fix_by_tap(client):
+    """Проверката на очертанията: снимката с изрязаното от нея и поправка с докосване върху детайла (MobileSAM), която
+    важи при следващото четене; без точки - отново автоматичното."""
+    import json
+
+    from app import jobs
+
+    job = client.post("/jobs").json()["id"]
+    for v in ("top", "front"):
+        assert client.put(f"/jobs/{job}/photos/{v}.jpg", content=jpeg()).status_code == 200
+    r = client.get(f"/jobs/{job}/cad/outline/top.jpg")
+    assert r.status_code == 200 and r.content[:3] == b"\xff\xd8\xff"
+    assert client.post(f"/jobs/{job}/cad/outline/top", json={"points": [[0.5, 0.5], [0.1, 0.1, 0]]}).json()["ok"]
+    shots = json.loads((jobs.job_dir(job) / "cad" / "shots.json").read_text(encoding="utf-8"))
+    assert shots["top"]["by"] == "tap" and shots["top"]["points"] == [[0.5, 0.5], [0.1, 0.1, 0]]
+    assert shots["front"]["by"] == "isnet"
+    assert client.get(f"/jobs/{job}/cad/outline/top.jpg").status_code == 200  # с докоснатите точки
+    assert client.post(f"/jobs/{job}/cad/read", json={}).status_code == 200  # пази поправеното (същата снимка)
+    shots = json.loads((jobs.job_dir(job) / "cad" / "shots.json").read_text(encoding="utf-8"))
+    assert shots["top"]["by"] == "tap"
+    assert client.post(f"/jobs/{job}/cad/outline/top", json={"points": []}).json()["ok"]
+    shots = json.loads((jobs.job_dir(job) / "cad" / "shots.json").read_text(encoding="utf-8"))
+    assert shots["top"]["by"] == "isnet" and "points" not in shots["top"]
+    assert client.post(f"/jobs/{job}/cad/outline/top", json={"points": [[1.5, 0.5]]}).status_code == 422
+    assert client.post(f"/jobs/{job}/cad/outline/..%2Fx", json={"points": [[0.5, 0.5]]}).status_code in (400, 404)
+    assert client.get(f"/jobs/{job}/cad/outline/bottom.jpg").status_code == 400  # няма такава снимка

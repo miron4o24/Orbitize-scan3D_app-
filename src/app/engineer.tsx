@@ -7,6 +7,7 @@ import { ActivityIndicator, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Measure, mmText } from '@/components/cad/Measure';
+import { Outlines } from '@/components/cad/Outlines';
 import { Photos } from '@/components/cad/Photos';
 import { Review } from '@/components/cad/Review';
 import { SHOTS, Shoot } from '@/components/cad/Shoot';
@@ -37,11 +38,12 @@ import { font, makeStyles, space } from '@/theme';
 // Инженерният режим: мерене по указания (сървър app/cad). Снимките казват какво има (очертания, стъпала, отвори),
 // шублерът казва колко е голямо, а моделът се строи само от числата.
 // 1. До шест снимки отгоре, всяка с друга страна на предмета нагоре (качват се и се четат, докато се снима).
-// 2. Преглед на снимките. 3. Общите размери, всеки с линия върху снимката. 4. "Какво виждам" с 3D по оценките.
-// 5. Подробните мерки, по една, с линия върху снимката. 6. Моделът и файловете.
+// 2. Преглед на снимките. 3. Проверка на очертанията (поправка с докосване). 4. Общите размери, всеки с линия
+// върху снимката. 5. "Какво виждам" с 3D по оценките. 6. Подробните мерки, по една, с линия върху снимката.
+// 7. Моделът и файловете.
 // С ?scan=<id> се отваря построен детайл за промяна на мерките или елементите.
 
-type Phase = 'intro' | 'shoot' | 'photos' | 'reading' | 'overall' | 'review' | 'measure' | 'building';
+type Phase = 'intro' | 'shoot' | 'photos' | 'reading' | 'outlines' | 'overall' | 'review' | 'measure' | 'building';
 
 export default function Engineer() {
   useKeepAwake();
@@ -136,11 +138,35 @@ export default function Engineer() {
       const p = await cadRead(id);
       setPlan(p);
       setOi(0);
+      setPhase('outlines');
+    } catch (e) {
+      setError(errorText(e));
+      setPhase('photos');
+    }
+  }
+
+  // След поправени очертания: снимките се четат наново (общите размери и линиите върху тях зависят от тях).
+  async function reread() {
+    if (!jobId) return;
+    setError(null);
+    setPlan(null);
+    setPhase('reading');
+    try {
+      const p = await cadRead(jobId);
+      setPlan(p);
+      setOi(0);
       setPhase('overall');
     } catch (e) {
       setError(errorText(e));
       setPhase('photos');
     }
+  }
+
+  function retake(p: CadPhoto) {
+    setShot(SHOTS.findIndex((x) => x.photo === p));
+    setSingle(true);
+    setError(null);
+    setPhase('shoot');
   }
 
   async function assemble(values: Partial<Record<CadOverallId, number>>) {
@@ -293,12 +319,7 @@ export default function Engineer() {
           photos={photos}
           uploading={uploading > 0}
           error={error}
-          onRetake={(p) => {
-            setShot(SHOTS.findIndex((x) => x.photo === p));
-            setSingle(true);
-            setError(null);
-            setPhase('shoot');
-          }}
+          onRetake={retake}
           onNext={read}
           onBack={() => setPhase('intro')}
         />
@@ -324,6 +345,20 @@ export default function Engineer() {
       </SafeAreaView>
     );
 
+  if (phase === 'outlines' && plan && jobId)
+    return (
+      <SafeAreaView style={s.safe} edges={['top']}>
+        <Outlines
+          jobId={jobId}
+          photos={plan.photos}
+          error={error}
+          onNext={(changed) => (changed ? reread() : setPhase('overall'))}
+          onBack={() => setPhase('photos')}
+          onRetake={retake}
+        />
+      </SafeAreaView>
+    );
+
   if (phase === 'overall' && plan && jobId && plan.overall[oi]) {
     const q = plan.overall[oi];
     return (
@@ -340,7 +375,7 @@ export default function Engineer() {
           busy={busy}
           error={error ?? (oi === 0 && plan.warnings.length ? plan.warnings.join(' ') : null)}
           onAnswer={answerOverall}
-          onBack={() => (oi > 0 ? setOi(oi - 1) : setPhase('photos'))}
+          onBack={() => (oi > 0 ? setOi(oi - 1) : setPhase('outlines'))}
         />
       </SafeAreaView>
     );

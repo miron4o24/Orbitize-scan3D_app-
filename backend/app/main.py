@@ -456,6 +456,28 @@ def cad_photo(job_id: str, view: str, p: Principal = Depends(principal)):
                     headers={"Cache-Control": "private, max-age=60"})  # fmt: skip
 
 
+@app.get("/jobs/{job_id}/cad/outline/{view}.jpg")
+def cad_outline_jpg(job_id: str, view: str, p: Principal = Depends(principal)):
+    """Снимката с очертанието, изрязано от нея (за проверка; докосване върху нея поправя очертанието)."""
+    job = cad_job(job_id, p)
+    return Response(cad_call(CAD.outline_jpg, job, view), media_type="image/jpeg",
+                    headers={"Cache-Control": "private, max-age=60"})  # fmt: skip
+
+
+class CadOutline(BaseModel):
+    # Докоснатите точки: x, y от 0 до 1 върху снимката; трето число 0 - "това не е детайлът". Празно: автоматичното.
+    points: list[Annotated[list[Annotated[float, Field(ge=0, le=1)]], Field(min_length=2, max_length=3)]] = Field(
+        default_factory=list, max_length=12)
+
+
+@app.post("/jobs/{job_id}/cad/outline/{view}")
+def cad_outline(job_id: str, view: str, body: CadOutline, p: Principal = Depends(principal)):
+    """Очертанието на снимката наново, по докоснатите точки (MobileSAM). След това приложението чете наново."""
+    job = cad_job(job_id, p)
+    cad_call(CAD.retrace, job, view, body.points)
+    return {"ok": True}
+
+
 @app.get("/jobs/{job_id}/cad/preview.glb")
 def cad_preview(job_id: str, p: Principal = Depends(principal)):
     """Детайлът по оценките от снимките, преди мерките: за проверка, че е разчетен правилно (посоки, стъпала)."""
@@ -494,10 +516,34 @@ def cad_file(job_id: str, name: str, p: Principal = Depends(principal)):
 
 @app.delete("/jobs/{job_id}")
 def delete_job(job_id: str, p: Principal = Depends(principal)):
-    existing(job_id, p)
+    s = existing(job_id, p)
+    if s.get("state") != "done" and owner(p):  # изоставен детайл на собственика: снимките остават за проверка
+        CAD.keep_abandoned(jobs.job_dir(job_id))
     A.delete_job_files(job_id, worker)
     A.forget_scan(job_id)
     return {"id": job_id, "state": "cancelled", "received": [], "error": None, "report": None}
+
+
+def owner(p: Principal) -> bool:
+    try:
+        return p.admin or (p.user_id is not None and A.is_owner_email(A.user_email_pro(p.user_id)[0]))
+    except HTTPException:
+        return False
+
+
+@app.get("/admin/cad-kept", dependencies=[Depends(A.admin_only)])
+def cad_kept():
+    """Изоставените детайли на собственика, пазени за проверка (CAD.keep_abandoned), най-новите първи."""
+    return CAD.kept_list()
+
+
+@app.get("/admin/cad-kept/{job_id}.zip", dependencies=[Depends(A.admin_only)])
+def cad_kept_zip(job_id: str):
+    data = CAD.kept_zip(job_id) if ID_RE.match(job_id) else None
+    if data is None:
+        raise HTTPException(404, "Няма такъв пазен детайл.")
+    return Response(data, media_type="application/zip",
+                    headers={"Content-Disposition": f'attachment; filename="cad-kept-{job_id[:8]}.zip"'})
 
 
 @app.get("/jobs/{job_id}/result.{fmt}")
