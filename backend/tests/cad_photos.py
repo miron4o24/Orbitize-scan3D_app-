@@ -63,17 +63,21 @@ def photo(mesh: trimesh.Trimesh, view: str, px_per_mm: float = 14.0, angle: floa
 
 def shot(mesh: trimesh.Trimesh, name: str, yaw: float = 7.0, spin: float = 0.0, seed: int = 0, size=(1500, 2000),
          f35: float = 26.0, fill: float = 0.35, offset=(0.0, 0.0), part_color=(225, 228, 232),
-         bg=(150, 112, 78)) -> Image.Image:  # fmt: skip
+         bg=(150, 112, 78), own_axis: bool = False) -> Image.Image:  # fmt: skip
     """Снимката `name` (top, front, back, right, left, bottom), както я иска приложението, с камера на телефон:
     предметът лежи с дължината под ъгъл `yaw` на снимката отгоре, обърнат е, както казва приложението
-    (photos.MOVE, около хоризонталната ос, най-близка до неговата), и леко завъртян на масата (`spin`). Камерата е
+    (photos.MOVE, около хоризонталната ос, най-близка до неговата; own_axis: около своите оси, например
+    претъркулен около дължината си, дори когато сочи напред) и леко завъртян на масата (`spin`). Камерата е
     отгоре с перспектива (фокусно разстояние f35 като за 35 мм филм), толкова високо, че предметът заема около
     `fill` от ширината на кадъра (рамката в приложението е 58% от екрана, а екранът показва около 62% от ширината
     на снимката), изместен с `offset` (дял от кадъра) от средата. EXIF с фокусното разстояние: exif()."""
     from app.cad.photos import MOVE, rot
 
     snap = round(yaw / 90) * 90
-    R = rot("z", spin) @ rot("z", yaw - snap) @ MOVE[name] @ rot("z", snap)
+    if own_axis:  # обърнат спрямо себе си (около своята дължина), както и да лежи на снимката отгоре
+        R = rot("z", spin) @ rot("z", yaw) @ MOVE[name]
+    else:
+        R = rot("z", spin) @ rot("z", yaw - snap) @ MOVE[name] @ rot("z", snap)
     v = (mesh.vertices - mesh.bounds.mean(0)) @ R.T
     v[:, 2] -= v[:, 2].min()  # лежи на масата
     W, H = size

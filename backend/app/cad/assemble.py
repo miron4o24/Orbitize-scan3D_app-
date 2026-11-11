@@ -79,7 +79,8 @@ def profile_corners(outer: np.ndarray, U: float, V: float) -> list[tuple[float, 
 def assemble(views: dict, L: float, W: float, H: float) -> dict:
     """views: {"top"|"side"|"end": {"outer", "holes", "U", "V"}} в мм на изгледа, в осите на детайла."""
     views = {k: {"outer": np.asarray(v["outer"], float), "holes": [np.asarray(h, float) for h in v["holes"]],
-                 "U": v["U"], "V": v["V"]} for k, v in views.items()}  # fmt: skip
+                 "U": v["U"], "V": v["V"], "each": [np.asarray(e, float) for e in v.get("each", [])]}
+             for k, v in views.items()}  # fmt: skip
     if is_turned(views, L, W, H):
         return turned(views, L, W, H)
     d = D.new("block", L, W, H)
@@ -100,7 +101,7 @@ def assemble(views: dict, L: float, W: float, H: float) -> dict:
         if cs is not None:
             cs = fit.symmetric_round(cs, v["U"], v["V"])
             if name in ("top", "side"):  # по-тесен/по-тънък край (флашка, химикалка): къси стъпала
-                tabs = fit.end_tabs(v["outer"], v["U"], v["V"])
+                tabs = each_tabs(v)
                 cs = fit.apply_tabs(cs, tabs, v["U"], v["V"])
                 if name == "top":
                     top_tabs = tabs
@@ -128,6 +129,20 @@ def assemble(views: dict, L: float, W: float, H: float) -> dict:
         d["notes"].append("Очертанията от снимките не се събраха: започваме от кутия; добавете елементите ръчно.")
     D.unused_cleanup(d)
     return d
+
+
+def each_tabs(v: dict) -> list[dict]:
+    """По-тесните краища на изгледа: от общото очертание и от всяка снимка поотделно (на двете противоположни
+    снимки стъпалото може да е от различни страни и обединението да го скрие). За всеки край - средното от
+    снимките, които го показват."""
+    found: dict[int, list] = {}
+    for outline in [v["outer"]] + list(v.get("each", [])):
+        for t in fit.end_tabs(outline, v["U"], v["V"]):
+            found.setdefault(t["end"], []).append(t)
+    out = []
+    for end, ts in found.items():
+        out.append({"end": end, **{k: float(np.mean([t[k] for t in ts])) for k in ("len", "lo", "hi")}})
+    return out
 
 
 def view_pts(d: dict, cs: list, a: str, b: str, U: float, V: float, name: str, radius_dims: list) -> dict:

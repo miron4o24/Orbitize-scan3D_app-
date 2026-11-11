@@ -139,7 +139,13 @@ def segment(sess, path) -> dict:
         raise ValueError("cut")
     return {"outer": np.round(outer + off, 2).tolist(), "holes": [np.round(h + off, 2).tolist() for h in holes],
             "size": list(im.size), "f35": focal35(path), "lines": line_profiles(im, outer + off),
-            "marks": [np.round(m + off, 2).tolist() for m in dark_marks(np.asarray(im.crop(box), np.float32), solid)]}  # fmt: skip
+            **marks_of(np.asarray(im.crop(box), np.float32), solid, off)}  # fmt: skip
+
+
+def marks_of(rgb: np.ndarray, solid: np.ndarray, off: np.ndarray) -> dict:
+    """Тъмните петна (dark_marks) в пиксели на снимката и колко са тъмни (спрямо детайла) и цветни."""
+    found = dark_marks(rgb, solid)
+    return {"marks": [np.round(m + off, 2).tolist() for m, _ in found], "mark_info": [i for _, i in found]}
 
 
 LINE_BINS = 200
@@ -180,7 +186,7 @@ def line_profiles(im: Image.Image, outer: np.ndarray) -> dict:
     return out
 
 
-def dark_marks(rgb: np.ndarray, solid: np.ndarray) -> list[np.ndarray]:
+def dark_marks(rgb: np.ndarray, solid: np.ndarray) -> list[tuple[np.ndarray, dict]]:
     """Тъмни компактни петна върху детайла (пиксели x, y на изрязването): отвор, през който от тази страна не се
     вижда (дълбок и тесен, встрани от средата на кадъра), изглежда като тъмно петно. Само потвърждават отвор от
     другата снимка (photos.hole_union), затова надписи и рисунки не пречат."""
@@ -208,7 +214,10 @@ def dark_marks(rgb: np.ndarray, solid: np.ndarray) -> list[np.ndarray]:
         cs = measure.find_contours(np.pad(blob.astype(float), 1), 0.5)
         if cs:
             c = max(cs, key=len)[:, ::-1] - 1
-            out.append(c)
+            core = ndimage.binary_erosion(blob, iterations=1) if a > 60 else blob
+            px = rgb[core if core.any() else blob]
+            sat = float(np.median((px.max(1) - px.min(1)) / np.maximum(px.max(1), 1.0)))
+            out.append((c, {"dark": round(float(np.median(px.mean(1))) / max(med, 1.0), 3), "sat": round(sat, 3)}))
     return out[:30]
 
 

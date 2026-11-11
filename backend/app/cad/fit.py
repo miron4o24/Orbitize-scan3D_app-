@@ -287,8 +287,13 @@ def end_tabs(outer: np.ndarray, U: float, V: float) -> list[dict]:
         core = idx[(dist[idx] > 0.25 * length) & (dist[idx] < 0.75 * length)]
         if len(core) < 3:
             continue
-        d_lo, d_hi = float(np.nanmedian(lo[core] - lo_b)), float(np.nanmedian(hi_b - hi[core]))
-        if d_lo >= d_min and d_hi >= d_min:
+        ins_lo, ins_hi = lo[core] - lo_b, hi_b - hi[core]
+        d_lo, d_hi = float(np.nanmedian(ins_lo)), float(np.nanmedian(ins_hi))
+        # Истинският по-тесен край е еднакво тесен по цялата си дължина (после стъпало); заобленият ъгъл става все
+        # по-широк към тялото: там навътре не е постоянно.
+        flat = all(float(np.nanpercentile(x, 85) - np.nanpercentile(x, 15)) <= 0.45 * max(float(np.nanmedian(x)), 1e-9)
+                   for x in (ins_lo, ins_hi))  # fmt: skip
+        if d_lo >= d_min and d_hi >= d_min and flat:
             out.append({"end": end, "len": length, "lo": d_lo, "hi": d_hi})
     return out
 
