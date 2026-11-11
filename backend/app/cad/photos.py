@@ -36,6 +36,8 @@ PRIOR_COST = 0.08  # колко (в log на пропорциите) струв�
 FUSE_IOU = 0.86  # под това съвпадение две противоположни снимки не се усредняват
 MATCH_IOU = 0.8  # под това съвпадение (в мм) противоположните снимки не са едно и също
 RATIO_WARN = 1.15  # пропорциите на снимката и мерките се разминават повече: предупреждение
+RATIO_DROP = 1.25  # още повече: снимката не е ползвана (под ъгъл или друга страна)
+SURE_MARGIN = 0.01  # с толкова по-добро съвпадение от следващото обръщане е ясно как е обърната снимката
 ROUND_RMS = 0.02  # очертание, нормирано до квадрат, по-близко до кръг: кръгло
 
 
@@ -193,6 +195,7 @@ def layout(shots: dict, sizes: tuple[float, float, float] | None = None, flips: 
         orient[name] = [view, eu, ev]
     warnings: list[str] = []
     quality: dict[str, float] = {}
+    sure: dict[str, bool] = {}  # обръщането на снимката е ясно (несиметричен предмет)
     for view in VIEWS:
         members = [n for n in orient if orient[n][0] == view]
         if not members:
@@ -214,6 +217,10 @@ def layout(shots: dict, sizes: tuple[float, float, float] | None = None, flips: 
             k = int(np.argmax(scores))
             orient[other] = [view, *cands[k]]
             quality[other] = round(float(scores[k]), 3)
+            rest = max((sc for j, sc in enumerate(scores) if j != k), default=0.0)
+            # Отвор само на тази снимка се добавя, само ако формата казва ясно как е обърната (иначе може да е от
+            # грешната страна или петно; пропуснат отвор се добавя на ръка, а грешен би развалил детайла).
+            sure[other] = bool(scores[k] - rest > SURE_MARGIN)
             if scores[k] < FUSE_IOU:
                 warnings.append(f"Снимката {TITLE[other]} не съвпада добре със снимката {TITLE[primary]}: ползвам "
                                 f"само {TITLE[primary]}. Ако е друга страна, снимайте я отново.")  # fmt: skip
@@ -221,7 +228,7 @@ def layout(shots: dict, sizes: tuple[float, float, float] | None = None, flips: 
             orient[n].append(n == primary)
     out = {"orient": {n: {"view": v[0], "eu": [float(x) for x in v[1]], "ev": [float(x) for x in v[2]],
                           "primary": bool(v[3])} for n, v in orient.items()},
-           "iou": quality, "warnings": warnings}  # fmt: skip
+           "iou": quality, "sure": sure, "warnings": warnings}  # fmt: skip
     out["round"] = {"top": is_round(frames, orient, "top"), "end": is_round(frames, orient, "end")}
     return out
 
@@ -438,12 +445,13 @@ def views_mm(shots: dict, lay: dict, L: float, W: float, H: float) -> tuple[dict
     for k in range(3):
         fixed, warn_fixed = combine(shots, lay, L, W, H, hull(fixed, L, W, H), fuse_pairs=k == 2)
     out, warnings = {}, []
-    for view, v in plain.items():
-        pick, warn = v, warn_plain.get(view)
+    for view in VIEWS:
+        v, warn = plain.get(view), warn_plain.get(view)
         f = fixed.get(view)
-        if f is not None and complexity(f) < complexity(v):
-            pick, warn = f | {"perspective": True}, warn_fixed.get(view)
-        out[view] = pick
+        if v is not None and f is not None and complexity(f) < complexity(v):
+            v, warn = f | {"perspective": True}, warn_fixed.get(view)
+        if v is not None:
+            out[view] = v
         if warn:
             warnings.append(warn)
     return out, warnings
@@ -477,31 +485,47 @@ def combine(shots: dict, lay: dict, L: float, W: float, H: float, solid, fuse_pa
                 depth = {"near": near, "far": far, "step": solid[1]}
             return placement(shots[name], o, U, V, depth)
 
+        def fits(pl) -> bool:
+            return 1 / RATIO_DROP <= pl["ratio"] <= RATIO_DROP
+
         primary = next(n for n in names if lay["orient"][n]["primary"])
         p = place(primary)
+        others = [n for n in names if n != primary and lay["iou"].get(n, 0) >= FUSE_IOU]
+        if not fits(p):  # основната снимка не пасва на мерките: другата на същия изглед, ако пасва, иначе нищо
+            alt = [n for n in names if n != primary]
+            q = place(alt[0]) if alt else None
+            if q is None or not fits(q):
+                bad = " и ".join(TITLE[n] for n in names)
+                many = len(names) > 1
+                warnings[view] = (f"{'Снимките' if many else 'Снимката'} {bad} не {'пасват' if many else 'пасва'} на "
+                                  "мерките (снимано под ъгъл или друга страна) и не са ползвани: тази страна е "
+                                  "правоъгълник. Снимайте отново отгоре, с телефона прав, за да се разчете.")  # fmt: skip
+                continue
+            primary, p, others = alt[0], q, []
         if not 1 / RATIO_WARN <= p["ratio"] <= RATIO_WARN:
             warnings[view] = (f"Пропорциите на снимката {TITLE[primary]} се разминават с мерките с "
                               f"{abs(1 - p['ratio']) * 100:.0f}%: снимката може да е под ъгъл или мярка да е грешна.")  # fmt: skip
         used = [primary]
-        others = [n for n in names if n != primary and lay["iou"].get(n, 0) >= FUSE_IOU]
         if fuse_pairs and others:
             q = place(others[0])
             pa = largest(Polygon(p["outer"]).buffer(0))
             qa = largest(Polygon(q["outer"]).buffer(0))
-            if iou(pa, qa) >= MATCH_IOU:
+            if fits(q) and iou(pa, qa) >= MATCH_IOU:
                 fused = fuse(p, q, U, V)
                 if fused is not None:
-                    p = p | {"outer": fused["outer"], "holes": hole_union(p["holes"], q["holes"])}
+                    extra = lay.get("sure", {}).get(others[0], False)
+                    p = p | {"outer": fused["outer"], "holes": hole_union(p["holes"], q["holes"], extra)}
                     used.append(others[0])
         out[view] = {"outer": p["outer"], "holes": p["holes"], "U": U, "V": V, "from": used}
     return out, warnings
 
 
-def hole_union(a: list, b: list) -> list:
+def hole_union(a: list, b: list, extra: bool = True) -> list:
     """Отворите от две противоположни снимки: през проходен отвор с перспектива се вижда само сечението на близкия
     и далечния ръб, изместено на различни страни на двете снимки. Обединението на двете е по-близо до истинския
-    отвор (средното би го смалило). Отвор само на едната снимка също остава: тесен и дълбок отвор встрани от
-    средата на кадъра може изобщо да не се види през детайла на другата."""
+    отвор (средното би го смалило). Отвор само на втората снимка също остава (extra), ако е ясно как е обърната:
+    тесен и дълбок отвор встрани от средата на кадъра може изобщо да не се види през детайла на другата. При
+    симетричен предмет не е ясно от коя страна е, затова тогава не се добавя."""
     out = []
     used = set()
     for h in a:
@@ -520,7 +544,8 @@ def hole_union(a: list, b: list) -> list:
         used.add(k_best)
         u = largest(ph.union(best))
         out.append(np.asarray(u.exterior.coords)[:-1])
-    out += [np.asarray(g) for k, g in enumerate(b) if k not in used]
+    if extra:
+        out += [np.asarray(g) for k, g in enumerate(b) if k not in used]
     return out
 
 
