@@ -222,14 +222,11 @@ def smooth_out(lines: list, p: np.ndarray, size: float) -> list:
     def turn(a, b) -> float:
         return abs(math.degrees(math.atan2(cross2(a[1], b[1]), a[1] @ b[1])))
 
-    def stepped(a, b) -> bool:  # успоредни, но разместени: стъпало (например по-тесен край), а не дъга
-        return turn(a, b) < 10 and point_line_dist(b[0], a[0], a[1]) > 0.5 * TOL * size
-
     keep = []
     for k, ln in enumerate(lines):
         prev, nxt = lines[k - 1], lines[(k + 1) % m]
         sharp = min(turn(prev, ln), turn(ln, nxt)) >= SHARP_TURN
-        if sharp or length(ln) >= LONG_EDGE * size or stepped(prev, ln) or stepped(ln, nxt):
+        if sharp or length(ln) >= LONG_EDGE * size:
             keep.append(ln)
     return keep if len(keep) >= 2 else lines
 
