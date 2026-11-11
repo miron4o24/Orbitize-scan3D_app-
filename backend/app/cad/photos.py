@@ -642,10 +642,9 @@ def mark_pairs(p: dict, q: dict, holes: list, alts: list, U: float, V: float) ->
                 if nq.area > 0 and mp.intersection(nq).area >= 0.4 * min(mp.area, nq.area):
                     hits.append(nq)
                     break
-        if len(hits) == 1:
-            u = largest(mp.union(hits[0]))
-            out.append(np.asarray(u.exterior.coords)[:-1])
-            have.append(u)
+        if len(hits) == 1:  # формата от основната снимка
+            out.append(np.asarray(mp.exterior.coords)[:-1])
+            have.append(mp)
     return out
 
 
@@ -665,10 +664,11 @@ def confirmed(p: dict, q: dict, alts: list, U: float, V: float) -> list:
         for su, sv in alts:
             c = np.c_[h[:, 0] if su > 0 else U - h[:, 0], h[:, 1] if sv > 0 else V - h[:, 1]]
             cp = largest(Polygon(c).buffer(0))
-            if any(m.area > 0 and cp.intersection(m).area > 0.3 * min(cp.area, m.area) for m in marks):
-                hits.append(c)
-        if len(hits) == 1:
-            out.append(hits[0])
+            mk = [m for m in marks if m.area > 0 and cp.intersection(m).area > 0.3 * min(cp.area, m.area)]
+            if mk:
+                hits.append(mk[0])
+        if len(hits) == 1:  # формата от основната снимка (тя е по-рязка и е тази, с която човекът сравнява)
+            out.append(np.asarray(hits[0].exterior.coords)[:-1])
     return out
 
 
