@@ -258,6 +258,8 @@ def base_view(d: dict, view: str, size=(1000, 640), margin=120) -> Sheet:
     sh.poly(silhouette(d, view), fill=FILL, outline=INK, width=4)
     for _, pts in features_in(d, view):
         sh.poly(pts, fill=PAPER, outline=INK, width=3)
+    for x in split_xs(d, view):  # граница между части (капачка и тяло)
+        sh.line((x, -V * 0.04), (x, V * 1.04), BLUE, 3, dash=16)
     if view == "profile":  # оста и отворът по нея (скрит: пунктир)
         R = V / 2
         sh.line((-U * 0.04, R), (U * 1.04, R), SOFT, 2, dash=14)
@@ -269,6 +271,20 @@ def base_view(d: dict, view: str, size=(1000, 640), margin=120) -> Sheet:
                 for v in (R - r, R + r):
                     sh.line((x0, v), (x1, v), INK, 2, dash=12)
     return sh
+
+
+def split_xs(d: dict, view: str) -> list[float]:
+    """Границите между части (по X) в изглед, в който X е хоризонталата."""
+    if view not in ("top", "side", "profile"):
+        return []
+    out = []
+    for f in d["features"]:
+        if f["t"] == "split":
+            try:
+                out.append(D.coord(d, f["at"]))
+            except D.DesignError:
+                pass
+    return out
 
 
 def view_for(d: dict, dim_id: str) -> str:
@@ -517,6 +533,9 @@ def overlay(d: dict, view: str, photo: Image.Image, A, side: int = 1100) -> Imag
     for pts in polys:
         xy = [sh.px(u, v) for u, v in pts]
         sh.stroke(xy + [xy[0]], ACCENT, 4)
+    if not (d["kind"] == "turned" and view == "end"):
+        for x in split_xs(d, "profile" if d["kind"] == "turned" else view):
+            sh.line((x, 0), (x, V), ACCENT, 3, dash=14)
     return sh.im
 
 
