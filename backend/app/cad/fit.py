@@ -94,7 +94,7 @@ def straight_runs(p: np.ndarray, k: int, max_dev_deg: float, min_len: int) -> li
     return runs
 
 
-def corners(outer: np.ndarray, U: float, V: float) -> list[tuple[float, float, float]] | None:
+def corners(outer: np.ndarray, U: float, V: float, raw: bool = False) -> list[tuple[float, float, float]] | None:
     """Ъглите (u, v, r) на очертанието обратно на часовника, или None, ако не става с прави и дъги (свободна
     форма). Правите са дълги отрязъци с постоянна посока; между две прави е ъгъл: остър, ако очертанието минава през
     пресечната им точка, иначе заоблен с радиуса от разстоянието до нея."""
@@ -167,7 +167,7 @@ def corners(outer: np.ndarray, U: float, V: float) -> list[tuple[float, float, f
         r = e / (1 / math.sin(ang / 2) - 1) if e > 0.6 * tol and abs(turn) >= 30 else 0.0
         if r > 0.5 * size:
             r = 0.0
-        out.append((float(c[0]), float(c[1]), r if r >= SHARP * size else 0.0))
+        out.append((float(c[0]), float(c[1]), r if raw or r >= SHARP * size else 0.0))
     if len(out) < 3:
         return None
     if not Polygon([(u, v) for u, v, _ in out]).is_valid:
@@ -207,9 +207,9 @@ def rounded(cs: list[tuple[float, float, float]], steps: int = 12) -> np.ndarray
 
 
 def smooth_out(lines: list, p: np.ndarray, size: float) -> list:
-    """Маха правите, които са парчета от дъга: къси (под LONG_EDGE) и с малък завой към двете съседни (под
-    SHARP_TURN). Дъга се разпада на къси прави с малки завои между тях; истинският ръб (стъпало, фаска) е или дълъг,
-    или с ясен завой поне от едната страна, колкото и да е къс. Между останалите прави ъгълът става заоблен с
+    """Маха правите, които са парчета от дъга: къси (под LONG_EDGE) и без ясен завой (поне SHARP_TURN) към двете
+    съседни. Дъга се разпада на къси прави с малки завои между тях, а парчето до заоблен ъгъл е с малък завой поне от
+    едната страна; истинският ръб (стъпало, фаска) е или дълъг, или с ясен завой и от двете страни. Между останалите прави ъгълът става заоблен с
     радиуса от дъгата (или полукръг при обръщане на 180°)."""
     n = len(p)
     m = len(lines)
@@ -224,10 +224,30 @@ def smooth_out(lines: list, p: np.ndarray, size: float) -> list:
 
     keep = []
     for k, ln in enumerate(lines):
-        sharp = max(turn(lines[k - 1], ln), turn(ln, lines[(k + 1) % m])) >= SHARP_TURN
+        sharp = min(turn(lines[k - 1], ln), turn(ln, lines[(k + 1) % m])) >= SHARP_TURN
         if sharp or length(ln) >= LONG_EDGE * size:
             keep.append(ln)
     return keep if len(keep) >= 2 else lines
+
+
+def symmetric_round(cs: list, U: float, V: float) -> list[tuple[float, float, float]]:
+    """Ъглите със суров радиус (corners(raw=True)) -> заоблени или остри. Ъгълът е заоблен, ако радиусът му е поне
+    SHARP от размера или ако огледалният му ъгъл (спрямо средата на изгледа) е заоблен и неговият е поне 40% от
+    този: заоблените ъгли на детайл обикновено са по двойки, а на снимка единият може да излезе по-малък (отблясък,
+    сянка, прозрачна пластмаса)."""
+    size = max(U, V)
+    thr = SHARP * size
+    tol = 0.05 * size
+    out = []
+    for k, (u, v, r) in enumerate(cs):
+        if r >= thr:
+            out.append((u, v, r))
+            continue
+        mates = [r2 for j, (u2, v2, r2) in enumerate(cs) if j != k and r2 >= thr and
+                 ((abs(u - u2) < tol and abs(v + v2 - V) < tol) or (abs(v - v2) < tol and abs(u + u2 - U) < tol))]  # fmt: skip
+        mate = max(mates, default=0.0)
+        out.append((u, v, (r + mate) / 2 if mate and r >= 0.4 * mate else 0.0))
+    return out
 
 
 def cross2(a, b) -> float:

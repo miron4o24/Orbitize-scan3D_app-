@@ -68,6 +68,7 @@ class Frame:
     def __init__(self, shot: dict):
         self.q = np.asarray(shot["outer"], float) * [1.0, -1.0]
         self.holes = [np.asarray(h, float) * [1.0, -1.0] for h in shot.get("holes", [])]
+        self.marks = [np.asarray(m, float) * [1.0, -1.0] for m in shot.get("marks", []) if len(m) >= 4]
         self.size = tuple(shot["size"])
         poly = largest(Polygon(self.q).buffer(0))
         rect = poly.minimum_rotated_rectangle
@@ -196,6 +197,7 @@ def layout(shots: dict, sizes: tuple[float, float, float] | None = None, flips: 
     warnings: list[str] = []
     quality: dict[str, float] = {}
     sure: dict[str, bool] = {}  # обръщането на снимката е ясно (несиметричен предмет)
+    alts: dict[str, list] = {}  # обръщанията (по u, по v), които пасват почти еднакво добре
     for view in VIEWS:
         members = [n for n in orient if orient[n][0] == view]
         if not members:
@@ -221,6 +223,9 @@ def layout(shots: dict, sizes: tuple[float, float, float] | None = None, flips: 
             # Отвор само на тази снимка се добавя, само ако формата казва ясно как е обърната (иначе може да е от
             # грешната страна или петно; пропуснат отвор се добавя на ръка, а грешен би развалил детайла).
             sure[other] = bool(scores[k] - rest > SURE_MARGIN)
+            ck = cands[k]
+            alts[other] = [[int(round(float(a @ ck[0]))), int(round(float(b @ ck[1])))] for (a, b), sc in
+                           zip(cands, scores) if sc >= scores[k] - SURE_MARGIN]  # fmt: skip
             if scores[k] < FUSE_IOU:
                 warnings.append(f"Снимката {TITLE[other]} не съвпада добре със снимката {TITLE[primary]}: ползвам "
                                 f"само {TITLE[primary]}. Ако е друга страна, снимайте я отново.")  # fmt: skip
@@ -228,7 +233,7 @@ def layout(shots: dict, sizes: tuple[float, float, float] | None = None, flips: 
             orient[n].append(n == primary)
     out = {"orient": {n: {"view": v[0], "eu": [float(x) for x in v[1]], "ev": [float(x) for x in v[2]],
                           "primary": bool(v[3])} for n, v in orient.items()},
-           "iou": quality, "sure": sure, "warnings": warnings}  # fmt: skip
+           "iou": quality, "sure": sure, "alts": alts, "warnings": warnings}  # fmt: skip
     out["round"] = {"top": is_round(frames, orient, "top"), "end": is_round(frames, orient, "end")}
     return out
 
@@ -309,10 +314,11 @@ def placement(shot: dict, o: dict, U: float, V: float, depth: dict | None = None
         return np.c_[(p @ eu - a0) / ka, (p @ ev - b0) / kb]
 
     outer, holes = ortho(f.q), [ortho(h) for h in f.holes]
+    marks = [ortho(m) for m in f.marks]
     ratio = ka / kb
     if depth is not None:
         outer, holes, ratio = unproject(shot, f, eu, ev, outer, holes, U, V, math.sqrt(ka * kb), depth)
-    return {"outer": outer, "holes": holes, "A": A, "U": U, "V": V, "ratio": ratio}
+    return {"outer": outer, "holes": holes, "marks": marks, "A": A, "U": U, "V": V, "ratio": ratio}
 
 
 # --- Перспективата ---------------------------------------------------------------------------------------------------
@@ -514,13 +520,16 @@ def combine(shots: dict, lay: dict, L: float, W: float, H: float, solid, fuse_pa
                 fused = fuse(p, q, U, V)
                 if fused is not None:
                     extra = lay.get("sure", {}).get(others[0], False)
-                    p = p | {"outer": fused["outer"], "holes": hole_union(p["holes"], q["holes"], extra)}
+                    holes = hole_union(p["holes"], q["holes"], extra, p["outer"], q["outer"])
+                    if not extra:
+                        holes += confirmed(p, q, lay.get("alts", {}).get(others[0], [[1, 1]]), U, V)
+                    p = p | {"outer": fused["outer"], "holes": holes}
                     used.append(others[0])
         out[view] = {"outer": p["outer"], "holes": p["holes"], "U": U, "V": V, "from": used}
     return out, warnings
 
 
-def hole_union(a: list, b: list, extra: bool = True) -> list:
+def hole_union(a: list, b: list, extra: bool = True, outer_a=None, outer_b=None) -> list:
     """Отворите от две противоположни снимки: през проходен отвор с перспектива се вижда само сечението на близкия
     и далечния ръб, изместено на различни страни на двете снимки. Обединението на двете е по-близо до истинския
     отвор (средното би го смалило). Отвор само на втората снимка също остава (extra), ако е ясно как е обърната:
@@ -543,9 +552,41 @@ def hole_union(a: list, b: list, extra: bool = True) -> list:
             continue
         used.add(k_best)
         u = largest(ph.union(best))
+        if outer_a is not None and outer_b is not None:
+            # Стената до ръба на детайла не е по-тънка от по-дебелата на двете снимки: на едната отворът може да
+            # "изтече" към ръба (сянка, тъмен ръб), а обединението би го пробило навън.
+            oa, ob = largest(Polygon(outer_a).buffer(0)), largest(Polygon(outer_b).buffer(0))
+            wall = max(oa.exterior.distance(ph), ob.exterior.distance(best))
+            inner = oa.intersection(ob).buffer(-wall)
+            clipped = largest(u.intersection(inner)) if not inner.is_empty else u
+            if clipped.area > 0.3 * u.area:
+                u = clipped
         out.append(np.asarray(u.exterior.coords)[:-1])
     if extra:
         out += [np.asarray(g) for k, g in enumerate(b) if k not in used]
+    return out
+
+
+def confirmed(p: dict, q: dict, alts: list, U: float, V: float) -> list:
+    """Отворите само на втората снимка, когато не е ясно как е обърната (симетричен предмет): отворът се взима там,
+    където на основната снимка има тъмно петно (отвор, през който от тази страна не се вижда), ако такова място е
+    точно едно от възможните обръщания."""
+    out = []
+    marks = [largest(Polygon(m).buffer(0)) for m in p.get("marks", [])]
+    matched = [largest(Polygon(h).buffer(0)) for h in p["holes"]]
+    for h in q["holes"]:
+        h = np.asarray(h)
+        hp = largest(Polygon(h).buffer(0))
+        if hp.area <= 0 or any(hp.intersection(m).area > 0.3 * hp.area for m in matched):
+            continue  # вече е от основната снимка
+        hits = []
+        for su, sv in alts:
+            c = np.c_[h[:, 0] if su > 0 else U - h[:, 0], h[:, 1] if sv > 0 else V - h[:, 1]]
+            cp = largest(Polygon(c).buffer(0))
+            if any(m.area > 0 and cp.intersection(m).area > 0.3 * min(cp.area, m.area) for m in marks):
+                hits.append(c)
+        if len(hits) == 1:
+            out.append(hits[0])
     return out
 
 
