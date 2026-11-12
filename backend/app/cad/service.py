@@ -686,6 +686,32 @@ def photo_jpg(job: Path, name: str) -> bytes:
     return buf.getvalue()
 
 
+def tap(job: Path, name: str, x: float, y: float) -> dict:
+    """Кой елемент е докоснат на снимката с очертанието (photo_jpg) в x, y от 0 до 1: {"id", "text"} или {"id":
+    None}. Приложението пита дали да го махне (отвор от отблясъка на светкавицата, който го няма)."""
+    from .vision import load
+
+    name = P.LEGACY.get(name, name)
+    d = draft(job)
+    cache = job / "cad" / "shots.json"
+    path = photo_path(job, name)
+    if not path or not cache.exists():
+        raise D.DesignError("Няма такава снимка.")
+    sh = json.loads(cache.read_text(encoding="utf-8"))
+    if name not in sh:
+        raise D.DesignError("Снимката още не е прочетена.")
+    L, W, H = sizes(d)
+    lay = layout(job, {k: v for k, v in sh.items() if photo_path(job, k)}, (L, W, H), d.get("flips") or {})
+    o = lay["orient"][name]
+    U, V = P.view_sizes(o["view"], L, W, H)
+    fid = R.feature_at(d, o["view"], load(path), P.placement(sh[name], o, U, V)["A"], x, y, face=P.FACE.get(name))
+    if fid is None:
+        return {"id": None}
+    f = next(f for f in d["features"] if f["id"] == fid)
+    where = f" в {D.FACE_NAME[f['face']]}" if f.get("face") else ""
+    return {"id": fid, "text": D.label(d, f) + where}
+
+
 def png(im) -> bytes:
     import io
 

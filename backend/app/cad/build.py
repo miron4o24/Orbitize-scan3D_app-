@@ -423,6 +423,12 @@ def axis_total_expr(d: dict, axis: str) -> str:
     return D.AXIS_TOTAL[axis]
 
 
+def present_item(d: dict, item_id: str) -> bool:
+    """Разпознатото, което е в построения модел: елемент с размер 0 (махнат) го няма в отчета."""
+    f = next((f for f in d["features"] if f["id"] == item_id), None)
+    return f is None or D.present(d, f)
+
+
 def pos_expr(f: dict, key: str, lv) -> str:
     p = f[key]
     c = lv(p["lvl"])
@@ -500,7 +506,7 @@ def build(raw: dict, out: Path, adjusted: list[str] | None = None) -> dict:
               "volume_mm3": round(volume, 1), "solids": len(shape.Solids()),
               "kind": d["kind"], "measured": len(s["measured"]), "estimated": len(s["estimated"]),
               "estimated_names": [d["dims"][i]["name"] for i in s["estimated"]],
-              "elements": [x["text"] for x in D.describe(d)], "triangles": int(len(mesh.faces)),
+              "elements": [x["text"] for x in D.describe(d) if present_item(d, x["id"])], "triangles": int(len(mesh.faces)),
               "adjusted": adjusted}  # fmt: skip
     (out / "report.json").write_text(json.dumps(report, ensure_ascii=False), encoding="utf-8")
     return report

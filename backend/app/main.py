@@ -465,6 +465,21 @@ def cad_outline_jpg(job_id: str, view: str, p: Principal = Depends(principal)):
                     headers={"Cache-Control": "private, max-age=60"})  # fmt: skip
 
 
+class CadTap(BaseModel):
+    x: float = Field(ge=0, le=1)  # докоснатото място върху снимката с очертанието, от 0 до 1
+    y: float = Field(ge=0, le=1)
+
+
+@app.post("/jobs/{job_id}/cad/tap/{view}")
+def cad_tap(job_id: str, view: str, body: CadTap, p: Principal = Depends(principal)):
+    """Кой отвор (джоб, канал) е докоснат на снимката с очертанието: {"id", "text"} или {"id": null}. Приложението
+    пита дали да го махне (лъжлив отвор от отблясъка на светкавицата)."""
+    job = cad_job(job_id, p)
+    if view not in CAD.VIEWS:
+        raise HTTPException(404, "Няма такава снимка.")
+    return cad_call(CAD.tap, job, view, body.x, body.y)
+
+
 class CadOutline(BaseModel):
     # Докоснатите точки: x, y от 0 до 1 върху снимката; трето число 0 - "това не е детайлът". Празно: автоматичното.
     points: list[Annotated[list[Annotated[float, Field(ge=0, le=1)]], Field(min_length=2, max_length=3)]] = Field(

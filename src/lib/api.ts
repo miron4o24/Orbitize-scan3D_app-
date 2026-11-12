@@ -600,6 +600,9 @@ export type CadPoint = [number, number] | [number, number, 0];
 export const cadOutlineUrl = (jobId: string, photo: CadPhoto, stamp: string) => `${API_URL}/jobs/${jobId}/cad/outline/${photo}.jpg?s=${stamp}`;
 export const cadRetrace = (jobId: string, photo: CadPhoto, points: CadPoint[]) =>
   call<{ ok: boolean }>('POST', `/jobs/${jobId}/cad/outline/${photo}`, { points });
+// Кой отвор (джоб, канал) е докоснат на снимката с очертанието (x, y от 0 до 1): за махане на лъжлив отвор.
+export const cadTap = (jobId: string, photo: CadPhoto, x: number, y: number) =>
+  call<{ id: string | null; text?: string }>('POST', `/jobs/${jobId}/cad/tap/${photo}`, { x, y });
 export const downloadCadPreview = (jobId: string, dest: File) =>
   retrying(() => File.downloadFileAsync(`${API_URL}/jobs/${jobId}/cad/preview.glb`, dest, { headers: headers(), idempotent: true }));
 export const downloadCadFile = (jobId: string, name: CadFile, dest: File) =>

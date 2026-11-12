@@ -88,8 +88,8 @@ def features_in(d: dict, view: str, channels: bool = False) -> list[tuple[dict, 
     normal = VIEW_NORMAL[view]
     out = []
     for f in d["features"]:
-        if f["t"] not in ("hole", "rect", "slot") or (f.get("open") and not channels):
-            continue
+        if f["t"] not in ("hole", "rect", "slot") or (f.get("open") and not channels) or not D.present(d, f):
+            continue  # размер 0: елементът го няма (отвор от отблясък, махнат с 0) - и не се рисува
         place = D.feature_place(d, f)
         if f["axis"] != normal:
             continue
@@ -508,31 +508,63 @@ def caption(sh: Sheet, text: str):
 # --- Върху снимката -------------------------------------------------------------------------------------------------
 
 
-def overlay(d: dict, view: str, photo: Image.Image, A, side: int = 1100, face: str | None = None) -> Image.Image:
-    """Снимката с очертанието и отворите от описанието (изгледът `view` на описанието, A: от мм към снимката).
+def overlay_shapes(d: dict, view: str, face: str | None = None) -> tuple[float, float, list]:
+    """Какво се рисува върху снимката: размерите на изгледа и [(елемент или None за очертанието, точки в мм)].
     face: стената на снимката - глух отвор от другата стена не се вижда на нея."""
     if d["kind"] == "turned" and view == "end":
         Dm = D.value(d, "D")
-        U = V = Dm
         t = np.linspace(0, 2 * math.pi, 96)
-        polys = [np.c_[Dm / 2 + Dm / 2 * np.cos(t), Dm / 2 + Dm / 2 * np.sin(t)]]
+        polys = [(None, np.c_[Dm / 2 + Dm / 2 * np.cos(t), Dm / 2 + Dm / 2 * np.sin(t)])]
         for f in d["features"]:
-            if f["t"] == "hole" and f["axis"] == "x":
+            if f["t"] == "hole" and f["axis"] == "x" and D.present(d, f):
                 r = D.value(d, f["d"]) / 2
-                polys.append(np.c_[Dm / 2 + r * np.cos(t), Dm / 2 + r * np.sin(t)])
-    else:
-        shape_view = "profile" if d["kind"] == "turned" else view
-        U, V = view_size(d, shape_view)
-        polys = [silhouette(d, shape_view)] + [p for f, p in features_in(d, shape_view)
-                                               if not (face and f.get("depth") and f.get("face") != face)]
-    sh = PhotoSheet(photo, A, U, V, size=(side, round(side * 0.75)), margin=0.16, dim=False)
-    for pts in polys:
+                polys.append((f, np.c_[Dm / 2 + r * np.cos(t), Dm / 2 + r * np.sin(t)]))
+        return Dm, Dm, polys
+    shape_view = "profile" if d["kind"] == "turned" else view
+    U, V = view_size(d, shape_view)
+    polys = [(None, silhouette(d, shape_view))] + [(f, p) for f, p in features_in(d, shape_view)
+                                                   if not (face and f.get("depth") and f.get("face") != face)]
+    return U, V, polys
+
+
+def overlay_sheet(d: dict, view: str, photo: Image.Image, A, side: int = 1100, face: str | None = None):
+    U, V, polys = overlay_shapes(d, view, face)
+    return PhotoSheet(photo, A, U, V, size=(side, round(side * 0.75)), margin=0.16, dim=False), U, V, polys
+
+
+def overlay(d: dict, view: str, photo: Image.Image, A, side: int = 1100, face: str | None = None) -> Image.Image:
+    """Снимката с очертанието и отворите от описанието (изгледът `view` на описанието, A: от мм към снимката)."""
+    sh, U, V, polys = overlay_sheet(d, view, photo, A, side, face)
+    for _, pts in polys:
         xy = [sh.px(u, v) for u, v in pts]
         sh.stroke(xy + [xy[0]], ACCENT, 4)
     if not (d["kind"] == "turned" and view == "end"):
         for x0, x1 in split_lines(d, "profile" if d["kind"] == "turned" else view):
             sh.line((x0, 0), (x1, V), ACCENT, 3, dash=14)
     return sh.im
+
+
+TAP_NEAR = 0.035  # докосване до толкова от ширината на снимката от ръба на отвор е върху него (пръстът е груб)
+
+
+def feature_at(d: dict, view: str, photo: Image.Image, A, x: float, y: float, face: str | None = None) -> str | None:
+    """Елементът (отвор, джоб, канал), докоснат на снимката с очертанието (overlay) в x, y от 0 до 1: вътре в него
+    или до TAP_NEAR от ръба му; от няколко - най-малкият (отвор в джоб). None: там няма елемент."""
+    from shapely.geometry import Point
+
+    sh, _, _, polys = overlay_sheet(d, view, photo, A, face=face)
+    w, h = sh.im.size
+    at = Point(x * w, y * h)
+    best = None
+    for f, pts in polys:
+        if f is None or f.get("open"):
+            continue  # каналът до стената е вдлъбнатина в очертанието: маха се от списъка
+        shape = Polygon([sh.px(u, v) for u, v in pts]).buffer(0)
+        if shape.is_empty or shape.distance(at) > TAP_NEAR * w:
+            continue
+        if best is None or shape.area < best[1]:
+            best = (f["id"], shape.area)
+    return best[0] if best else None
 
 
 # --- Чертеж ---------------------------------------------------------------------------------------------------------
