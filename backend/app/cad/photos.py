@@ -48,6 +48,9 @@ MARK_WALL = 0.015  # тъмно петно по-близо до ръба (дял
 SURE_MARGIN = 0.01  # с толкова по-добро съвпадение от следващото обръщане е ясно как е обърната снимката
 ROUND_RMS = 0.02  # очертание, нормирано до квадрат, по-близко до кръг: кръгло
 END_EVIDENCE = 0.3  # снимката отстрани пасва на снимката отгоре обърната с поне толкова по-добре: обърнат е
+SQUARE = math.log(1.15)  # ширината и височината се различават по-малко: по пропорциите не личи как е завъртян краят
+TURN_EVIDENCE = 0.4  # краят, завъртян с 90 градуса, пасва на снимките отгоре и отпред с поне толкова по-добре
+TURN_SHAPE = 0.006  # профил отгоре или отпред, по-равен от това (разсейване), не казва нищо за завъртането
 
 
 def rot(axis: str, deg: float) -> np.ndarray:
@@ -213,6 +216,10 @@ def layout(shots: dict, sizes: tuple[float, float, float] | None = None, flips: 
     best = assign(frames, orient, side_names, r_t, sizes)
     for name, (view, eu, ev) in best.items():
         orient[name] = [view, eu, ev]
+    if end_turned(frames, orient, sizes):
+        for name, o in orient.items():
+            if o[0] == "end":
+                o[1], o[2] = turned90(o[1], o[2])
     warnings: list[str] = []
     quality: dict[str, float] = {}
     ok: dict[str, bool] = {}
@@ -287,6 +294,46 @@ def layout(shots: dict, sizes: tuple[float, float, float] | None = None, flips: 
            "iou": quality, "same": ok, "sure": sure, "alts": alts, "warnings": warnings, "ends": ends}  # fmt: skip
     out["round"] = {"top": is_round(frames, orient, "top"), "end": is_round(frames, orient, "end")}
     return out
+
+
+def end_turned(frames: dict, orient: dict, sizes) -> bool:
+    """Краят с почти еднакви ширина и височина (точилка 40 x 40): по пропорциите не личи коя ос на снимката е
+    ширината, а приложението не знае как човекът е изправил детайла. Ако е завъртян грешно, плоските страни и
+    каналът са на грешните стени. Перспективата издава коя е: каналът по горната страна вдлъбва очертанието отгоре
+    в края (дължината по ширината) там, където краят е по-нисък, а по-заоблените стени скъсяват очертанието отпред.
+    Затова профилът на края по ширината му върви като профила отгоре по ширината, а по височината - като профила
+    отпред по височината. Завърта се само при ясна разлика и ако профилите отгоре или отпред не са просто прави."""
+    ends = [n for n, o in orient.items() if o[0] == "end"]
+    if not ends or "top" not in orient:
+        return False
+    if sizes:
+        square = abs(math.log(sizes[1] / sizes[2])) < SQUARE
+    else:
+        square = all(abs(log_aspect(frames[n], orient[n][1], orient[n][2])) < SQUARE for n in ends)
+    if not square:
+        return False
+
+    def mid(p):
+        n = len(p)
+        return p[int(0.12 * n):int(0.88 * n) + 1]
+
+    def match(a, b):  # посоката по оста още не е решена (resting_down, обръщанията по-долу)
+        a, b = mid(a), mid(b)
+        return max(corr(a, b), corr(a, b[::-1]))
+
+    refs = [(ext_profile(frames["top"], orient["top"][2]), 1)]  # отгоре по ширината
+    side = [n for n in ("front", "back") if n in orient and orient[n][0] == "side"]
+    if side:
+        refs.append((ext_profile(frames[side[0]], orient[side[0]][2]), 2))  # отпред по височината
+    score = 0.0
+    for n in ends:
+        f, eu, ev = frames[n], orient[n][1], orient[n][2]
+        for ref, axis in refs:
+            if float(np.std(mid(ref))) < TURN_SHAPE:
+                continue
+            keep, turn = (eu, ev) if axis == 1 else (ev, eu)
+            score += match(ref, ext_profile(f, turn)) - match(ref, ext_profile(f, keep))
+    return score / len(ends) >= TURN_EVIDENCE
 
 
 def ext_profile(f: Frame, e: np.ndarray, bins: int = 48) -> np.ndarray:
@@ -718,11 +765,16 @@ def combine(shots: dict, lay: dict, L: float, W: float, H: float, solid, fuse_pa
                     used.append(others[0])
         p_holes = widen(p["holes"], p.get("marks", []), U, V)
         p_holes += dark_holes(p, p_holes, U, V)
+        blind = blind_holes(lay, names, primary, place, fits, p, p_holes, U, V)
+        if view == "end":
+            for b in blind:
+                b["face"] = end_face(shots, lay, b["face"])
         # Всяка снимка поотделно (за по-тесните краища): с поправената перспектива, ако е поправена. Иначе по-високата
         # част по средата (стената на Т-профил) изглежда по-дълга от основата и прилича на щепсел в края.
         key = "ortho" if solid is None else "own"
         each = [p[key]] + ([place(others[0])[key]] if others else [])
-        out[view] = {"outer": p["outer"], "holes": p_holes, "U": U, "V": V, "from": used, "each": each}
+        out[view] = {"outer": p["outer"], "holes": p_holes, "U": U, "V": V, "from": used, "each": each,
+                     "blind": blind}  # fmt: skip
     return out, warnings
 
 
@@ -768,19 +820,26 @@ def hole_union(a: list, b: list, extra: bool = True, outer_a=None, outer_b=None)
 
 HOLE_DARK = 0.45  # петно, по-тъмно от това (дял от яркостта на детайла), сиво и с форма на отвор: отвор
 HOLE_SAT = 0.25  # и не цветно (печатът е цветен)
+HOLE_TONE = 0.9  # или цветно, но в оттенъка на детайла (отвор в жълта пластмаса е тъмножълт): глух отвор
+FACE = {"top": "top", "bottom": "bottom", "front": "front", "back": "back", "right": "right", "left": "left"}
+SIDE = {"top": "+", "bottom": "-", "front": "-", "back": "+", "right": "+", "left": "-"}  # design.FACES
 
 
-def dark_holes(p: dict, holes: list, U: float, V: float) -> list:
+def dark_holes(p: dict, holes: list, U: float, V: float, toned: bool = False) -> list:
     """Отвор, видян само като много тъмно, сиво петно на основната снимка (през него не се вижда масата, а и на
     другата снимка не личи): кръгъл или продълговат със заоблени краища, и не до самия ръб. Печат (знаме, лого)
-    е цветен или с остри ъгли, затова не минава."""
+    е цветен или с остри ъгли, затова не минава. toned: вместо сивите - цветните петна в оттенъка на детайла
+    (дупката за молива в жълтата капачка на точилка)."""
     from .fit import plain_hole
 
     out = []
     have = [largest(Polygon(h).buffer(0)) for h in holes]
     edge = largest(Polygon(p["outer"]).buffer(0)).exterior
     for m, info in zip(p.get("marks", []), p.get("mark_info", [])):
-        if not info or info.get("dark", 1) > HOLE_DARK or info.get("sat", 1) > HOLE_SAT:
+        if not info or info.get("dark", 1) > HOLE_DARK:
+            continue
+        gray = info.get("sat", 1) <= HOLE_SAT
+        if gray == toned or (toned and info.get("tone", 0) < HOLE_TONE):
             continue
         mp = largest(Polygon(m).buffer(0))
         if mp.area <= 0 or any(same_hole(mp, h, 0.3) for h in have):
@@ -791,6 +850,71 @@ def dark_holes(p: dict, holes: list, U: float, V: float) -> list:
             continue
         out.append(np.asarray(mp.exterior.coords)[:-1])
         have.append(mp)
+    return out
+
+
+END_COLOR = 0.7  # цветът на снимката на края е поне толкова по-близо до другия край отгоре: снимката е на него
+
+
+def end_face(shots: dict, lay: dict, face: str) -> str:
+    """Кой край на детайла (left: x = 0, right: x = L) е на снимката, наречена `face`: по цвета ѝ спрямо краищата
+    на снимката отгоре (жълтата капачка на точилка). Човек може да изправи детайла на другия край."""
+    other = {"left": "right", "right": "left"}[face]
+    if face not in shots or "top" not in shots:
+        return face
+    top = Frame(shots["top"])
+    prof = look_profile(top, np.asarray(lay["orient"]["top"]["eu"], float))
+    own = Frame(shots[face]).looks.get("l") or {}
+    lab = np.array([c for c in own.get("lab", []) if c is not None], float)
+    if prof is None or not len(lab):
+        return face
+    color = np.median(lab, axis=0)
+    bins = prof[0]
+    k = max(2, len(bins) // 7)
+    ends = {"left": np.nanmedian(bins[:k], axis=0), "right": np.nanmedian(bins[-k:], axis=0)}
+    near, far = (float(np.linalg.norm(color - ends[n])) for n in (face, other))
+    return other if far < END_COLOR * near else face
+
+
+def blind_holes(lay: dict, names: list, primary: str, place, fits, p: dict, holes: list, U: float, V: float) -> list:
+    """Глухите отвори на изгледа: [{"pts", "face"}]. Отвор в оттенъка на детайла (dark_holes с toned) на основната
+    снимка и тъмен отвор само на другата снимка на изгледа (другия край на точилка - дупката за молива). Ако на
+    другата снимка на същото място също има петно или отвор, отворът е проходен (с другите)."""
+    rest = [n for n in names if n != primary]
+    q = place(rest[0]) if rest else None
+    if q is not None and not fits(q):
+        q = None
+    alts = lay.get("alts", {}).get(rest[0], [[1, 1]]) if rest else [[1, 1]]
+    size = max(U, V)
+
+    def moved(h, su, sv):
+        h = np.asarray(h)
+        return np.c_[h[:, 0] if su > 0 else U - h[:, 0], h[:, 1] if sv > 0 else V - h[:, 1]]
+
+    def seen(h, on) -> bool:  # на същото място на другата снимка има отвор или тъмно петно
+        spots = [largest(Polygon(x).buffer(0)) for x in list(on["holes"]) + list(on.get("marks", []))]
+        for su, sv in alts:
+            hp = largest(Polygon(moved(h, su, sv)).buffer(0))
+            if any(same_hole(hp, x, 0.3) for x in spots if x.area > 0):
+                return True
+        return False
+
+    out = []
+    have = list(holes)
+    for h in dark_holes(p, have, U, V, toned=True):
+        if q is None or not seen(h, q):
+            out.append({"pts": h, "face": FACE[primary]})
+        else:
+            holes.append(h)
+        have.append(h)
+    if q is None:
+        return out
+    for h in dark_holes(q, have, U, V) + dark_holes(q, have, U, V, toned=True):
+        spots = [largest(Polygon(moved(h, su, sv)).buffer(0)).centroid for su, sv in alts]
+        if max(a.distance(b) for a in spots for b in spots) > 0.05 * size:
+            continue  # не е ясно от коя страна е (симетричен предмет), а отворът не е по средата
+        if not seen(h, p):
+            out.append({"pts": h, "face": FACE[rest[0]]})
     return out
 
 

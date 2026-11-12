@@ -23,6 +23,8 @@ MIN_EDGE = 0.025  # най-късата права, дял от размера
 LONG_EDGE = 0.1  # права, по-къса от това (дял от размера), може да е парче от дъга
 MERGE_DEG = 8.0  # съседни прави с по-малка чупка (градуси) са една права
 SHARP_TURN = 45.0  # завой (градуси), от който нататък и късата права е ръб, а не парче от дъга
+SOFT_TURN = 35.0  # ъгъл с по-малък завой е чупка на начупена линия по крива
+SOFT_MAX = 3  # толкова такива чупки: очертанието е крива (свободна форма), а не прави и дъги
 
 
 def circle_fit(pts: np.ndarray) -> tuple[float, float, float, float]:
@@ -210,7 +212,7 @@ def corners(outer: np.ndarray, U: float, V: float, raw: bool = False) -> list[tu
         if r > 0.5 * size:
             r = 0.0
         out.append((float(c[0]), float(c[1]), r if raw or r >= SHARP * size else 0.0))
-    if len(out) < 3:
+    if len(out) < 3 or soft_turns(out) >= SOFT_MAX:
         return None
     if not Polygon([(u, v) for u, v, _ in out]).is_valid:
         return None
@@ -223,6 +225,19 @@ def corners(outer: np.ndarray, U: float, V: float, raw: bool = False) -> list[tu
     # И никъде далеч от снимката: вълниста форма с прави през вълните съвпада 95%, но се отклонява с 11% от размера
     # (истинските детайли - до 4,3%).
     return out if poly.boundary.hausdorff_distance(raw.boundary) <= CORNER_DEV * size else None
+
+
+def soft_turns(cs: list[tuple[float, float, float]]) -> int:
+    """Колко ъгъла завиват с по-малко от SOFT_TURN: заобленото тяло на точилка (кръг с две плоски страни)
+    ставаше многоъгълник с 12 ъгъла, повечето по кривата, и въпроси за "стъпала", които не могат да се измерят."""
+    n = len(cs)
+    count = 0
+    for k in range(n):
+        a = np.subtract(cs[k][:2], cs[k - 1][:2])
+        b = np.subtract(cs[(k + 1) % n][:2], cs[k][:2])
+        turn = abs(math.degrees(math.atan2(cross2(a, b), float(a @ b))))
+        count += turn < SOFT_TURN
+    return count
 
 
 def fitting_arcs(cs: list[tuple[float, float, float]]) -> list[tuple[float, float, float]]:
@@ -669,6 +684,81 @@ def turned_profile(outer: np.ndarray, U: float, V: float) -> list[tuple[float, f
     return out
 
 
+NOTCH_RECT = 0.75  # вдлъбнатина, запълваща поне толкова от описания си правоъгълник, е канал с прави стени
+NOTCH_SEEN = 0.6  # на другата снимка на изгледа е достатъчно и по-неравна (сянка, перспектива по стената)
+NOTCH_DEPTH = 0.02  # и поне толкова дълбока (дял от по-големия размер, и поне NOTCH_MIN_MM)
+NOTCH_MIN_MM = 0.8
+NOTCH_SHALLOW = 0.12  # и най-много толкова (дял от размера напряко): по-дълбока е самата форма (вътрешността на кука)
+NOTCH_WIDE = 0.7  # и не по-широка от толкова от страната, на която е
+NOTCH_EDGE = 0.03  # отворена към страната: ръбовете ѝ са до толкова от общия размер
+
+
+def largest_poly(g) -> Polygon:
+    if g.geom_type == "Polygon":
+        return g
+    return max(getattr(g, "geoms", []), key=lambda p: p.area, default=Polygon())
+
+
+def notch_gaps(outer: np.ndarray, U: float, V: float, rect: float = NOTCH_RECT) -> list[tuple[Polygon, dict]]:
+    """Плитките вдлъбнатини с прави стени по средата на страна на изгледа: (вдлъбнатината, канал)."""
+    poly = largest_poly(Polygon(np.asarray(outer, float)).buffer(0))
+    if poly.is_empty:
+        return []
+    size = max(U, V)
+    tol = NOTCH_EDGE * size
+    gaps = poly.convex_hull.difference(poly)
+    out = []
+    for g in getattr(gaps, "geoms", [gaps]):
+        if g.is_empty or g.geom_type != "Polygon":
+            continue
+        x0, y0, x1, y1 = g.bounds
+        mid_u, mid_v = x0 > tol and x1 < U - tol, y0 > tol and y1 < V - tol  # не в ъгъл (по-тесен край)
+        sides = (("v", "-", y0 <= tol and mid_u, x1 - x0, y1, U, V), ("v", "+", y1 >= V - tol and mid_u, x1 - x0,
+                  V - y0, U, V), ("u", "-", x0 <= tol and mid_v, y1 - y0, x1, V, U),
+                 ("u", "+", x1 >= U - tol and mid_v, y1 - y0, U - x0, V, U))  # fmt: skip
+        for key, sign, touches, width, depth, side, across in sides:
+            if not touches or depth < max(NOTCH_MIN_MM, NOTCH_DEPTH * size) or depth > NOTCH_SHALLOW * across:
+                continue
+            if width > NOTCH_WIDE * side or width < 0.5 * depth or g.area < rect * (x1 - x0) * (y1 - y0):
+                continue
+            box = {"v-": (x0, x1, 0.0, y1), "v+": (x0, x1, y0, V), "u-": (0.0, x1, y0, y1),
+                   "u+": (x0, U, y0, y1)}[key + sign]  # fmt: skip
+            out.append((g, {"u0": box[0], "u1": box[1], "v0": box[2], "v1": box[3], "open": (key, sign)}))
+            break
+    return out
+
+
+def notches(outer: np.ndarray, U: float, V: float, each: list | None = None) -> tuple[np.ndarray, list[dict]]:
+    """Канали с прави стени, отворени към една от страните на изгледа (каналът по долната страна на точилка,
+    видян от края; вдлъбнатината в края ѝ, видяна отгоре): очертанието без тях (запълнено до правата между ръбовете
+    им) и каналите [{"u0", "u1", "v0", "v1", "open": ("u" или "v", "-" или "+")}] в мм на изгледа. Иначе каналът е
+    само част от кривата или стъпало, което после се губи, без мерки за ширината и дълбочината. each: очертанията
+    от отделните снимки на изгледа - каналът трябва да е на всяка (перспективата прави лъжливи вдлъбнатини само на
+    едната)."""
+    found = notch_gaps(outer, U, V)
+    if each and len(each) > 1:
+        others = [notch_gaps(e, U, V, NOTCH_SEEN) for e in each]
+
+        def seen(c, cands):
+            a = (c["u1"] - c["u0"]) * (c["v1"] - c["v0"])
+            for _, o in cands:
+                du = min(c["u1"], o["u1"]) - max(c["u0"], o["u0"])
+                dv = min(c["v1"], o["v1"]) - max(c["v0"], o["v0"])
+                b = (o["u1"] - o["u0"]) * (o["v1"] - o["v0"])
+                if o["open"] == c["open"] and du > 0 and dv > 0 and du * dv >= 0.3 * min(a, b):
+                    return True
+            return False
+
+        found = [(g, c) for g, c in found if all(seen(c, o) for o in others)]
+    if not found:
+        return np.asarray(outer, float), []
+    filled = largest_poly(Polygon(np.asarray(outer, float)).buffer(0))
+    for g, _ in found:
+        filled = filled.union(g)
+    filled = largest_poly(filled)
+    return np.asarray(filled.exterior.coords)[:-1], [c for _, c in found]
+
+
 CURVE_STEP = 0.02  # точките на гладкото очертание: през толкова от по-големия размер (и не повече от CURVE_MAX)
 CURVE_MAX = 180
 CURVE_CORNER = 50.0  # завой (градуси) на късо разстояние: остър ъгъл, в който кривата се прекъсва
@@ -713,7 +803,53 @@ def smooth_outline(outer: np.ndarray, U: float, V: float) -> tuple[list[tuple[fl
             q = p[int(round(a + (b - a) * j / m)) % n]
             pts.append((float(np.clip(q[0], 0, U)), float(np.clip(q[1], 0, V))))
             flags.append(j == 0 and bool(corners))
-    return pts, [i for i, f in enumerate(flags) if f]
+    return flat_sides(pts, flags, U, V)
+
+
+FLAT_TOL = 0.002  # точки до толкова от общия размер от страната на изгледа лежат на нея
+FLAT_LONG = 0.12  # и права е само поредица, дълга поне толкова от страната (не върхът на вълна, който я допира)
+
+
+def flat_sides(pts: list, flags: list, U: float, V: float) -> tuple[list[tuple[float, float]], list[int]]:
+    """Поредица от поне три точки по една страна на изгледа (плоската страна на точилка), дълга поне FLAT_LONG от
+    нея, е права между двата си края, които стават ъгли: сплайн, легнал точно в равнината на другото тяло, проваляше сечението (точилка от
+    74 000 мм3 ставаше 3 000)."""
+    tol = FLAT_TOL * max(U, V)
+
+    def side(q):
+        for key, ok in (("u0", q[0] <= tol), ("u1", q[0] >= U - tol), ("v0", q[1] <= tol), ("v1", q[1] >= V - tol)):
+            if ok:
+                return key
+        return None
+
+    n = len(pts)
+    lab = [side(q) for q in pts]
+    start = next((i for i in range(n) if lab[i] != lab[i - 1]), None)
+    if start is None:
+        return pts, [i for i, f in enumerate(flags) if f]
+    order = [(start + i) % n for i in range(n)]
+    snap = {"u0": (0, 0.0), "u1": (0, U), "v0": (1, 0.0), "v1": (1, V)}
+    out, marks = [], []
+    k = 0
+    while k < n:
+        j = k
+        while j + 1 < n and lab[order[j + 1]] == lab[order[k]]:
+            j += 1
+        run = order[k:j + 1]
+        axis, val = snap.get(lab[order[k]], (0, 0.0))
+        span = abs(pts[run[-1]][1 - axis] - pts[run[0]][1 - axis])
+        if lab[order[k]] is not None and len(run) >= 3 and span >= FLAT_LONG * (V if axis == 0 else U):
+            for i in (run[0], run[-1]):
+                q = list(pts[i])
+                q[axis] = val
+                out.append(tuple(q))
+                marks.append(True)
+        else:
+            for i in run:
+                out.append(pts[i])
+                marks.append(flags[i])
+        k = j + 1
+    return out, [i for i, f in enumerate(marks) if f]
 
 
 def rounded_box(outer: np.ndarray, U: float, V: float) -> float | None:

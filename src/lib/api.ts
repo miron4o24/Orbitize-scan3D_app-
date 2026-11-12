@@ -526,7 +526,7 @@ export type CadDim = {
   hidden?: boolean;
 };
 export type CadFeatureType = 'hole' | 'rect' | 'slot' | 'fillet' | 'chamfer' | 'split'; // split: граница между две части (капачка и тяло)
-export type CadFeature = { id: string; t: CadFeatureType; depth?: string; face?: string; thread?: string };
+export type CadFeature = { id: string; t: CadFeatureType; depth?: string; face?: string; thread?: string; open?: Record<string, string> }; // open: канал до стената
 export type CadDesign = {
   kind: 'block' | 'turned';
   dims: Record<string, CadDim>;

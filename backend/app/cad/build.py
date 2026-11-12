@@ -14,6 +14,7 @@ from . import design as D
 
 RESERVED = {"cq", "math", "plane", "outline", "cut_tool", "rounded_rect", "round_view", "body", "result", "top",
             "side", "end", "profile", "top_solid", "side_solid", "end_solid", "lambda", "None", "True", "False"}
+OPEN = 1.0  # мм: с толкова изрязването на канал до стената излиза извън нея от двете страни (без допиращи се стени)
 FEATURE_KEYS = {"hole": ("d", "depth"), "rect": ("w", "h", "depth", "r"), "slot": ("len", "w", "depth"),
                 "fillet": ("r",), "chamfer": ("c",), "split": ()}  # fmt: skip
 
@@ -122,6 +123,12 @@ def clean(raw: dict) -> dict:
                 g["angle"] = 90 if f.get("angle") == 90 else 0
             if t == "rect" and f.get("shape") is not None:
                 g["shape"], g["corners"] = clean_shape(f.get("shape"), f.get("corners"))
+            if t == "rect" and f.get("open"):  # канал до стената (assemble.add_notch)
+                o = f["open"]
+                if not (isinstance(o, dict) and len(o) == 1 and next(iter(o)) in ("u", "v")
+                        and next(iter(o.values())) in ("+", "-")):  # fmt: skip
+                    raise D.DesignError("Непознат канал.")
+                g["open"] = dict(o)
             if t == "hole" and f.get("thread"):
                 g["thread"] = re.sub(r"[^A-Za-z0-9.,x×/ -]", "", str(f["thread"]))[:12]
         d["features"].append(g)
@@ -381,6 +388,11 @@ def code(d: dict) -> str:
                 sk = f"lambda wp: wp.circle({f['d']} / 2)"
             elif f["t"] == "rect" and f.get("shape"):
                 sk = f"shaped({f['w']}, {f['h']}, {f['shape']}, {f.get('corners') or []})"
+            elif f["t"] == "rect" and f.get("open"):  # канал до стената: изрязването излиза OPEN мм извън нея
+                key = next(iter(f["open"]))
+                w = f"{f['w']} + {2 * OPEN:g}" if key == "u" else f["w"]
+                h = f"{f['h']} + {2 * OPEN:g}" if key == "v" else f["h"]
+                sk = f"rounded_rect({w}, {h}, 0.0)"
             elif f["t"] == "rect":
                 sk = f"rounded_rect({f['w']}, {f['h']}, {f.get('r') or '0.0'})"
             else:
@@ -420,6 +432,8 @@ def pos_expr(f: dict, key: str, lv) -> str:
         else:  # канал: дължината е по u при ъгъл 0, иначе по v
             along_u = f.get("angle", 0) == 0
             size = f["len"] if (key == "u") == along_u else f["w"]
+        if f.get("open", {}).get(key):  # по-голямото изрязване на канал до стената: средата му е OPEN мм навън
+            return f"({c} + {size} / 2 - {OPEN:g})" if p["anchor"] == "min" else f"({c} - {size} / 2 + {OPEN:g})"
         return f"({c} + {size} / 2)" if p["anchor"] == "min" else f"({c} - {size} / 2)"
     return c
 

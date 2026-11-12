@@ -86,7 +86,7 @@ export function Review({
       <Section label="Разпознато">
         <Card style={s.list}>
           {state.items.map((item, k) => (
-            <ItemRow key={item.id} item={item} last={k === state.items.length - 1} busy={busy} through={!feature(item.id)?.depth} onOp={onOp} />
+            <ItemRow key={item.id} item={item} last={k === state.items.length - 1} busy={busy} through={!feature(item.id)?.depth} channel={!!feature(item.id)?.open} onOp={onOp} />
           ))}
         </Card>
         {!adding ? (
@@ -146,12 +146,12 @@ export function Review({
   );
 }
 
-function ItemRow({ item, last, busy, through, onOp }: { item: CadItem; last: boolean; busy: boolean; through: boolean; onOp: (op: CadOp) => void }) {
+function ItemRow({ item, last, busy, through, channel, onOp }: { item: CadItem; last: boolean; busy: boolean; through: boolean; channel: boolean; onOp: (op: CadOp) => void }) {
   const s = useStyles();
   const c = useColors();
   const isFeature = item.kind !== 'body' && item.kind !== 'view';
   const plain = item.kind === 'view' && item.text.includes('правоъгълник') && !item.text.includes('заобл');
-  const cut = item.kind === 'hole' || item.kind === 'rect' || item.kind === 'slot';
+  const cut = (item.kind === 'hole' || item.kind === 'rect' || item.kind === 'slot') && !channel; // каналът до стената е по цялата дължина
   return (
     <View style={[s.item, !last && s.itemLine]}>
       <Ionicons name={ICON[item.kind] ?? 'ellipse-outline'} size={18} color={c.accent} />
