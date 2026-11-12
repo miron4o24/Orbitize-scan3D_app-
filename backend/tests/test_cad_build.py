@@ -241,3 +241,26 @@ def test_radius_that_does_not_fit_is_shrunk_not_the_whole_part_boxed(tmp_path):
     assert D.value(d, r) < 3.5
     rep = B.build(measured(d), tmp_path)
     assert rep["volume_mm3"] < 0.4 * 40 * 30 * 25  # ъгъл, а не кутия
+
+
+def test_usb_plug_is_a_narrow_end_up_to_its_step():
+    """Флашка 52 x 21: тяло 39,5 мм със заоблени ъгли R3 и щепсел USB-A 12,5 x 12 (23% от дължината). По-тесният край
+    се намира и когато е дълъг, а дължината му е до стъпалото, не докъдето тялото е пак с пълна ширина (заобленият
+    ъгъл я удължаваше до 14 мм). Дъга, по-широка от самия щепсел, не става заобляне на върха му."""
+    import numpy as np
+    from shapely.geometry import box
+
+    from app.cad import fit
+
+    body = box(0, 0, 39.5, 21).buffer(-3).buffer(3, quad_segs=16)
+    plug = box(39.4, 4.5, 52, 16.5)
+    outer = np.asarray(body.union(plug).exterior.coords)[:-1]
+    tabs = fit.end_tabs(outer, 52, 21)
+    assert len(tabs) == 1 and tabs[0]["end"] == 1
+    assert tabs[0]["len"] == pytest.approx(12.5, abs=0.6)
+    assert tabs[0]["lo"] == pytest.approx(4.5, abs=0.3) and tabs[0]["hi"] == pytest.approx(4.5, abs=0.3)
+    # Ъглите, в които щепселът и ъгълът на тялото са станали една дъга R10,6: върхът на щепсела е остър.
+    cs = [(0.0, 21.0, 2.9), (0.0, 0.0, 2.9), (39.9, 0.0, 0.0), (39.9, 4.5, 0.0), (52.0, 4.5, 0.0), (52.0, 21.0, 10.6)]
+    fixed = fit.apply_tabs(cs, tabs, 52, 21)
+    tip = [c for c in fixed if c[0] == 52]
+    assert len(tip) == 2 and all(c[2] == 0 for c in tip)
