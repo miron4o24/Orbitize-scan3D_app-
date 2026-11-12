@@ -343,16 +343,37 @@ def end_tabs(outer: np.ndarray, U: float, V: float) -> list[dict]:
                 m += 1
             if m < n and float(dist[idx[m]]) >= 0.04 * U:
                 length = float(dist[idx[m]])
-            out.append({"end": end, "len": length, "lo": d_lo, "hi": d_hi})
+            # Всяка страна до своето стъпало: краят на тялото може да е скосен (флашка отпред: горната половина
+            # свършва 7 мм преди върха, долната - 3 мм) и по-тесният край е по-дълъг от едната страна.
+            sides = []
+            for ins, d_s in ((lo[idx] - lo_b, d_lo), (hi_b - hi[idx], d_hi)):
+                m = 0
+                while m < len(idx) and dist[idx[m]] < TAB_MAX * U and (ins[m] > d_s / 2 or dist[idx[m]] < 0.015 * U):
+                    m += 1
+                own = float(dist[idx[m]]) if m < len(idx) else length
+                sides.append(own if length <= own < TAB_MAX * U else length)
+            out.append({"end": end, "len": length, "lo": d_lo, "hi": d_hi, "len_lo": sides[0], "len_hi": sides[1]})
     return out
+
+
+SLANT = 0.03  # стъпалата от двете страни на по-тесния край, разместени с повече от толкова от дължината, са различни
+
+
+def tab_lengths(t: dict, U: float) -> tuple[float, float]:
+    """Дължината на по-тесния край откъм lo и откъм hi: еднаква, освен ако стъпалата са ясно разместени."""
+    a, b = t.get("len_lo", t["len"]), t.get("len_hi", t["len"])
+    if abs(a - b) <= max(SLANT * U, 0.25 * min(a, b)):
+        return t["len"], t["len"]
+    return a, b
 
 
 def apply_tabs(cs: list, tabs: list, U: float, V: float) -> list:
     """Ъглите на очертанието (обратно на часовника) с по-тесните краища: ъглите в края (и намерените от тях
     стъпала) се заменят със стъпало навътре от двете страни; радиусът им остава за ъглите на по-тесния край."""
     for t in tabs:
-        x_e = t["len"] if t["end"] == 0 else U - t["len"]
-        reach = 1.2 * t["len"]
+        len_lo, len_hi = tab_lengths(t, U)
+        x_lo, x_hi = (len_lo, len_hi) if t["end"] == 0 else (U - len_lo, U - len_hi)
+        reach = 1.2 * max(len_lo, len_hi)
         near = [(c[0] < reach) if t["end"] == 0 else (c[0] > U - reach) for c in cs]
         n = len(cs)
         if sum(near) < 2 or all(near):
@@ -368,12 +389,12 @@ def apply_tabs(cs: list, tabs: list, U: float, V: float) -> list:
         r = max(cs[k][2] for k in block)
         if r > 0.55 * (V - t["lo"] - t["hi"]):
             r = 0.0  # дъга, по-широка от самия край: не е негова, а прескочено стъпало (ъгълът на тялото и щепсела)
-        r = min(r, 0.45 * t["len"], 0.45 * (V - t["lo"] - t["hi"]))
+        r = min(r, 0.45 * min(len_lo, len_hi), 0.45 * (V - t["lo"] - t["hi"]))
         lo, hi = t["lo"], V - t["hi"]
         if t["end"] == 0:  # отляво обратно на часовника: отгоре надолу
-            new = [(x_e, V, 0.0), (x_e, hi, 0.0), (0.0, hi, r), (0.0, lo, r), (x_e, lo, 0.0), (x_e, 0.0, 0.0)]
+            new = [(x_hi, V, 0.0), (x_hi, hi, 0.0), (0.0, hi, r), (0.0, lo, r), (x_lo, lo, 0.0), (x_lo, 0.0, 0.0)]
         else:  # отдясно: отдолу нагоре
-            new = [(x_e, 0.0, 0.0), (x_e, lo, 0.0), (U, lo, r), (U, hi, r), (x_e, hi, 0.0), (x_e, V, 0.0)]
+            new = [(x_lo, 0.0, 0.0), (x_lo, lo, 0.0), (U, lo, r), (U, hi, r), (x_hi, hi, 0.0), (x_hi, V, 0.0)]
         rest = [cs[(start + len(block) + j) % n] for j in range(n - len(block))]
         cs = new + rest
     return cs
