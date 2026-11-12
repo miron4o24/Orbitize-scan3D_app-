@@ -401,6 +401,7 @@ def end_tabs(outer: np.ndarray, U: float, V: float) -> list[dict]:
     return out
 
 
+STEP_ROUND = 0.9  # ъгълът на тялото до по-тесния край е заоблен най-много с толкова от стъпалото навътре
 SLANT = 0.03  # стъпалата от двете страни на по-тесния край, разместени с повече от толкова от дължината, са различни
 
 
@@ -436,10 +437,13 @@ def apply_tabs(cs: list, tabs: list, U: float, V: float) -> list:
             r = 0.0  # дъга, по-широка от самия край: не е негова, а прескочено стъпало (ъгълът на тялото и щепсела)
         r = min(r, 0.45 * min(len_lo, len_hi), 0.45 * (V - t["lo"] - t["hi"]))
         lo, hi = t["lo"], V - t["hi"]
+        # Ъгълът на тялото до стъпалото е заоблен като ъглите на края (плавният преход към по-тесния край), колкото
+        # се събира в стъпалото.
+        r_lo, r_hi = min(r, STEP_ROUND * t["lo"]), min(r, STEP_ROUND * t["hi"])
         if t["end"] == 0:  # отляво обратно на часовника: отгоре надолу
-            new = [(x_hi, V, 0.0), (x_hi, hi, 0.0), (0.0, hi, r), (0.0, lo, r), (x_lo, lo, 0.0), (x_lo, 0.0, 0.0)]
+            new = [(x_hi, V, r_hi), (x_hi, hi, 0.0), (0.0, hi, r), (0.0, lo, r), (x_lo, lo, 0.0), (x_lo, 0.0, r_lo)]
         else:  # отдясно: отдолу нагоре
-            new = [(x_lo, 0.0, 0.0), (x_lo, lo, 0.0), (U, lo, r), (U, hi, r), (x_hi, hi, 0.0), (x_hi, V, 0.0)]
+            new = [(x_lo, 0.0, r_lo), (x_lo, lo, 0.0), (U, lo, r), (U, hi, r), (x_hi, hi, 0.0), (x_hi, V, r_hi)]
         rest = [cs[(start + len(block) + j) % n] for j in range(n - len(block))]
         cs = new + rest
     return cs

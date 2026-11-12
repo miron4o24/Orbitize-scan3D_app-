@@ -472,6 +472,13 @@ def looks(im: Image.Image, outer: np.ndarray) -> dict:
     return out
 
 
+MARK_PLAIN_SAT = 0.25  # пиксел с по-малка наситеност е от самия (бял, сив) детайл, а не от цветен печат
+MARK_PLAIN = 0.6  # ако такива са поне толкова от детайла, той е бял или сив
+MARK_GRAY = 0.12  # петно, намерено само по по-слабия праг, остава, ако е толкова сиво (отворът за връзката: 0,08)
+MARK_DROP = 0.3  # и петно поне толкова по-тъмно от него е тъмно петно
+BODY_CHROMA = 12.0  # детайл с по-малко цвят (от 255) е бял или сив
+
+
 def dark_marks(rgb: np.ndarray, solid: np.ndarray) -> list[tuple[np.ndarray, dict]]:
     """Тъмни компактни петна върху детайла (пиксели x, y на изрязването): отвор, през който от тази страна не се
     вижда (дълбок и тесен, встрани от средата на кадъра), изглежда като тъмно петно. Само потвърждават отвор от
@@ -484,8 +491,20 @@ def dark_marks(rgb: np.ndarray, solid: np.ndarray) -> list[tuple[np.ndarray, dic
     med = float(np.median(vals))
     body = np.median(rgb[inner], axis=0)
     body_c = body - body.mean()
+    if np.linalg.norm(body_c) < BODY_CHROMA:
+        body_c = np.zeros(3)  # бял или сив детайл: оттенъкът на петното спрямо него не значи нищо
     mad = float(np.median(np.abs(vals - med))) * 1.4826 + 3.0
     cand = inner & (gray < med - max(4 * mad, 35.0))
+    sat_px = (rgb.max(-1) - rgb.min(-1)) / np.maximum(rgb.max(-1), 1.0)
+    plain = inner & (sat_px < MARK_PLAIN_SAT)
+    strict = cand.copy()
+    if plain.sum() >= MARK_PLAIN * inner.sum():
+        # Цветният печат (лога върху бяла флашка) увеличава разсейването и сивият отвор за връзката (127 при детайл
+        # 204) не минаваше. Затова и петната поне MARK_DROP по-тъмни от самия бял или сив детайл (без печата), но от
+        # тях остават само съвсем сивите (MARK_GRAY): отблясъците на метал са леко цветни.
+        med_p = float(np.median(gray[plain]))
+        cand |= inner & (gray < med_p * (1 - MARK_DROP))
+        med = med_p
     cand = ndimage.binary_opening(cand, iterations=1)
     lab, n = ndimage.label(cand)
     area = solid.sum()
@@ -505,6 +524,8 @@ def dark_marks(rgb: np.ndarray, solid: np.ndarray) -> list[tuple[np.ndarray, dic
             core = ndimage.binary_erosion(blob, iterations=1) if a > 60 else blob
             px = rgb[core if core.any() else blob]
             sat = float(np.median((px.max(1) - px.min(1)) / np.maximum(px.max(1), 1.0)))
+            if (strict & blob).sum() < 0.5 * a and sat > MARK_GRAY:
+                continue  # само по по-слабия праг и не сиво
             # Оттенъкът спрямо детайла (1: същият цвят, само по-тъмен - отвор в цветна пластмаса изглежда така).
             mark_c = np.median(px, axis=0) - np.median(px, axis=0).mean()
             norm = float(np.linalg.norm(mark_c) * np.linalg.norm(body_c))

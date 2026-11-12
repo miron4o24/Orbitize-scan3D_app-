@@ -507,3 +507,85 @@ def test_tapping_a_hole_on_the_photo_finds_it():
     assert R.feature_at(d, "top", photo, A, ex / w, ey / h) == hole["id"]
     fx, fy = sh.px(5, 5)
     assert R.feature_at(d, "top", photo, A, fx / w, fy / h) is None
+
+
+def test_back_of_a_usb_stick_is_a_rounded_piece_behind_a_slanted_end(tmp_path):
+    """Задната част на флашка 52 x 21 x 8,5: тясна с по 1 мм от всяка страна, а краят на тялото е наклонен (долу
+    свършва при 45,5 мм, горе при 49,5). Сечението на задната част е умаленото заоблено сечение на тялото (не
+    правоъгълник), а между стъпалата тялото свършва по наклона, не на стъпало."""
+    import numpy as np
+    import trimesh
+    from shapely.geometry import LineString, Polygon, box
+
+    from app.cad import assemble as A
+
+    end = LineString([(4.25, 4.25), (16.75, 4.25)]).buffer(4.25, quad_segs=32)
+    top = box(0, 0, 49.5, 21).union(box(49, 1, 52, 20))
+    side = Polygon([(0, 0), (45.5, 0), (45.5, 1), (52, 1), (52, 7.5), (49.5, 7.5), (49.5, 8.5), (0, 8.5)])
+    views = {name: {"outer": np.asarray(g.exterior.coords)[:-1], "holes": [], "U": U, "V": V}
+             for name, g, U, V in (("top", top, 52, 21), ("side", side, 52, 8.5), ("end", end, 21, 8.5))}
+    d = A.assemble(views, 52, 21, 8.5)
+    ends = D.narrow_ends(d)
+    assert len(ends) == 1 and ends[0]["sign"] == "+" and ends[0]["round"]
+    assert D.coord(d, ends[0]["bottom"]) == pytest.approx(45.5, abs=0.6)
+    assert D.coord(d, ends[0]["top"]) == pytest.approx(49.5, abs=0.6)
+    B.build(measured(d), tmp_path)
+    mesh = trimesh.load(tmp_path / "part.stl", force="mesh")
+
+    def area(x):
+        s = mesh.section(plane_origin=[x, 0, 0], plane_normal=[1, 0, 0])
+        return s.to_2D()[0].area
+
+    full, piece = end.area, end.area * (19 / 21) * (6.5 / 8.5)
+    assert area(40) == pytest.approx(full, rel=0.03)
+    assert area(51) == pytest.approx(piece, rel=0.06)  # заоблено, не правоъгълник 19 x 6,5 (123,5)
+    assert piece * 1.05 < area(47.5) < full * 0.97  # по наклона: горе още тяло, долу само задната част
+
+
+def test_gray_slot_on_a_printed_part_is_a_hole():
+    """Отворът за връзката на бяла флашка с цветни лога: сивото петно (0,6 от яркостта на детайла) не минаваше прага,
+    защото печатът увеличава разсейването. Сега е тъмно петно и, сиво и с форма на канал, е отвор."""
+    import numpy as np
+
+    from app.cad import photos as P
+    from app.cad import vision as V
+
+    rgb = np.full((400, 900, 3), 205.0)
+    rng = np.random.default_rng(0)
+    for k in range(12):  # цветни лога
+        x, y = 80 + 60 * k, 60 + 20 * (k % 3)
+        rgb[y:y + 50, x:x + 40] = rng.uniform(40, 230, 3)
+    yy, xx = np.mgrid[0:400, 0:900]
+    rgb[np.hypot(xx - np.clip(xx, 315, 505), yy - 265) <= 15] = 118.0  # сивият канал (0,58 от детайла)
+    solid = np.ones((400, 900), bool)
+    marks = V.dark_marks(rgb, solid)
+    slot = [(m, i) for m, i in marks if 290 < m[:, 0].mean() < 530 and 240 < m[:, 1].mean() < 290]
+    assert len(slot) == 1 and slot[0][1]["sat"] < 0.05
+    # В мм (детайл 90 x 40), далеч от ръба: отвор от един изглед.
+    m = slot[0][0] / 10.0
+    p = {"outer": np.array([[0, 0], [90, 0], [90, 40], [0, 40]], float), "marks": [m], "mark_info": [slot[0][1]]}
+    assert len(P.dark_holes(p, [], 90, 40)) == 1
+
+
+def test_slanted_end_before_a_usb_plug_keeps_the_plug_rectangular(tmp_path):
+    """Щепселът USB-A (навътре с 4,5 и 2,2 мм) остава правоъгълен, а краят на тялото пред него е наклонен."""
+    import numpy as np
+    import trimesh
+    from shapely.geometry import LineString, Polygon, box
+
+    from app.cad import assemble as A
+
+    end = LineString([(4.5, 4.5), (16.5, 4.5)]).buffer(4.5, quad_segs=32)
+    top = box(0, 0, 41, 21).union(box(40, 4.5, 52, 16.5))
+    side = Polygon([(0, 0), (37, 0), (37, 2.2), (52, 2.2), (52, 6.8), (41, 6.8), (41, 9), (0, 9)])
+    views = {name: {"outer": np.asarray(g.exterior.coords)[:-1], "holes": [], "U": U, "V": V}
+             for name, g, U, V in (("top", top, 52, 21), ("side", side, 52, 9), ("end", end, 21, 9))}
+    d = A.assemble(views, 52, 21, 9)
+    ends = D.narrow_ends(d)
+    assert len(ends) == 1 and not ends[0]["round"]
+    B.build(measured(d), tmp_path)
+    mesh = trimesh.load(tmp_path / "part.stl", force="mesh")
+    plug = mesh.section(plane_origin=[47, 0, 0], plane_normal=[1, 0, 0]).to_2D()[0]
+    assert plug.area == pytest.approx(12 * 4.6, rel=0.04)
+    middle = mesh.section(plane_origin=[39, 0, 0], plane_normal=[1, 0, 0]).to_2D()[0].area
+    assert 12 * 4.6 * 1.05 < middle < end.area * 0.97  # наклоненият край на тялото

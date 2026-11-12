@@ -820,23 +820,28 @@ def hole_union(a: list, b: list, extra: bool = True, outer_a=None, outer_b=None)
 
 HOLE_DARK = 0.45  # петно, по-тъмно от това (дял от яркостта на детайла), сиво и с форма на отвор: отвор
 HOLE_SAT = 0.25  # и не цветно (печатът е цветен)
+HOLE_GRAY = 0.12  # съвсем сиво петно (отворът за връзката на бяла флашка: 0,08) е отвор и по-светло:
+HOLE_DARK_GRAY = 0.6  # до толкова от яркостта на детайла (стената вътре се вижда, сянката е по-светла)
+HOLE_GRAY_WIDE = 0.8  # мм: и поне толкова широко (тънката тъмна линия на жлеб на ключ не е отвор)
 HOLE_TONE = 0.9  # или цветно, но в оттенъка на детайла (отвор в жълта пластмаса е тъмножълт): глух отвор
 FACE = {"top": "top", "bottom": "bottom", "front": "front", "back": "back", "right": "right", "left": "left"}
 SIDE = {"top": "+", "bottom": "-", "front": "-", "back": "+", "right": "+", "left": "-"}  # design.FACES
 
 
-def dark_holes(p: dict, holes: list, U: float, V: float, toned: bool = False) -> list:
+def dark_holes(p: dict, holes: list, U: float, V: float, toned: bool = False, strict: bool = False) -> list:
     """Отвор, видян само като много тъмно, сиво петно на основната снимка (през него не се вижда масата, а и на
     другата снимка не личи): кръгъл или продълговат със заоблени краища, и не до самия ръб. Печат (знаме, лого)
     е цветен или с остри ъгли, затова не минава. toned: вместо сивите - цветните петна в оттенъка на детайла
-    (дупката за молива в жълтата капачка на точилка)."""
+    (дупката за молива в жълтата капачка на точилка). strict: само съвсем тъмните (глух отвор от другата снимка:
+    по-светлото сиво петно там е сянка, например рамото на ключ)."""
     from .fit import plain_hole
 
     out = []
     have = [largest(Polygon(h).buffer(0)) for h in holes]
     edge = largest(Polygon(p["outer"]).buffer(0)).exterior
     for m, info in zip(p.get("marks", []), p.get("mark_info", [])):
-        if not info or info.get("dark", 1) > HOLE_DARK:
+        limit = HOLE_DARK_GRAY if info and not (toned or strict) and info.get("sat", 1) <= HOLE_GRAY else HOLE_DARK
+        if not info or info.get("dark", 1) > limit:
             continue
         gray = info.get("sat", 1) <= HOLE_SAT
         if gray == toned or (toned and info.get("tone", 0) < HOLE_TONE):
@@ -848,6 +853,8 @@ def dark_holes(p: dict, holes: list, U: float, V: float, toned: bool = False) ->
             continue
         if plain_hole(np.asarray(m), max(U, V))["t"] not in ("hole", "slot"):
             continue
+        if info.get("dark", 1) > HOLE_DARK and narrow(mp) < HOLE_GRAY_WIDE:
+            continue  # по-светлото сиво петно е отвор само ако е широко колкото отвор
         out.append(np.asarray(mp.exterior.coords)[:-1])
         have.append(mp)
     return out
@@ -874,6 +881,12 @@ def end_face(shots: dict, lay: dict, face: str) -> str:
     ends = {"left": np.nanmedian(bins[:k], axis=0), "right": np.nanmedian(bins[-k:], axis=0)}
     near, far = (float(np.linalg.norm(color - ends[n])) for n in (face, other))
     return other if far < END_COLOR * near else face
+
+
+def narrow(poly: Polygon) -> float:
+    """По-късата страна на най-малкия завъртян правоъгълник около петното (мм)."""
+    box = np.asarray(poly.minimum_rotated_rectangle.exterior.coords)
+    return float(min(np.linalg.norm(box[1] - box[0]), np.linalg.norm(box[2] - box[1])))
 
 
 def blind_holes(lay: dict, names: list, primary: str, place, fits, p: dict, holes: list, U: float, V: float) -> list:
@@ -909,7 +922,7 @@ def blind_holes(lay: dict, names: list, primary: str, place, fits, p: dict, hole
         have.append(h)
     if q is None:
         return out
-    for h in dark_holes(q, have, U, V) + dark_holes(q, have, U, V, toned=True):
+    for h in dark_holes(q, have, U, V, strict=True) + dark_holes(q, have, U, V, toned=True):
         spots = [largest(Polygon(moved(h, su, sv)).buffer(0)).centroid for su, sv in alts]
         if max(a.distance(b) for a in spots for b in spots) > 0.05 * size:
             continue  # не е ясно от коя страна е (симетричен предмет), а отворът не е по средата

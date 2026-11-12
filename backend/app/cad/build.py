@@ -13,7 +13,8 @@ from pathlib import Path
 from . import design as D
 
 RESERVED = {"cq", "math", "plane", "outline", "cut_tool", "rounded_rect", "round_view", "body", "result", "top",
-            "side", "end", "profile", "top_solid", "side_solid", "end_solid", "lambda", "None", "True", "False"}
+            "side", "end", "profile", "top_solid", "side_solid", "end_solid", "lambda", "None", "True", "False",
+            "narrow_end", "inside", "curve", "shaped", "tidy"}
 OPEN = 1.0  # мм: с толкова изрязването на канал до стената излиза извън нея от двете страни (без допиращи се стени)
 FEATURE_KEYS = {"hole": ("d", "depth"), "rect": ("w", "h", "depth", "r"), "slot": ("len", "w", "depth"),
                 "fillet": ("r",), "chamfer": ("c",), "split": ()}  # fmt: skip
@@ -256,12 +257,32 @@ def cut_tool(axis, side, u, v, size, depth, sketch):
     return sketch(cq.Workplane(plane(axis, at)).center(u, v)).extrude(hi - lo)
 
 
-def round_view(pl, u, v):
-    """Кръг или елипса, вписани в правоъгълника u x v на равнината `pl` (от 0 до u и до v)."""
-    wp = cq.Workplane(pl).center(u / 2, v / 2)
+def round_view(pl, u, v, u0=0.0, v0=0.0):
+    """Кръг или елипса, вписани в правоъгълника u x v на равнината `pl` (от u0 до u0 + u и от v0 до v0 + v)."""
+    wp = cq.Workplane(pl).center(u0 + u / 2, v0 + v / 2)
     if abs(u - v) < 1e-6:
         return wp.circle(u / 2)
     return wp.ellipse(u / 2, v / 2)
+
+
+def inside(pts, y0, y1, z0, z1, W, H):
+    """Очертанието отстрани (u, v, радиус от 0 до W и H), умалено в правоъгълника y0..y1, z0..z1: сечението на
+    по-тесния край, като на тялото (заобленото сечение на флашка)."""
+    ky, kz = (y1 - y0) / W, (z1 - z0) / H
+    return [(y0 + u * ky, z0 + v * kz, r * min(ky, kz)) for u, v, r in pts]
+
+
+def narrow_end(body, sign, x_bottom, x_top, section):
+    """По-тесен край по дължината ("+" отдясно, "-" отляво): тялото свършва по наклонената равнина от x_bottom на
+    долната страна до x_top на горната, а отвъд нея остава само сечението `section` (функция от равнина X)."""
+    bb = body.val().BoundingBox()
+    lo, hi = bb.zmin, bb.zmax
+    k = (x_top - x_bottom) / max(hi - lo, 1e-9)
+    far = bb.xmax + 1 if sign == "+" else bb.xmin - 1
+    pts = [(x_bottom - k, lo - 1), (far, lo - 1), (far, hi + 1), (x_top + k, hi + 1)]
+    zone = cq.Workplane(plane("y", bb.ymax + 1)).polyline(pts).close().extrude(bb.ymax - bb.ymin + 2)
+    keep = section(plane("x", bb.xmin - 1)).extrude(bb.xmax - bb.xmin + 2)
+    return body.cut(zone.cut(keep))
 
 
 def shaped(w, h, pts, corners):
@@ -363,6 +384,8 @@ def code(d: dict) -> str:
             lines.append("body = " + parts[0])
             for p in parts[1:]:
                 lines.append(f"body = body.intersect({p})")
+        for n in D.narrow_ends(d):
+            lines += narrow_lines(d, n, lv)
     feats = [f for f in d["features"] if D.present(d, f)]  # с размер 0 ги няма
     edge_feats = [f for f in feats if f["t"] in ("fillet", "chamfer")]
     cut_feats = [f for f in feats if f["t"] in ("rect", "slot")]
@@ -456,6 +479,29 @@ def edge_select(body: str, edges: str, kind: str) -> str:
     if edges == "ends":
         return f'{body}.faces("<X or >X").edges()'
     return f"{body}.edges()"
+
+
+def narrow_lines(d: dict, n: dict, lv) -> list[str]:
+    """Кодът за по-тесния край (D.narrow_ends): тялото свършва по наклона от стъпалото долу до това горе, а
+    по-нататък остава само по-тесният край с умаленото сечение на тялото (или правоъгълно). Без наклон и със
+    същото правоъгълно сечение - нищо (очертанията вече го дават)."""
+    bottom, top = lv(n["bottom"]), lv(n["top"])
+    y0, y1, z0, z1 = lv(n["y"][0]), lv(n["y"][1]), lv(n["z"][0]), lv(n["z"][1])
+    end = d["views"].get("end") or {}
+    if n["round"] and end.get("round"):
+        section = f"lambda pl: round_view(pl, {y1} - {y0}, {z1} - {z0}, {y0}, {z0})"
+    elif n["round"] and end.get("curve"):
+        section = f"lambda pl: curve(pl, inside(end, {y0}, {y1}, {z0}, {z1}, W, H), {end.get('corners') or []})"
+    elif n["round"]:
+        section = f"lambda pl: outline(pl, inside(end, {y0}, {y1}, {z0}, {z1}, W, H))"
+    elif n["bottom"] == n["top"]:
+        return []
+    else:
+        section = (f"lambda pl: cq.Workplane(pl).center(({y0} + {y1}) / 2, ({z0} + {z1}) / 2)"
+                   f".rect({y1} - {y0}, {z1} - {z0})")
+    where = "отдясно" if n["sign"] == "+" else "отляво"
+    return ["", f"# --- По-тесният край {where}: тялото свършва по наклона между стъпалата, после само сечението ---",
+            f"body = narrow_end(body, '{n['sign']}', {bottom}, {top}, {section})"]
 
 
 def is_box(view: str, spec: dict) -> bool:

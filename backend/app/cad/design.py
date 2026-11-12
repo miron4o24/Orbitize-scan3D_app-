@@ -246,6 +246,62 @@ def feature_place(d: dict, f: dict) -> dict:
     return out
 
 
+NARROW_ROUND = 0.16  # по-тесен край, навътре средно до толкова от размера: умалено копие на сечението на тялото
+# (задната част на флашка), а не правоъгълник; щепселът USB-A (навътре над 20%) остава правоъгълник
+
+
+def end_steps(rows: list, end_lvl: str, low: str, high: str) -> tuple | None:
+    """По-тесният край `end_lvl` ("xL" или "x0") в ъглите на изглед: (нивото на стъпалото откъм по-малкото v, откъм
+    по-голямото v, нивото на по-тесния край откъм по-малкото v, откъм по-голямото v) или None. Краят е два
+    съседни ъгъла на `end_lvl` навътре от страните (`low`, `high`), всеки със стъпало до него."""
+    n = len(rows)
+    ks = [k for k, r in enumerate(rows) if r[0] == end_lvl]
+    if len(ks) != 2 or n < 6:
+        return None
+    a, b = ks
+    if (b - a) % n != 1:
+        a, b = b, a
+    if (b - a) % n != 1 or {rows[a][1], rows[b][1]} & {low, high}:
+        return None
+    before, after = rows[a - 1], rows[(b + 1) % n]
+    if before[1] != rows[a][1] or after[1] != rows[b][1]:
+        return None
+    steps = [(rows[a][1], before[0]), (rows[b][1], after[0])]  # (ниво по v, стъпалото по x)
+    return steps[0][1], steps[1][1], steps[0][0], steps[1][0]
+
+
+def narrow_ends(d: dict) -> list[dict]:
+    """По-тесните краища по дължината (флашка: щепселът и задната част) от очертанията отпред и отгоре: {"sign",
+    "bottom", "top" (нивата по X на стъпалото долу и горе - между тях краят на тялото е наклонен), "y" и "z"
+    (нивата на сечението на по-тесния край), "round" (сечението е умаленото сечение на тялото отстрани)}."""
+    side, top = d["views"].get("side"), d["views"].get("top")
+    if d["kind"] != "block" or not side or side.get("curve") or side.get("round") or side.get("off"):
+        return []
+    out = []
+    for end_lvl, sign in (("xL", "+"), ("x0", "-")):
+        found = end_steps(side["pts"], end_lvl, "z0", "zH")
+        if not found:
+            continue
+        xa, xb, za, zb = found
+        try:
+            (z0, x_bottom), (z1, x_top) = sorted([(coord(d, za), xa), (coord(d, zb), xb)], key=lambda t: t[0])
+            zl = (za, zb) if coord(d, za) <= coord(d, zb) else (zb, za)
+            yl = ("y0", "yW")
+            if top and not top.get("curve") and not top.get("round"):
+                got = end_steps(top["pts"], end_lvl, "y0", "yW")
+                if got:
+                    yl = (got[2], got[3]) if coord(d, got[2]) <= coord(d, got[3]) else (got[3], got[2])
+            W, H = value(d, "W"), value(d, "H")
+            inset = ((coord(d, yl[0]) + W - coord(d, yl[1])) / (2 * W) + (z0 + H - z1) / (2 * H)) / 2
+        except DesignError:
+            continue
+        end = d["views"].get("end")
+        rnd = bool(end and not end.get("off") and inset <= NARROW_ROUND and
+                   (end.get("round") or set(map(tuple, end["pts"])) != set(map(tuple, box("y", "z")))))  # fmt: skip
+        out.append({"sign": sign, "bottom": x_bottom, "top": x_top, "y": yl, "z": zl, "round": rnd})
+    return out
+
+
 def plane_axes(axis: str) -> tuple[str, str]:
     """Осите (u, v) на стена, перпендикулярна на `axis`."""
     return {"z": ("x", "y"), "y": ("x", "z"), "x": ("y", "z")}[axis]
