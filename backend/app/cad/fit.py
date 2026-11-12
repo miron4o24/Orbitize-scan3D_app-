@@ -293,7 +293,7 @@ def symmetric_round(cs: list, U: float, V: float) -> list[tuple[float, float, fl
 
 
 TAB_INSET = 0.02  # край, по-тесен от тялото поне с толкова (дял от ширината, и поне 0,4 мм) от двете страни
-TAB_MAX = 0.2  # и не по-дълъг от толкова от дължината
+TAB_MAX = 0.3  # и не по-дълъг от толкова от дължината (щепселът USB-A е 12 мм на флашка от 52 мм)
 
 
 def end_tabs(outer: np.ndarray, U: float, V: float) -> list[dict]:
@@ -335,6 +335,14 @@ def end_tabs(outer: np.ndarray, U: float, V: float) -> list[dict]:
         flat = all(float(np.nanpercentile(x, 85) - np.nanpercentile(x, 15)) <= 0.45 * max(float(np.nanmedian(x)), 1e-9)
                    for x in (ins_lo, ins_hi))  # fmt: skip
         if d_lo >= d_min and d_hi >= d_min and flat:
+            # Дължината е до стъпалото (там навътре е наполовина), а не докъдето тялото е пак с пълна ширина:
+            # заобленият ъгъл на тялото до щепсела иначе я удължава (14 вместо 12,5 мм).
+            half = (lo[idx] - lo_b > d_lo / 2) & (hi_b - hi[idx] > d_hi / 2)
+            m = 0
+            while m < n and (half[m] or dist[idx[m]] < 0.015 * U):
+                m += 1
+            if m < n and float(dist[idx[m]]) >= 0.04 * U:
+                length = float(dist[idx[m]])
             out.append({"end": end, "len": length, "lo": d_lo, "hi": d_hi})
     return out
 
@@ -357,7 +365,10 @@ def apply_tabs(cs: list, tabs: list, U: float, V: float) -> list:
             k += 1
         if len(block) != sum(near):
             continue  # ъглите в края не са една поредица
-        r = min(max(cs[k][2] for k in block), 0.45 * t["len"], 0.45 * (V - t["lo"] - t["hi"]))
+        r = max(cs[k][2] for k in block)
+        if r > 0.55 * (V - t["lo"] - t["hi"]):
+            r = 0.0  # дъга, по-широка от самия край: не е негова, а прескочено стъпало (ъгълът на тялото и щепсела)
+        r = min(r, 0.45 * t["len"], 0.45 * (V - t["lo"] - t["hi"]))
         lo, hi = t["lo"], V - t["hi"]
         if t["end"] == 0:  # отляво обратно на часовника: отгоре надолу
             new = [(x_e, V, 0.0), (x_e, hi, 0.0), (0.0, hi, r), (0.0, lo, r), (x_e, lo, 0.0), (x_e, 0.0, 0.0)]
