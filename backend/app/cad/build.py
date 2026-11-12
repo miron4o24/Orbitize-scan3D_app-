@@ -431,15 +431,7 @@ def build(raw: dict, out: Path, adjusted: list[str] | None = None) -> dict:
     d = clean(raw)
     adjusted = list(adjusted or []) + D.fit_notes(d, D.fit_radii(d))
     D.check(d)
-    text = code(d)
-    try:
-        shape = solid(text)
-    except D.DesignError:
-        raise
-    except Exception as e:  # OpenCascade: заобляне, по-голямо от ръба, и подобни
-        raise D.DesignError(failure_text(d, e)) from e
-    if not shape.isValid() or shape.Volume() <= 0:
-        raise D.DesignError("Тялото не се получи цяло: проверете размерите на изрезите и заобляниятa.")
+    text, shape = solid_with_edges(d, adjusted)
     out.mkdir(parents=True, exist_ok=True)
     (out / "part.py").write_text(text, encoding="utf-8")
     (out / "design.json").write_text(json.dumps(d, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -461,6 +453,47 @@ def build(raw: dict, out: Path, adjusted: list[str] | None = None) -> dict:
               "adjusted": adjusted}  # fmt: skip
     (out / "report.json").write_text(json.dumps(report, ensure_ascii=False), encoding="utf-8")
     return report
+
+
+EDGE_TRIES = (1.0, 0.75, 0.5, 0.25, 0.0)  # заоблянето на ръбовете, ако OpenCascade не може с измереното
+
+
+def solid_with_edges(d: dict, adjusted: list[str]):
+    """(кодът, тялото). Заобляне или фаска на ръбовете, което OpenCascade не може да направи (близо до половината
+    дебелина при остър вътрешен ъгъл на куката), се намалява на стъпки, накрая без него, с бележка в отчета: моделът
+    се строи, вместо да спре на последния въпрос с "намалете го". Без заобляния: грешката както преди."""
+    edges = [f for f in d["features"] if f["t"] in ("fillet", "chamfer") and D.present(d, f)]
+    keys = {f["r" if f["t"] == "fillet" else "c"] for f in edges}
+    orig = {i: D.value(d, i) for i in keys}
+    half = min(D.total(d, a) for a in ("x", "y", "z")) / 2  # по-голямо от половината на детайла: грешка, не намаляване
+    possible = keys and all(f["edges"] == "flat" or orig[f["r" if f["t"] == "fillet" else "c"]] < half for f in edges)
+    error: Exception | None = None
+    for k in EDGE_TRIES if possible else (1.0,):
+        for i in keys:
+            d["dims"][i]["v"] = round(orig[i] * k, 3)
+        text = code(d)
+        try:
+            shape = solid(text)
+        except D.DesignError:
+            raise
+        except Exception as e:  # OpenCascade: заобляне, по-голямо от ръба, и подобни
+            error = error or e
+            continue
+        if shape.isValid() and shape.Volume() > 0:
+            if k < 1:
+                H = D.total(d, "z")
+                for f in edges:
+                    i = f["r" if f["t"] == "fillet" else "c"]
+                    was = min(orig[i], 0.49 * H) if f["edges"] == "flat" else orig[i]
+                    now = f"{D.mm(min(orig[i] * k, was))} мм" if k > 0 else "без него"
+                    adjusted.append(f"{D.label(d, f)}: {D.mm(was)} мм не става с това очертание, построено {now}.")
+            return text, shape
+        error = error or ValueError("invalid")
+    for i in keys:
+        d["dims"][i]["v"] = orig[i]
+    if isinstance(error, ValueError) and str(error) == "invalid":
+        raise D.DesignError("Тялото не се получи цяло: проверете размерите на изрезите и заобляниятa.")
+    raise D.DesignError(failure_text(d, error)) from error
 
 
 def failure_text(d: dict, e: Exception) -> str:

@@ -332,3 +332,22 @@ def test_measured_radius_too_big_says_how_big_it_can_be(tmp_path):
         B.build(D.set_values(d, {**steps, k["edge"]: 1, k["in"]: 16, k["tip"]: None, k["out"]: None}), tmp_path / "a")
     rep = B.build(D.set_values(d, {**steps, k["edge"]: 1, k["in"]: 14, k["tip"]: None, k["out"]: None}), tmp_path / "b")
     assert any("измерено 14 мм" in n for n in rep["adjusted"])
+
+
+def test_edge_rounding_the_kernel_cannot_make_is_reduced_not_a_dead_end(tmp_path, monkeypatch):
+    """Заобляне на ръбовете, което OpenCascade не може (близо до половината дебелина при остър вътрешен ъгъл):
+    по-малко, с бележка, вместо "намалете го" на последния въпрос без изход."""
+    d, k = hook_design()
+    real = B.solid
+    calls = []
+
+    def picky(text):
+        calls.append(text)
+        if len(calls) == 1:
+            raise ValueError("BRep_API: command not done")
+        return real(text)
+
+    monkeypatch.setattr(B, "solid", picky)
+    rep = B.build(D.set_values(d, {k["edge"]: 1.8, k["in"]: None, k["tip"]: None, k["out"]: None}), tmp_path)
+    assert len(calls) == 2 and rep["volume_mm3"] > 0
+    assert any("1,8 мм не става" in n and "1,35 мм" in n for n in rep["adjusted"])

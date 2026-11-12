@@ -711,6 +711,7 @@ def build(job: Path, raw: dict) -> dict:
         work = job / "cad" / "build.tmp"
         shutil.rmtree(work, ignore_errors=True)
         report = make(d, work, adjusted)
+        d["dims"] = json.loads((work / "design.json").read_text(encoding="utf-8"))["dims"]  # с намаленото заобляне
         R.drawing(d).save(work / "drawing.png", optimize=True)
         out = job / "cad" / "out"
         shutil.rmtree(out, ignore_errors=True)
