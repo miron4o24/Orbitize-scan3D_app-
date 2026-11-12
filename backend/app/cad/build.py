@@ -120,10 +120,29 @@ def clean(raw: dict) -> dict:
                 raise D.DesignError("Липсва размер на елемент.")
             if t == "slot":
                 g["angle"] = 90 if f.get("angle") == 90 else 0
+            if t == "rect" and f.get("shape") is not None:
+                g["shape"], g["corners"] = clean_shape(f.get("shape"), f.get("corners"))
             if t == "hole" and f.get("thread"):
                 g["thread"] = re.sub(r"[^A-Za-z0-9.,x×/ -]", "", str(f["thread"]))[:12]
         d["features"].append(g)
     return d
+
+
+def clean_shape(shape, corners) -> tuple[list, list]:
+    """Формата на отвор по снимката: 6..300 точки (дял от ширината и височината, 0..1) и индексите на острите ъгли."""
+    if not isinstance(shape, list) or not 6 <= len(shape) <= 300:
+        raise D.DesignError("Непозната форма на отвор.")
+    pts = []
+    for q in shape:
+        if not (isinstance(q, (list, tuple)) and len(q) == 2 and all(isinstance(x, (int, float)) for x in q)):
+            raise D.DesignError("Непозната форма на отвор.")
+        a, b = float(q[0]), float(q[1])
+        if not (0 <= a <= 1 and 0 <= b <= 1):
+            raise D.DesignError("Непозната форма на отвор.")
+        pts.append([round(a, 5), round(b, 5)])
+    cs = corners if isinstance(corners, list) else []
+    cs = sorted({int(c) for c in cs if isinstance(c, int) and not isinstance(c, bool) and 0 <= c < len(pts)})
+    return pts, cs
 
 
 FRAC = re.compile(r"^[xyz]~(0(\.\d{1,6})?|1(\.0{1,6})?)$")
@@ -238,6 +257,22 @@ def round_view(pl, u, v):
     return wp.ellipse(u / 2, v / 2)
 
 
+def shaped(w, h, pts, corners):
+    """Отвор по формата от снимката, вписан в правоъгълника w x h около (0, 0): точките са дял от него; гладко
+    (сплайн), с чупка само в острите ъгли (индексите `corners`)."""
+    def draw(wp):
+        xy = [((a - 0.5) * w, (b - 0.5) * h) for a, b in pts]
+        n = len(xy)
+        if not corners:
+            return wp.spline(xy, periodic=True, includeCurrent=False).close()
+        wp = wp.moveTo(*xy[corners[0]])
+        for a, b in zip(corners, corners[1:] + [corners[0] + n]):
+            run = [xy[k % n] for k in range(a + 1, b + 1)]
+            wp = wp.lineTo(*run[0]) if len(run) == 1 else wp.spline(run, includeCurrent=True)
+        return wp.close()
+    return draw
+
+
 def rounded_rect(w, h, r):
     def draw(wp):
         if r and r > 0:
@@ -344,6 +379,8 @@ def code(d: dict) -> str:
             depth = f.get("depth") or "None"
             if f["t"] == "hole":
                 sk = f"lambda wp: wp.circle({f['d']} / 2)"
+            elif f["t"] == "rect" and f.get("shape"):
+                sk = f"shaped({f['w']}, {f['h']}, {f['shape']}, {f.get('corners') or []})"
             elif f["t"] == "rect":
                 sk = f"rounded_rect({f['w']}, {f['h']}, {f.get('r') or '0.0'})"
             else:

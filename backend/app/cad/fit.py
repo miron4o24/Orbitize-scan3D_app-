@@ -12,6 +12,7 @@ import math
 import numpy as np
 from shapely.geometry import LineString, Point, Polygon
 
+CORNER_DEV = 0.06  # прави и дъги, отклонени от очертанието повече от толкова от размера: свободна форма
 TOL = 0.007  # допуск на опростяването, дял от по-големия размер на изгледа
 LONG = 3.5  # права е по-дълга от толкова допуска
 SNAP_DEG = 5.0
@@ -213,10 +214,39 @@ def corners(outer: np.ndarray, U: float, V: float, raw: bool = False) -> list[tu
         return None
     if not Polygon([(u, v) for u, v, _ in out]).is_valid:
         return None
+    out = fitting_arcs(out)
     poly = Polygon(rounded(out)).buffer(0)
     raw = Polygon(pts).buffer(0)
     iou = poly.intersection(raw).area / max(poly.union(raw).area, 1e-9)
-    return out if iou > 0.95 else None
+    if iou <= 0.95 or poly.is_empty or raw.is_empty:
+        return None
+    # И никъде далеч от снимката: вълниста форма с прави през вълните съвпада 95%, но се отклонява с 11% от размера
+    # (истинските детайли - до 4,3%).
+    return out if poly.boundary.hausdorff_distance(raw.boundary) <= CORNER_DEV * size else None
+
+
+def fitting_arcs(cs: list[tuple[float, float, float]]) -> list[tuple[float, float, float]]:
+    """Радиусите, свити колкото двете дъги в краищата на всяка страна да се съберат на нея. Вътрешната извивка на
+    кука с къса права по средата (два ъгъла от по 80° вместо полукръг) получаваше по два радиуса от 18 мм на страна
+    от 9 мм: заобленото очертание се пресичаше, приликата със снимката ставаше 0 и куката - гладка форма без мерки."""
+    n = len(cs)
+    tan = []
+    for k in range(n):
+        a = np.array(cs[k - 1][:2]) - cs[k][:2]
+        b = np.array(cs[(k + 1) % n][:2]) - cs[k][:2]
+        na, nb = np.linalg.norm(a), np.linalg.norm(b)
+        ang = math.acos(max(-1.0, min(1.0, float(a @ b) / (na * nb)))) if na > 0 and nb > 0 else 0.0
+        tan.append(math.tan(ang / 2) if 1e-3 < ang < math.pi - 1e-3 else 0.0)
+    r = [c[2] if tan[k] > 0 else 0.0 for k, c in enumerate(cs)]
+    for _ in range(4):
+        for k in range(n):
+            k1 = (k + 1) % n
+            side = math.dist(cs[k][:2], cs[k1][:2])
+            need = (r[k] / tan[k] if r[k] else 0.0) + (r[k1] / tan[k1] if r[k1] else 0.0)
+            if need > side:
+                s = side / need * (1 - 1e-6)
+                r[k], r[k1] = r[k] * s, r[k1] * s
+    return [(u, v, rr) for (u, v, _), rr in zip(cs, r)]
 
 
 def rounded(cs: list[tuple[float, float, float]], steps: int = 12) -> np.ndarray:
@@ -443,11 +473,13 @@ def intersect(p1, d1, p2, d2):
 # --- Отвори --------------------------------------------------------------------------------------------------------
 
 
-def robust_circle(pts: np.ndarray, seed: int = 0) -> tuple[float, float, float] | None:
+def robust_circle(pts: np.ndarray, seed: int = 0, depth: float | None = None) -> tuple[float, float, float] | None:
     """Кръгъл отвор, част от чийто ръб е скрита: кръгът, на който лежи поне 30% от очертанието по поне 150° от
     обиколката, и в който се побира целият видим отвор. От няколко такива - най-големият: при снимка с перспектива
     през проходен отвор се вижда сечението на близкия ръб (истинският размер) и по-малкия далечен; сянка в отвора
-    също само смалява видимото. None: не е кръг."""
+    също само смалява видимото. None: не е кръг. depth: колко е дълбок отворът (дебелината на детайла): в тънък
+    детайл перспективата скрива малко от отвора, затова видимото трябва да запълва кръга повече (D-образният отвор на
+    ключ, 5,5 x 10 мм в пластина от 2 мм, не е кръг с диаметър 10)."""
     n = len(pts)
     if n < 12:
         return None
@@ -473,7 +505,8 @@ def robust_circle(pts: np.ndarray, seed: int = 0) -> tuple[float, float, float] 
         gaps = np.diff(np.r_[ang, ang[0] + 2 * math.pi])
         if 2 * math.pi - gaps.max() < math.radians(150):
             continue
-        if not 0.45 * math.pi * r * r <= area <= 1.08 * math.pi * r * r:  # видимият отвор е в кръга и го запълва
+        least = 0.45 if not depth else max(0.45, min(0.85, 1 - 1.5 * depth / (2 * r)))
+        if not least * math.pi * r * r <= area <= 1.08 * math.pi * r * r:  # видимият отвор е в кръга и го запълва
             continue
         found.append((cx, cy, r))
     if not found:
@@ -493,11 +526,84 @@ def circle_3(a, b, c):
     return ux, uy, math.hypot(ax - ux, ay - uy)
 
 
-def hole_shape(pts: np.ndarray, size: float) -> dict:
+SHAPED_IOU = 0.8  # канал или правоъгълник, който съвпада с отвора по-малко от това: отворът е по снимката
+SHAPED_MIN = 3.0  # мм: по-тесен отвор е канал или правоъгълник (ъглите му не се виждат ясно на снимката)
+SHARP_FILL = 0.88  # ъгъл на отвора, запълнен поне толкова (квадратче с половината от по-малката страна), е остър
+ROUND_FILL = 0.75  # и най-много толкова: заоблен (полукръг: 0,785)
+
+
+def hole_shape(pts: np.ndarray, size: float, depth: float | None = None) -> dict:
     """Отвор: кръг {t: hole, u, v, d}, канал {t: slot, u, v, len, w, angle} или правоъгълник {t: rect, u, v, w, h,
-    r}; u, v е средата."""
+    r}; u, v е средата. Отвор, който не е никое от тях (D-образният отвор на ключ: два остри и два заоблени ъгъла, или
+    нещо съвсем друго), е правоъгълник с "shape": формата от снимката като дял от правоъгълника (и "corners": острите
+    ѝ ъгли): размерите, които се мерят, остават ширината, височината и положението. Само при отвор от поне 3 мм:
+    по-малките на истинските снимки (отворът за халка на флашка, 1,5 x 7 мм) са с назъбени ъгли от пикселите.
+    depth: дебелината на детайла при отвора (robust_circle)."""
     pts = np.asarray(pts, float)
-    circle = robust_circle(pts)
+    out = plain_hole(pts, size, depth)
+    if out["t"] == "hole":
+        return out
+    poly = Polygon(pts).buffer(0)
+    if poly.geom_type != "Polygon" or poly.area <= 0:
+        return out
+    u0, v0, u1, v1 = poly.bounds
+    if min(u1 - u0, v1 - v0) < SHAPED_MIN:
+        return out
+    if out["t"] == "slot":
+        model = slot_poly(out)
+    else:
+        a0, a1 = out["u"] - out["w"] / 2, out["u"] + out["w"] / 2
+        b0, b1 = out["v"] - out["h"] / 2, out["v"] + out["h"] / 2
+        r = min(out["r"], out["w"] / 2 - 1e-6, out["h"] / 2 - 1e-6)
+        model = Polygon(rounded([(a0, b0, r), (a1, b0, r), (a1, b1, r), (a0, b1, r)]))
+    iou = poly.intersection(model).area / max(poly.union(model).area, 1e-12)
+    if iou >= SHAPED_IOU and not half_round(poly):
+        return out
+    return shaped_hole(pts) or out
+
+
+def half_round(poly: Polygon) -> bool:
+    """Два съседни ъгъла остри, другите два заоблени (D): нито канал, нито правоъгълник."""
+    from shapely.geometry import box
+
+    u0, v0, u1, v1 = poly.bounds
+    c = min(u1 - u0, v1 - v0) / 2
+    fills = [poly.intersection(box(a, b, a + c, b + c)).area / (c * c)
+             for a, b in ((u0, v0), (u1 - c, v0), (u1 - c, v1 - c), (u0, v1 - c))]  # fmt: skip
+    for k in range(4):
+        sharp = (fills[k], fills[(k + 1) % 4])
+        other = (fills[(k + 2) % 4], fills[(k + 3) % 4])
+        if min(sharp) >= SHARP_FILL and max(other) <= ROUND_FILL:
+            return True
+    return False
+
+
+def slot_poly(f: dict) -> Polygon:
+    lu, lv = (f["len"], f["w"]) if f["angle"] == 0 else (f["w"], f["len"])
+    r = min(lu, lv) / 2 - 1e-6
+    u0, v0 = f["u"] - lu / 2, f["v"] - lv / 2
+    return Polygon(rounded([(u0, v0, r), (u0 + lu, v0, r), (u0 + lu, v0 + lv, r), (u0, v0 + lv, r)]))
+
+
+def shaped_hole(pts: np.ndarray) -> dict | None:
+    """Отворът по снимката, вписан в правоъгълника около него (по осите)."""
+    poly = Polygon(pts).buffer(0)
+    if poly.geom_type != "Polygon" or poly.area <= 0:
+        return None
+    u0, v0, u1, v1 = poly.bounds
+    w, h = u1 - u0, v1 - v0
+    if min(w, h) <= 0:
+        return None
+    local, corners = smooth_outline(np.asarray(poly.exterior.coords) - [u0, v0], w, h)
+    if len(local) < 6:
+        return None
+    shape = [[round(a / w, 5), round(b / h, 5)] for a, b in local]
+    return {"t": "rect", "u": (u0 + u1) / 2, "v": (v0 + v1) / 2, "w": w, "h": h, "r": 0.0, "shape": shape,
+            "corners": corners}
+
+
+def plain_hole(pts: np.ndarray, size: float, depth: float | None = None) -> dict:
+    circle = robust_circle(pts, depth=depth)
     if circle is not None:
         cx, cy, r = circle
         return {"t": "hole", "u": cx, "v": cy, "d": 2 * r}

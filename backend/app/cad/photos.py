@@ -774,7 +774,7 @@ def dark_holes(p: dict, holes: list, U: float, V: float) -> list:
     """Отвор, видян само като много тъмно, сиво петно на основната снимка (през него не се вижда масата, а и на
     другата снимка не личи): кръгъл или продълговат със заоблени краища, и не до самия ръб. Печат (знаме, лого)
     е цветен или с остри ъгли, затова не минава."""
-    from .fit import hole_shape
+    from .fit import plain_hole
 
     out = []
     have = [largest(Polygon(h).buffer(0)) for h in holes]
@@ -787,7 +787,7 @@ def dark_holes(p: dict, holes: list, U: float, V: float) -> list:
             continue
         if edge.distance(mp) < MARK_WALL * max(U, V):
             continue
-        if hole_shape(np.asarray(m), max(U, V))["t"] not in ("hole", "slot"):
+        if plain_hole(np.asarray(m), max(U, V))["t"] not in ("hole", "slot"):
             continue
         out.append(np.asarray(mp.exterior.coords)[:-1])
         have.append(mp)

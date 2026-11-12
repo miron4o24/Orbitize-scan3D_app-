@@ -268,7 +268,8 @@ def second_opinion(im: Image.Image, solid: np.ndarray, off: np.ndarray, outline:
     беше между два пръста). Взима се вместо това на IS-Net, когато то стига до
     ръба на кадъра (ръката, която държи детайла, или повърхността под него) или когато очертанието на MobileSAM е
     ясно по-малко и вътре в него (IS-Net е взел и пръстите или сянката до детайла). На истинските снимки на флашка
-    (без пръсти до нея) двете съвпадат 96-99%. None: остава IS-Net."""
+    (без пръсти до нея) двете съвпадат 96-99%. None: остава IS-Net; списък: остава IS-Net, а това са отворите на
+    MobileSAM (пиксели на снимката) за through_holes."""
     models = sam()
     if models is None:
         return None
@@ -292,7 +293,59 @@ def second_opinion(im: Image.Image, solid: np.ndarray, off: np.ndarray, outline:
     iou = a.intersection(b).area / a.union(b).area
     if touches(outline, im.size) or (inside and iou < SAM_SWITCH):
         return field_, hard, box, outer, holes, off2
+    if iou >= SAM_SAME:
+        return [h + off2 for h in holes]
     return None
+
+
+SAM_SAME = 0.85  # очертанията на IS-Net и MobileSAM са на един и същ предмет: отворите на MobileSAM се проверяват
+
+
+def through_holes(im: Image.Image, solid: np.ndarray, off: np.ndarray, holes: list, have: list) -> list:
+    """Отворите на MobileSAM (пиксели на снимката), които IS-Net е запълнил: ключ с отвор за халката, сив като дървото
+    под него, при което и отворите по цвят (color_holes) не се търсят. Отворът е истински, ако е вътре в детайла на
+    IS-Net, не е вече намерен и през него се вижда повърхността: средният му цвят и оттенъкът (без яркостта) са
+    по-близо до фона около детайла, отколкото до детайла (надпис или сянка върху детайла са с неговия оттенък или
+    тъмни). Връща ги в пиксели на изрязването на IS-Net."""
+    from skimage import draw
+
+    if not holes:
+        return []
+    rgb = np.asarray(im.crop((int(off[0]), int(off[1]), int(off[0]) + solid.shape[1], int(off[1]) + solid.shape[0])),
+                     np.float32)  # fmt: skip
+    filled = ndimage.binary_fill_holes(solid)
+    ring = ndimage.binary_dilation(filled, iterations=25) & ~ndimage.binary_dilation(filled, iterations=6)
+    body = ndimage.binary_erosion(solid, iterations=4)
+    if ring.sum() < 200 or body.sum() < 200:
+        return []
+    bg, part = np.median(rgb[ring], 0), np.median(rgb[body], 0)
+    spread = np.median(np.abs(rgb[ring] - bg), 0) * 1.4826 + 4.0
+    found = [Polygon(h).buffer(0) for h in have]
+    out = []
+    for h in holes:
+        local = np.asarray(h, float) - off
+        poly = Polygon(local).buffer(0)
+        if poly.area < MIN_HOLE * filled.sum() or any(poly.intersects(f) for f in found):
+            continue
+        rr, cc = draw.polygon(local[:, 1], local[:, 0], solid.shape)
+        m = np.zeros(solid.shape, bool)
+        m[rr, cc] = True
+        if (m & filled).sum() < 0.9 * m.sum():
+            continue
+        core = ndimage.binary_erosion(m, iterations=3)
+        px = rgb[core if core.sum() > 30 else m]
+        if len(px) < 30:
+            continue
+        med = np.median(px, 0)
+
+        def chroma(c):
+            return c - c.mean()
+
+        near_bg = np.linalg.norm((med - bg) / spread) < np.linalg.norm((med - part) / spread)
+        hue_bg = np.linalg.norm(chroma(med) - chroma(bg)) < np.linalg.norm(chroma(med) - chroma(part))
+        if near_bg and hue_bg:
+            out.append(local)
+    return out
 
 
 def segment(sess, path, points: list | None = None) -> dict:
@@ -320,9 +373,11 @@ def segment(sess, path, points: list | None = None) -> dict:
     off = np.array([box[0], box[1]], float)
     if by == "isnet":
         alt = second_opinion(im, solid, off, outer + off)
-        if alt is not None:
+        if isinstance(alt, tuple):
             field_, solid, box, outer, holes, off = alt
             by = "sam"
+        elif alt:  # същият предмет: отворите, които вижда само MobileSAM
+            holes = holes + through_holes(im, solid, off, alt, holes)
     if touches(outer + off, im.size):
         raise ValueError("cut")
     return {"outer": np.round(outer + off, 2).tolist(), "holes": [np.round(h + off, 2).tolist() for h in holes],
