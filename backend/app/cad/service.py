@@ -706,10 +706,11 @@ def build(job: Path, raw: dict) -> dict:
     missing = [q for q in D.questions(d) if d["dims"][q["id"]]["v"] is None]
     if missing:
         raise D.DesignError(f"Липсва размерът „{missing[0]['name']}“.")
+    adjusted = D.fit_notes(d, D.fit_radii(d))  # и чертежът, и запазеното описание са със свитите радиуси
     with lock(job):
         work = job / "cad" / "build.tmp"
         shutil.rmtree(work, ignore_errors=True)
-        report = make(d, work)
+        report = make(d, work, adjusted)
         R.drawing(d).save(work / "drawing.png", optimize=True)
         out = job / "cad" / "out"
         shutil.rmtree(out, ignore_errors=True)

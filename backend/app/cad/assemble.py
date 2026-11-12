@@ -151,6 +151,8 @@ def repair(d: dict) -> None:
     for name in ("top", "side", "end"):
         if d["views"].get(name, {}).get("pts") and not d["views"][name].get("round"):
             shrink_radii(d, name)
+    for i, _, now in D.fit_radii(d):  # и застъпените дъги (външният радиус на извивка по-голям от вътрешния и стената)
+        d["dims"][i]["est"] = now
     if fits(d):
         return
     boxed = []

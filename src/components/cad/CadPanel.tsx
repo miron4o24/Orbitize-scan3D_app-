@@ -51,6 +51,7 @@ export function CadPanel({ scanId, jobId, cad, stamp }: { scanId: string; jobId:
       {cad.estimated > 0 && (
         <Note warn>{`Оценени, не измерени: ${cad.estimated_names.join(', ')}. Проверете ги преди изработка; в чертежа са със звездичка.`}</Note>
       )}
+      {!!cad.adjusted?.length && <Note>{cad.adjusted.join('\n')}</Note>}
       <Card style={s.box}>
         {cad.elements.map((e, i) => (
           <Small key={`${i}-${e}`}>{`${i + 1}. ${e}`}</Small>

@@ -43,31 +43,7 @@ def mm(v: float) -> str:
 
 def arc_outline(pts: list[tuple[float, float, float]], steps: int = 10) -> np.ndarray:
     """Ъглите (u, v, r) -> начупена линия със заоблените ъгли като дъги (същото като outline() в part.py)."""
-    n = len(pts)
-    out = []
-    for k in range(n):
-        u, v, r = pts[k]
-        pu, pv, _ = pts[k - 1]
-        nu, nv, _ = pts[(k + 1) % n]
-        a, b = np.array([pu - u, pv - v]), np.array([nu - u, nv - v])
-        na, nb = np.linalg.norm(a), np.linalg.norm(b)
-        if r <= 0 or na < 1e-9 or nb < 1e-9:
-            out.append((u, v))
-            continue
-        a, b = a / na, b / nb
-        ang = math.acos(max(-1.0, min(1.0, float(a @ b))))
-        if ang > math.pi - 1e-3 or ang < 1e-3:
-            out.append((u, v))
-            continue
-        t = r / math.tan(ang / 2)
-        bis = (a + b) / np.linalg.norm(a + b)
-        c = np.array([u, v]) + bis * r / math.sin(ang / 2)
-        p1, p2 = np.array([u, v]) + a * t, np.array([u, v]) + b * t
-        a1, a2 = math.atan2(*(p1 - c)[::-1]), math.atan2(*(p2 - c)[::-1])
-        da = (a2 - a1 + math.pi) % (2 * math.pi) - math.pi
-        for s in np.linspace(0, 1, steps):
-            out.append(tuple(c + r * np.array([math.cos(a1 + da * s), math.sin(a1 + da * s)])))
-    return np.asarray(out)
+    return np.asarray(D.arc_points(pts, steps))
 
 
 def view_size(d: dict, view: str) -> tuple[float, float]:

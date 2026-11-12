@@ -278,28 +278,243 @@ def check(d: dict) -> None:
         for u, v, _ in pts:
             if not (-1e-6 <= u <= total(d, a) + 1e-6 and -1e-6 <= v <= total(d, b) + 1e-6):
                 raise DesignError(f"Ниво {VIEW_NAME[view]} е извън общите размери: проверете разстоянията до ръбовете.")
-        cut = []  # колко от двете страни на всеки ъгъл взима дъгата
-        for k, (u, v, r) in enumerate(pts):
-            if r <= 0:
-                cut.append(0.0)
-                continue
-            pu, pv, _ = pts[k - 1]
-            nu, nv, _ = pts[(k + 1) % len(pts)]
-            ang = corner_angle((pu, pv), (u, v), (nu, nv))
-            if ang <= 1e-3 or ang >= math.pi - 1e-3:
-                raise DesignError(f"Радиусът {r:g} мм е твърде голям за ъгъла {VIEW_NAME[view]}.")
-            cut.append(r / math.tan(ang / 2))
-        for k, (u, v, r) in enumerate(pts):  # двете дъги в краищата на една страна трябва да се съберат на нея
-            nu, nv, nr = pts[(k + 1) % len(pts)]
-            if cut[k] + cut[(k + 1) % len(pts)] > math.dist((u, v), (nu, nv)) + 1e-6:
-                big = r if cut[k] >= cut[(k + 1) % len(pts)] else nr
-                raise DesignError(f"Радиусът {big:g} мм е твърде голям за ъгъла {VIEW_NAME[view]}.")
+        problem = radius_problem(d, view)
+        if problem:
+            raise DesignError(problem)
     for f in d["features"]:
         if f["t"] in ("hole", "rect", "slot") and present(d, f):
             place = feature_place(d, f)
             a, b = plane_axes(place["axis"])
             if not (0 <= place["u"] <= total(d, a) and 0 <= place["v"] <= total(d, b)):
                 raise DesignError(f"{label(d, f)} е извън детайла: проверете положението му.")
+
+
+RADIUS_SLACK = 0.05  # измерен радиус, по-голям до 5% от мястото си (полукръгъл край): свива се, без грешка
+SHARP = 0.1  # мм: оценка за радиус, свита под толкова, е остър ъгъл
+
+
+def corners(d: dict, view: str) -> list[tuple]:
+    """Ъглите на изгледа без повторените и тези по права линия: (u, v, радиус, размерът на радиуса)."""
+    return tidy([(coord(d, u), coord(d, v), value(d, r) if r else 0.0, r) for u, v, r in d["views"][view]["pts"]])
+
+
+def mm(x: float) -> str:
+    return f"{round(x, 2):g}".replace(".", ",")
+
+
+def radius_problem(d: dict, view: str) -> str | None:
+    """Защо заоблените ъгли на изгледа не стават (None: стават): двете дъги в краищата на една страна не се събират
+    на нея или дъгите се застъпват (външният радиус на извивка, по-голям от вътрешния и стената: куката с вътрешен
+    радиус 0,1 и външен 20 мм пресичаше сама себе си)."""
+    pts = corners(d, view)
+    n = len(pts)
+    cut = []  # колко от двете страни на всеки ъгъл взима дъгата
+    for k, (u, v, r, rid) in enumerate(pts):
+        if r <= 0:
+            cut.append(0.0)
+            continue
+        ang = corner_angle(pts[k - 1][:2], (u, v), pts[(k + 1) % n][:2])
+        if ang <= 1e-3 or ang >= math.pi - 1e-3:
+            return too_big(d, rid, 0.0, view)
+        cut.append(r / math.tan(ang / 2))
+    for k in range(n):
+        k1 = (k + 1) % n
+        side = math.dist(pts[k][:2], pts[k1][:2])
+        if cut[k] + cut[k1] > side + 1e-6:
+            j, other = (k, cut[k1]) if cut[k] >= cut[k1] else (k1, cut[k])
+            if pts[k][3] == pts[k1][3]:  # един размер в двата края: двете дъги заедно
+                room = pts[j][2] * side / (cut[k] + cut[k1])
+            else:
+                room = pts[j][2] * max(0.0, side - other) / cut[j]
+            return too_big(d, pts[j][3], room, view)
+    if any(p[2] > 0 for p in pts) and not Polygon(arc_points([p[:3] for p in pts])).is_valid:
+        ids = sorted({p[3] for p in pts if p[2] > 0}, key=lambda i: -value(d, i))
+        radii = ", ".join(mm(value(d, i)) for i in ids)
+        return (f"Заоблените ъгли {VIEW_NAME[view]} се застъпват (радиуси {radii} мм): "
+                "външният радиус на извивка е колкото вътрешния и дебелината на стената. Проверете ги.")  # fmt: skip
+    return None
+
+
+def too_big(d: dict, rid: str, room: float, view: str) -> str:
+    name = d["dims"][rid]["name"] if rid in d["dims"] else "Радиусът"
+    return (f"„{name}“ {mm(value(d, rid))} мм е твърде голям за ъгъла {VIEW_NAME[view]}: там се събират най-много "
+            f"{mm(math.floor(room * 100) / 100)} мм.")  # fmt: skip
+
+
+def arc_points(pts: list[tuple[float, float, float]], steps: int = 10) -> list[tuple[float, float]]:
+    """Ъглите (u, v, r) -> начупена линия със заоблените ъгли като дъги (същото като outline() в part.py). Точка
+    по-близо от 0,1 микрона до предишната се пропуска: две дъги, които се допират (полукръгъл край), не се застъпват."""
+    out: list[tuple[float, float]] = []
+
+    def put(p):
+        if not out or math.dist(out[-1], p) > 1e-4:
+            out.append(p)
+
+    for k in range(len(pts)):
+        u, v, r = pts[k]
+        pu, pv, _ = pts[k - 1]
+        nu, nv, _ = pts[(k + 1) % len(pts)]
+        a, b = (pu - u, pv - v), (nu - u, nv - v)
+        na, nb = math.hypot(*a), math.hypot(*b)
+        if r <= 0 or na < 1e-9 or nb < 1e-9:
+            put((u, v))
+            continue
+        a, b = (a[0] / na, a[1] / na), (b[0] / nb, b[1] / nb)
+        ang = math.acos(max(-1.0, min(1.0, a[0] * b[0] + a[1] * b[1])))
+        if ang > math.pi - 1e-3 or ang < 1e-3:
+            put((u, v))
+            continue
+        t = r / math.tan(ang / 2)
+        bl, h = math.hypot(a[0] + b[0], a[1] + b[1]), r / math.sin(ang / 2)
+        c = (u + (a[0] + b[0]) / bl * h, v + (a[1] + b[1]) / bl * h)
+        p1, p2 = (u + a[0] * t, v + a[1] * t), (u + b[0] * t, v + b[1] * t)
+        a1, a2 = math.atan2(p1[1] - c[1], p1[0] - c[0]), math.atan2(p2[1] - c[1], p2[0] - c[0])
+        da = (a2 - a1 + math.pi) % (2 * math.pi) - math.pi
+        for i in range(steps):
+            s = i / (steps - 1)
+            put((c[0] + r * math.cos(a1 + da * s), c[1] + r * math.sin(a1 + da * s)))
+    if len(out) > 1 and math.dist(out[0], out[-1]) <= 1e-4:
+        out.pop()
+    return out
+
+
+def fit_radii(d: dict) -> list[tuple[str, float, float]]:
+    """Радиусите на ъглите, които не се събират, свити колкото е нужно (на място): първо оценките от снимката (от
+    най-голямата: "не мога да го измеря" не бива да спира модела, щом мерките се различават от снимката), после
+    измерените, но само до 5% (полукръгъл край: радиусът е половината ширина, а двете мерки се разминават с малко).
+    Радиус, измерен много по-голям, остава и check казва колко най-много става. Връща (размер, беше, стана)."""
+    changed: list[tuple[str, float, float]] = []
+    for view, spec in d["views"].items():
+        if spec.get("off") or spec.get("round") or not spec.get("pts"):
+            continue
+        thin = thin_wall(d, view)
+        if not radius_problem(d, view) and (thin is None or thin()):
+            continue
+        ids = sorted({row[2] for row in spec["pts"] if row[2] in d["dims"] and value(d, row[2]) > 0},
+                     key=lambda i: -value(d, i))  # fmt: skip
+        orig = {i: value(d, i) for i in ids}
+        est = [i for i in ids if d["dims"][i]["src"] != "measured"]
+        meas = [i for i in ids if d["dims"][i]["src"] == "measured"]
+
+        def ok(view=view) -> bool:
+            return radius_problem(d, view) is None
+
+        def put(i: str, x: float) -> None:
+            d["dims"][i]["v"] = math.floor(x * 1000) / 1000
+
+        def grow(i: str, ok=ok, top=orig) -> None:  # най-голямата стойност до първоначалната, при която става
+            lo, hi = 0.0, top[i]
+            put(i, hi)
+            if ok():
+                return
+            for _ in range(24):
+                put(i, (lo + hi) / 2)
+                lo, hi = (d["dims"][i]["v"], hi) if ok() else (lo, (lo + hi) / 2)
+            put(i, lo)
+
+        zeroed = []
+        for i in est:
+            if ok():
+                break
+            put(i, 0.0)
+            if ok():
+                grow(i)
+            else:
+                zeroed.append(i)
+        if not ok() and meas:
+            lo, hi = 1 - RADIUS_SLACK, 1.0
+            for i in meas:
+                put(i, orig[i] * lo)
+            if ok():
+                for _ in range(24):
+                    mid = (lo + hi) / 2
+                    for i in meas:
+                        put(i, orig[i] * mid)
+                    lo, hi = (mid, hi) if ok() else (lo, mid)
+                for i in meas:
+                    put(i, orig[i] * lo)
+        if not ok():
+            for i in ids:
+                d["dims"][i]["v"] = orig[i]
+            continue
+        for i in reversed(zeroed):
+            grow(i)
+        if est and thin and not thin():  # дъгите вече не се пресичат, но стената на извивката е изтъняла до нищо
+            kept = {i: value(d, i) for i in est}
+            for i in est:
+                put(i, 0.0)
+            if ok() and thin():
+                for i in est:
+                    grow(i, lambda: ok() and thin(), kept)
+            else:
+                for i in est:
+                    d["dims"][i]["v"] = kept[i]
+        for i in est:
+            if 0 < value(d, i) < SHARP:
+                put(i, 0.0)
+        changed += [(i, orig[i], value(d, i)) for i in ids if value(d, i) < orig[i]]
+    return changed
+
+
+WALL_KEEP = 0.6  # след свиване стената на извивката е поне толкова от най-тънката стена на детайла по снимката
+
+
+def pieces(poly, e: float) -> int:
+    """На колко парчета се разпада очертанието, свито навътре с e (стена, по-тънка от 2e, го разделя)."""
+    g = poly.buffer(-e) if e > 0 else poly
+    return 0 if g.is_empty else len(getattr(g, "geoms", [g]))
+
+
+def thin_wall(d: dict, view: str):
+    """Проверка (функция без аргументи) дали очертанието няма стена, много по-тънка от тези по снимката: куката с
+    измерен вътрешен радиус 0,1 и оценен външен 19 мм не се пресичаше, но стената в извивката беше 0,3 мм вместо
+    5 и заоблянето на ръбовете не ставаше. Най-тънката стена на изгледа с оценките от снимката (там очертанието е
+    цяло) е мярката. None: няма с какво да се сравни."""
+    photo = copy.deepcopy(d)
+    for dim in photo["dims"].values():
+        if dim["est"] is not None:
+            dim["v"] = dim["est"]
+    try:
+        if radius_problem(photo, view):
+            return None
+        poly = Polygon(arc_points([p[:3] for p in corners(photo, view)]))
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not poly.is_valid or poly.area <= 0 or pieces(poly, 0.0) != 1:
+        return None
+    lo, hi = 0.0, min(poly.bounds[2] - poly.bounds[0], poly.bounds[3] - poly.bounds[1]) / 2
+    for _ in range(16):  # най-голямото e, при което е още едно парче: половината от най-тънката стена
+        mid = (lo + hi) / 2
+        lo, hi = (mid, hi) if pieces(poly, mid) == 1 else (lo, mid)
+    e = max(WALL_KEEP * lo, edge_round(d) * 1.25)  # заоблянето на ръбовете от двете страни иска стена над 2r
+    if e <= 0 or e >= lo:  # и по снимката не става: няма какво да се пази
+        return None
+
+    def thick() -> bool:
+        p = Polygon(arc_points([q[:3] for q in corners(d, view)]))
+        return p.is_valid and pieces(p, e) == 1
+
+    return thick
+
+
+def edge_round(d: dict) -> float:
+    """Най-голямото заобляне или фаска на ръбовете (отгоре и отдолу: до половината дебелина, както в part.py)."""
+    out = 0.0
+    for f in d["features"]:
+        key = f.get("r" if f["t"] == "fillet" else "c")
+        if f["t"] in ("fillet", "chamfer") and key in d["dims"] and d["dims"][key]["v"] is not None and present(d, f):
+            r = value(d, key)
+            out = max(out, min(r, 0.49 * total(d, "z")) if f["edges"] == "flat" else r)
+    return out
+
+
+def fit_notes(d: dict, changed: list[tuple[str, float, float]]) -> list[str]:
+    """Бележките за свитите радиуси в отчета на детайла."""
+    out = []
+    for i, was, now in changed:
+        what = "измерено" if d["dims"][i]["src"] == "measured" else "оценка"
+        out.append(f"„{d['dims'][i]['name']}“: {what} {mm(was)} мм, построено {mm(now)} мм, за да се съберат дъгите.")
+    return out
 
 
 def corner_angle(p, c, n) -> float:

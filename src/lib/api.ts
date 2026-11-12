@@ -580,6 +580,7 @@ export type CadReport = {
   estimated: number;
   estimated_names: string[];
   elements: string[];
+  adjusted?: string[]; // радиусите, свити, за да се съберат дъгите (по-старите отчети нямат)
 };
 export type CadFile = 'part.step' | 'part.py' | 'part.stl' | 'part.glb' | 'drawing.png';
 
