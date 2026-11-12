@@ -590,6 +590,8 @@ def set_through(d: dict, fid: str, through: bool) -> dict:
     f = next((f for f in d["features"] if f["id"] == fid), None)
     if f is None or f["t"] not in ("hole", "rect", "slot"):
         raise D.DesignError("Непознат елемент.")
+    if f.get("open"):
+        raise D.DesignError("Каналът до стената минава по целия детайл.")
     if through:
         f.pop("depth", None)
         D.unused_cleanup(d)
@@ -676,7 +678,7 @@ def photo_jpg(job: Path, name: str) -> bytes:
     lay = layout(job, {k: v for k, v in sh.items() if photo_path(job, k)}, (L, W, H), d.get("flips") or {})
     o = lay["orient"][name]
     U, V = P.view_sizes(o["view"], L, W, H)
-    im = R.overlay(d, o["view"], load(path), P.placement(sh[name], o, U, V)["A"])
+    im = R.overlay(d, o["view"], load(path), P.placement(sh[name], o, U, V)["A"], face=P.FACE.get(name))
     import io
 
     buf = io.BytesIO()

@@ -535,6 +535,8 @@ def label(d: dict, f: dict) -> str:
     if t == "hole":
         return "Отвор" + (" (резба " + f["thread"] + ")" if f.get("thread") else "")
     if t == "rect":
+        if f.get("open"):
+            return "Канал по " + {"x": "дължината", "y": "ширината", "z": "височината"}[f["axis"]]
         if f.get("shape"):
             return "Отвор по формата от снимката" if f.get("depth") is None else "Джоб по формата от снимката"
         return "Правоъгълен " + ("изрез" if f.get("depth") is None else "джоб")
@@ -584,9 +586,9 @@ def describe(d: dict) -> list[dict]:
                     else f"{VIEW_NAME[view].capitalize()}: {text}"})  # fmt: skip
     for f in d["features"]:
         where = f" в {FACE_NAME[f['face']]}" if f.get("face") else ""
+        through = f["t"] in ("hole", "rect", "slot") and f.get("depth") is None and not f.get("open")
         out.append({"id": f["id"], "view": f.get("view"), "kind": f["t"],
-                    "text": label(d, f) + where + (" (проходен)" if f["t"] in ("hole", "rect", "slot")
-                                                    and f.get("depth") is None else "")})  # fmt: skip
+                    "text": label(d, f) + where + (" (проходен)" if through else "")})  # fmt: skip
     return out
 
 

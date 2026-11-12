@@ -84,7 +84,9 @@ def assemble(views: dict, L: float, W: float, H: float, flat: bool = False) -> d
     if flat:
         views = {k: v for k, v in views.items() if k == "top"}
     views = {k: {"outer": np.asarray(v["outer"], float), "holes": [np.asarray(h, float) for h in v["holes"]],
-                 "U": v["U"], "V": v["V"], "each": [np.asarray(e, float) for e in v.get("each", [])]}
+                 "U": v["U"], "V": v["V"], "each": [np.asarray(e, float) for e in v.get("each", [])],
+                 "blind": [(np.asarray(b["pts"], float), b["face"]) for b in v.get("blind", [])
+                           if b.get("face") in D.FACES]}
              for k, v in views.items()}  # fmt: skip
     if is_turned(views, L, W, H):
         return turned(views, L, W, H)
@@ -99,9 +101,16 @@ def assemble(views: dict, L: float, W: float, H: float, flat: bool = False) -> d
         axis = {"top": "z", "side": "y", "end": "x"}[name]
         for h in v["holes"]:
             add_hole(d, h, axis, name, max(v["U"], v["V"]))
+        for h, face in v["blind"]:
+            add_hole(d, h, axis, name, max(v["U"], v["V"]), face)
         if is_round(v):
             d["views"][name] = {"pts": D.box(a, b), "round": True}
             continue
+        if not flat:  # каналите с прави стени: отделни елементи с мерки, очертанието е без тях
+            outer, cuts = fit.notches(v["outer"], v["U"], v["V"], v["each"])
+            for c in cuts:
+                add_notch(d, c, axis, name)
+            v = v | {"outer": outer}
         cs = fit.corners(v["outer"], v["U"], v["V"], raw=True)
         if cs is not None:
             cs = fit.symmetric_round(cs, v["U"], v["V"])
@@ -320,12 +329,59 @@ def free_view(d: dict, v: dict, a: str, b: str, view: str) -> dict:
     return {"pts": rows, "free": True, "curve": True, "corners": corners}
 
 
-def add_hole(d: dict, pts: np.ndarray, axis: str, view: str, size: float) -> None:
+FACE_OF = {("z", "+"): "top", ("z", "-"): "bottom", ("y", "-"): "front", ("y", "+"): "back", ("x", "-"): "left",
+           ("x", "+"): "right"}  # fmt: skip
+
+
+def add_notch(d: dict, c: dict, axis: str, view: str) -> None:
+    """Канал по цялата дължина на оста `axis`, отворен към стена (fit.notches): правоъгълен изрез, който излиза
+    извън детайла, с мерки за ширината и дълбочината му и за положението му."""
+    a, b = D.plane_axes(axis)
+    key, sign = c["open"]
+    deep = a if key == "u" else b  # оста на дълбочината
+    across = b if key == "u" else a
+    face = FACE_OF[(deep, sign)]
+    fid = D.new_feature_id(d, "rect")
+    f = {"id": fid, "t": "rect", "axis": axis, "side": "+", "view": view, "face": face, "open": {key: sign}}
+    width = (c["v1"] - c["v0"]) if key == "u" else (c["u1"] - c["u0"])
+    depth = (c["u1"] - c["u0"]) if key == "u" else (c["v1"] - c["v0"])
+    w = D.add_dim(d, "w", width, "Ширина на канала", f"Измерете ширината на канала в {D.FACE_NAME[face]}",
+                  "С вътрешните челюсти на шублера.", show={"feature": fid, "along": across})  # fmt: skip
+    t = D.add_dim(d, "h", depth, "Дълбочина на канала", f"Измерете дълбочината на канала от {D.FACE_NAME[face]}",
+                  "С дълбокомера на шублера.", show={"feature": fid, "along": deep})  # fmt: skip
+    f["w"], f["h"] = (t, w) if key == "u" else (w, t)
+    f[key] = {"lvl": f"{deep}0", "anchor": "min"} if sign == "-" else {"lvl": D.end_level(deep), "anchor": "max"}
+    other = "v" if key == "u" else "u"
+    lo, hi = (c["v0"], c["v1"]) if other == "v" else (c["u0"], c["u1"])
+    tot = D.total(d, across)
+    mid = (lo + hi) / 2
+    if abs(mid - tot / 2) <= D.CENTER_TOL * tot:
+        f[other] = {"lvl": f"{across}c", "anchor": "center"}
+    else:
+        near_start = mid < tot / 2
+        lvl = D.level_for(d, across, clamp(lo if near_start else hi, tot), "Положение на канала", "ръба на канала",
+                          view=view, merge=False)  # fmt: skip
+        f[other] = {"lvl": lvl, "anchor": "min" if near_start else "max"}
+    d["features"].append(f)
+
+
+BLIND_DEPTH = 1.5  # оценката за дълбочината на глух отвор: толкова пъти по-малкия му размер, до половината детайл
+
+
+def add_hole(d: dict, pts: np.ndarray, axis: str, view: str, size: float, blind: str | None = None) -> None:
+    """Отвор (кръгъл, канал или правоъгълен) по оста `axis`: проходен, или глух от стената `blind` (с дълбочина за
+    мерене; оценката е само приблизителна - отвътре отворът не се вижда)."""
     shape = fit.hole_shape(pts, size, D.total(d, axis))
     a, b = D.plane_axes(axis)
     fid = D.new_feature_id(d, shape["t"])
-    f = {"id": fid, "t": shape["t"], "axis": axis, "side": "+", "view": view,
-         "face": {"z": "top", "y": "front", "x": "left"}[axis]}  # fmt: skip
+    face = blind or {"z": "top", "y": "front", "x": "left"}[axis]
+    f = {"id": fid, "t": shape["t"], "axis": axis, "side": D.FACES[face][1] if blind else "+", "view": view,
+         "face": face}  # fmt: skip
+    if blind:
+        small = shape["d"] if shape["t"] == "hole" else min(shape.get("w", 0.0), shape.get("h") or shape["w"])
+        f["depth"] = D.add_dim(d, "t", min(BLIND_DEPTH * small, D.total(d, axis) / 2), "Дълбочина на отвора",
+                               f"Измерете дълбочината на отвора от {D.FACE_NAME[face]}", "С дълбокомера на шублера.",
+                               show={"feature": fid})  # fmt: skip
     if shape["t"] == "hole":
         f["d"] = D.add_dim(d, "d", shape["d"], "Диаметър на отвора", "Измерете диаметъра на отвора",
                            "С горните (вътрешните) челюсти на шублера.", "diameter",

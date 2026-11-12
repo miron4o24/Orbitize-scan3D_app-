@@ -68,15 +68,27 @@ def silhouette(d: dict, view: str) -> np.ndarray:
         U, V = view_size(d, view)
         t = np.linspace(0, 2 * math.pi, 144, endpoint=False)
         return np.c_[U / 2 + U / 2 * np.cos(t), V / 2 + V / 2 * np.sin(t)]
-    return arc_outline(D.outline(d, view))
+    pts = arc_outline(D.outline(d, view))
+    cuts = [p for f, p in features_in(d, view, channels=True) if f.get("open")]
+    if not cuts:
+        return pts
+    shape = Polygon(pts).buffer(0)
+    for c in cuts:  # каналът до стената е вдлъбнатина в очертанието
+        shape = shape.difference(Polygon(c).buffer(0.01))
+    if shape.is_empty:
+        return pts
+    if shape.geom_type != "Polygon":
+        shape = max(shape.geoms, key=lambda g: g.area)
+    return np.asarray(shape.exterior.coords)[:-1]
 
 
-def features_in(d: dict, view: str) -> list[tuple[dict, np.ndarray]]:
-    """Елементите, които се виждат в изгледа като очертания: (елемент, точки в мм)."""
+def features_in(d: dict, view: str, channels: bool = False) -> list[tuple[dict, np.ndarray]]:
+    """Елементите, които се виждат в изгледа като очертания: (елемент, точки в мм). Каналите до стената (вече
+    изрязани от очертанието в silhouette) - само с channels, като правоъгълника в детайла."""
     normal = VIEW_NORMAL[view]
     out = []
     for f in d["features"]:
-        if f["t"] not in ("hole", "rect", "slot"):
+        if f["t"] not in ("hole", "rect", "slot") or (f.get("open") and not channels):
             continue
         place = D.feature_place(d, f)
         if f["axis"] != normal:
@@ -339,7 +351,7 @@ def annotate(sh: Sheet, d: dict, view: str, dim_id: str, text: str, color=ACCENT
         return "v"
     if feature is not None and feature["t"] in ("hole", "rect", "slot"):
         if highlight:
-            for f, pts in features_in(d, view):
+            for f, pts in features_in(d, view, channels=True):
                 if f is feature or (f["t"] == "hole" and f.get("d") == dim_id):
                     sh.poly(pts, fill=(255, 237, 224), outline=color, width=5)
         place = D.feature_place(d, feature)
@@ -496,8 +508,9 @@ def caption(sh: Sheet, text: str):
 # --- Върху снимката -------------------------------------------------------------------------------------------------
 
 
-def overlay(d: dict, view: str, photo: Image.Image, A, side: int = 1100) -> Image.Image:
-    """Снимката с очертанието и отворите от описанието (изгледът `view` на описанието, A: от мм към снимката)."""
+def overlay(d: dict, view: str, photo: Image.Image, A, side: int = 1100, face: str | None = None) -> Image.Image:
+    """Снимката с очертанието и отворите от описанието (изгледът `view` на описанието, A: от мм към снимката).
+    face: стената на снимката - глух отвор от другата стена не се вижда на нея."""
     if d["kind"] == "turned" and view == "end":
         Dm = D.value(d, "D")
         U = V = Dm
@@ -510,7 +523,8 @@ def overlay(d: dict, view: str, photo: Image.Image, A, side: int = 1100) -> Imag
     else:
         shape_view = "profile" if d["kind"] == "turned" else view
         U, V = view_size(d, shape_view)
-        polys = [silhouette(d, shape_view)] + [p for _, p in features_in(d, shape_view)]
+        polys = [silhouette(d, shape_view)] + [p for f, p in features_in(d, shape_view)
+                                               if not (face and f.get("depth") and f.get("face") != face)]
     sh = PhotoSheet(photo, A, U, V, size=(side, round(side * 0.75)), margin=0.16, dim=False)
     for pts in polys:
         xy = [sh.px(u, v) for u, v in pts]

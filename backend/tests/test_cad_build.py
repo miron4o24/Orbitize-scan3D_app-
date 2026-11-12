@@ -392,3 +392,80 @@ def test_key_hole_shaped_like_a_d_follows_the_photo(tmp_path):
     rep = B.build(measured(d), tmp_path)
     assert rep["volume_mm3"] == pytest.approx((54 * 23 - d_shape.area) * 2, rel=0.01)
     assert "Отвор по формата от снимката" in " ".join(rep["elements"])
+
+
+def sharpener_end():
+    """Краят на точилка 40 x 40: кръг с четири плоски страни и канал 14 x 2,7 мм по средата на долната."""
+    from shapely.geometry import Point, box
+
+    body = Point(20, 20).buffer(23, quad_segs=64).intersection(box(0, 0, 40, 40))
+    return body, body.difference(box(13, -1, 27, 2.7))
+
+
+def test_channel_in_the_end_view_is_measured_and_the_pencil_hole_is_blind(tmp_path):
+    """Каналът по долната страна на точилка (вдлъбнатина в очертанието отстрани) е канал по дължината с мерки за
+    ширината и дълбочината, а не част от кривата; дупката за молива, видяна само на левия край, е глух отвор от него
+    с дълбочина за мерене."""
+    import numpy as np
+    from shapely.geometry import Point
+
+    from app.cad import assemble as A
+
+    body, notched = sharpener_end()
+    outer = np.asarray(notched.exterior.coords)[:-1]
+    hole = np.asarray(Point(20, 22).buffer(4.5, quad_segs=24).exterior.coords)[:-1]
+    view = {"outer": outer, "holes": [], "U": 40.0, "V": 40.0, "each": [outer, outer],
+            "blind": [{"pts": hole, "face": "left"}]}  # fmt: skip
+    d = A.assemble({"end": view}, 57, 40, 40)
+    channel = next(f for f in d["features"] if f["t"] == "rect")
+    assert channel["open"] == {"v": "-"} and channel["axis"] == "x" and channel["face"] == "bottom"
+    assert D.value(d, channel["w"]) == pytest.approx(14, abs=0.3)
+    assert D.value(d, channel["h"]) == pytest.approx(2.7, abs=0.2)
+    pencil = next(f for f in d["features"] if f["t"] == "hole")
+    assert pencil["side"] == "-" and pencil["face"] == "left" and pencil.get("depth")
+    names = [q["name"] for q in D.questions(d)]
+    assert "Ширина на канала" in names and "Дълбочина на канала" in names and "Дълбочина на отвора" in names
+    d = D.set_values(d, {channel["w"]: 14.0, channel["h"]: 2.7, pencil["d"]: 9.0, pencil["depth"]: 12.0})
+    rep = B.build(measured(d), tmp_path)
+    end_area = body.area - 14 * 2.7
+    assert rep["volume_mm3"] == pytest.approx(end_area * 57 - math.pi * 4.5**2 * 12, rel=0.015)
+    assert any("Канал по дължината" in e for e in rep["elements"])
+
+
+def test_flat_side_of_a_smooth_shape_is_a_straight_line():
+    """Плоската страна на гладка форма е права между два ъгъла, а не сплайн през много точки точно по страната
+    (сплайнът в равнината на другото тяло проваляше сечението: точилка от 74 000 мм3 ставаше 3 000)."""
+    import numpy as np
+
+    from app.cad import fit
+
+    body, _ = sharpener_end()
+    pts, corners = fit.smooth_outline(np.asarray(body.exterior.coords)[:-1], 40, 40)
+    on_bottom = [k for k, (u, v) in enumerate(pts) if v <= 1e-6]
+    assert len(on_bottom) == 2 and set(on_bottom) <= set(corners)
+
+
+def test_square_end_photo_turned_by_the_person_is_turned_back():
+    """Краят 40 x 40 (точилка): по пропорциите не личи коя ос на снимката е ширината. Вдлъбнатината отгоре в края
+    (по ширината) и тази на снимката на края показват коя е: каналът е на същата стена. Без такива белези - както
+    казва приложението."""
+    import numpy as np
+    from shapely.geometry import box
+
+    from app.cad import photos as P
+
+    def shot(poly):
+        return {"outer": (np.asarray(poly.exterior.coords)[:-1] * [1, -1]).tolist(), "size": [1000, 1000]}
+
+    top = shot(box(0, 0, 570, 400).difference(box(-1, 130, 20, 270)))
+    plain_top = shot(box(0, 0, 570, 400))
+    square = box(0, 0, 400, 400).buffer(-60).buffer(60)
+    beside = shot(square.difference(box(-1, 130, 27, 270)))  # каналът по оста, която приложението мисли за височина
+    below = shot(square.difference(box(130, -1, 270, 27)))
+    x, y = np.array([1.0, 0.0]), np.array([0.0, 1.0])
+    for top_shot, end_shot, turn in ((top, beside, True), (top, below, False), (plain_top, beside, False)):
+        frames = {"top": P.Frame(top_shot), "right": P.Frame(end_shot)}
+        orient = {"top": ["top", x, y], "right": ["end", x, y]}
+        assert P.end_turned(frames, orient, (57, 40, 40)) == turn
+    assert not P.end_turned({"top": P.Frame(top), "right": P.Frame(beside)},
+                            {"top": ["top", x, y], "right": ["end", x, y]}, (57, 21, 9))  # fmt: skip

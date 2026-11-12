@@ -482,6 +482,8 @@ def dark_marks(rgb: np.ndarray, solid: np.ndarray) -> list[tuple[np.ndarray, dic
     gray = rgb.mean(-1)
     vals = gray[inner]
     med = float(np.median(vals))
+    body = np.median(rgb[inner], axis=0)
+    body_c = body - body.mean()
     mad = float(np.median(np.abs(vals - med))) * 1.4826 + 3.0
     cand = inner & (gray < med - max(4 * mad, 35.0))
     cand = ndimage.binary_opening(cand, iterations=1)
@@ -503,7 +505,12 @@ def dark_marks(rgb: np.ndarray, solid: np.ndarray) -> list[tuple[np.ndarray, dic
             core = ndimage.binary_erosion(blob, iterations=1) if a > 60 else blob
             px = rgb[core if core.any() else blob]
             sat = float(np.median((px.max(1) - px.min(1)) / np.maximum(px.max(1), 1.0)))
-            out.append((c, {"dark": round(float(np.median(px.mean(1))) / max(med, 1.0), 3), "sat": round(sat, 3)}))
+            # Оттенъкът спрямо детайла (1: същият цвят, само по-тъмен - отвор в цветна пластмаса изглежда така).
+            mark_c = np.median(px, axis=0) - np.median(px, axis=0).mean()
+            norm = float(np.linalg.norm(mark_c) * np.linalg.norm(body_c))
+            tone = float(mark_c @ body_c) / norm if norm > 1e-6 else 0.0
+            out.append((c, {"dark": round(float(np.median(px.mean(1))) / max(med, 1.0), 3), "sat": round(sat, 3),
+                            "tone": round(tone, 3)}))  # fmt: skip
     return out[:30]
 
 
