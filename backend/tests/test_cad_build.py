@@ -469,3 +469,41 @@ def test_square_end_photo_turned_by_the_person_is_turned_back():
         assert P.end_turned(frames, orient, (57, 40, 40)) == turn
     assert not P.end_turned({"top": P.Frame(top), "right": P.Frame(beside)},
                             {"top": ["top", x, y], "right": ["end", x, y]}, (57, 21, 9))  # fmt: skip
+
+
+def test_hole_removed_with_zero_still_draws_and_builds(tmp_path):
+    """Лъжлив канал от отблясъка на светкавицата, махнат с 0 за дължината и ширината: чертежът не пада (сървърът
+    връщаше грешка 500 на "Построй модела"), а отчетът е без него."""
+    from app.cad import render as R
+
+    d = D.new("block", 54, 23, 2)
+    d = D.add_feature(d, {"t": "slot", "face": "top", "through": True, "centered": [True, True]})
+    slot = d["features"][0]
+    d = measured(D.set_values(d, {slot["len"]: 0.0, slot["w"]: 0.0}))
+    R.drawing(d)
+    rep = B.build(d, tmp_path)
+    assert rep["volume_mm3"] == pytest.approx(54 * 23 * 2, rel=1e-4)
+    assert not any("Канал" in e for e in rep["elements"])
+
+
+def test_tapping_a_hole_on_the_photo_finds_it():
+    """Докоснат отвор на снимката с очертанието (за махане на лъжлив отвор): вътре в него или до самия му ръб е
+    той; в празно място - нищо."""
+    from PIL import Image
+
+    from app.cad import render as R
+
+    d = D.new("block", 60, 30, 5)
+    d = D.add_feature(d, {"t": "hole", "face": "top", "through": True, "centered": [True, True]})
+    hole = d["features"][0]
+    d = measured(D.set_values(d, {hole["d"]: 6.0}))
+    photo = Image.new("RGB", (1200, 900), (120, 110, 100))
+    A = [[10.0, 0.0, 300.0], [0.0, -10.0, 600.0]]  # 10 пиксела на мм, v нагоре
+    sh, _, _, _ = R.overlay_sheet(d, "top", photo, A)
+    w, h = sh.im.size
+    cx, cy = sh.px(30, 15)
+    assert R.feature_at(d, "top", photo, A, cx / w, cy / h) == hole["id"]
+    ex, ey = sh.px(33.4, 15)  # до ръба отвън
+    assert R.feature_at(d, "top", photo, A, ex / w, ey / h) == hole["id"]
+    fx, fy = sh.px(5, 5)
+    assert R.feature_at(d, "top", photo, A, fx / w, fy / h) is None

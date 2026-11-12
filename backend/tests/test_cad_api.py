@@ -162,6 +162,10 @@ def test_add_remove_and_through(client):
     assert not next(f for f in got["design"]["features"] if f["id"] == rect["id"]).get("depth")
     got = client.post(f"/jobs/{job}/cad/edit", json={"design": got["design"], "op": {"remove": rect["id"]}}).json()
     assert all(f["t"] != "rect" for f in got["design"]["features"])
+    # Докосване на снимката с очертанието: празно място - няма елемент; извън снимката и непозната снимка - грешка.
+    assert client.post(f"/jobs/{job}/cad/tap/top", json={"x": 0.02, "y": 0.02}).json() == {"id": None}
+    assert client.post(f"/jobs/{job}/cad/tap/top", json={"x": 1.5, "y": 0.5}).status_code == 422
+    assert client.post(f"/jobs/{job}/cad/tap/nowhere", json={"x": 0.5, "y": 0.5}).status_code == 404
     assert all(not i.startswith("w") for i in got["design"]["dims"])  # размерите му също
     # Само снимка отгоре: става (плоча), височината без снимка е по схема.
     flat = client.post("/jobs").json()["id"]

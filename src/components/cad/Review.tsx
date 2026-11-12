@@ -2,7 +2,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { File, Paths } from 'expo-file-system';
 import { Image } from 'expo-image';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Pressable, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Pressable, Text, View, type GestureResponderEvent } from 'react-native';
 import type { Object3D } from 'three';
 
 import { ModelView } from '@/components/ModelView';
@@ -10,6 +10,7 @@ import { Button, Card, ErrorText, Header, Note, Screen, Section, Small } from '@
 import {
   authHeaders,
   cadPhotoUrl,
+  cadTap,
   downloadCadPreview,
   errorText,
   type CadAdd,
@@ -120,10 +121,10 @@ export function Review({
                 </View>
               )}
             </View>
-            <Image source={{ uri: cadPhotoUrl(jobId, v, state.stamp), headers: authHeaders() }} style={s.photo} contentFit="contain" transition={150} />
+            <TapPhoto jobId={jobId} photo={v} stamp={state.stamp} busy={busy} onRemove={(id) => onOp({ remove: id })} />
           </Card>
         ))}
-        <Small>Оранжевото е това, което ще се построи. Ако не пасва на предмета, снимайте отново.</Small>
+        <Small>Оранжевото е това, което ще се построи. Отвор, който го няма (отблясък от светкавицата), докоснете, за да го махнете. Ако очертанието не пасва на предмета, снимайте отново.</Small>
         {onRetake && <Button title="Снимай отново" icon="camera-outline" variant="ghost" onPress={onRetake} disabled={busy} />}
       </Section>
 
@@ -143,6 +144,59 @@ export function Review({
         onPress={onNext}
       />
     </Screen>
+  );
+}
+
+/* Снимката с очертанието: докоснат отвор (джоб, канал), който го няма на предмета, се маха след потвърждение. */
+function TapPhoto({ jobId, photo, stamp, busy, onRemove }: { jobId: string; photo: CadPhoto; stamp: string; busy: boolean; onRemove: (id: string) => void }) {
+  const s = useStyles();
+  const c = useColors();
+  const [size, setSize] = useState({ width: 0, height: 0 });
+  const [looking, setLooking] = useState(false);
+  const [hint, setHint] = useState<string | null>(null);
+
+  async function tap(e: GestureResponderEvent) {
+    if (busy || looking || !size.width || !size.height) return;
+    const x = Math.min(1, Math.max(0, e.nativeEvent.locationX / size.width));
+    const y = Math.min(1, Math.max(0, e.nativeEvent.locationY / size.height));
+    setLooking(true);
+    setHint(null);
+    try {
+      const hit = await cadTap(jobId, photo, x, y);
+      if (!hit.id) {
+        setHint('Там няма отвор. Докоснете вътре в оранжевия кръг или контур на отвора.');
+        return;
+      }
+      const id = hit.id;
+      Alert.alert('Да махна ли този елемент?', `${hit.text ?? 'Отвор'}: ако го няма на предмета (например отблясък от светкавицата), моделът ще е без него.`, [
+        { text: 'Отказ', style: 'cancel' },
+        { text: 'Махни', style: 'destructive', onPress: () => onRemove(id) },
+      ]);
+    } catch (err) {
+      setHint(errorText(err));
+    } finally {
+      setLooking(false);
+    }
+  }
+
+  return (
+    <>
+      <Pressable
+        onPress={tap}
+        onLayout={(e) => setSize({ width: e.nativeEvent.layout.width, height: e.nativeEvent.layout.height })}
+        style={s.photo}
+        accessibilityRole="imagebutton"
+        accessibilityLabel={`${PHOTO_TITLE[photo]}: докоснете отвор, за да го махнете`}
+      >
+        <Image source={{ uri: cadPhotoUrl(jobId, photo, stamp), headers: authHeaders() }} style={s.fill} contentFit="contain" transition={150} />
+        {looking && (
+          <View style={s.tapBusy}>
+            <ActivityIndicator color={c.accent} />
+          </View>
+        )}
+      </Pressable>
+      {hint && <Small>{hint}</Small>}
+    </>
   );
 }
 
@@ -382,7 +436,9 @@ const useStyles = makeStyles((c) => ({
   photoHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: space.sm, paddingTop: 4 },
   photoTitle: { color: c.text, fontFamily: font.semibold, fontSize: 14.5 },
   flipRow: { flexDirection: 'row', gap: space.sm },
-  photo: { width: '100%', aspectRatio: 4 / 3, borderRadius: radius.sm, backgroundColor: c.surface2 },
+  photo: { width: '100%', aspectRatio: 4 / 3, borderRadius: radius.sm, overflow: 'hidden', backgroundColor: c.surface2 },
+  fill: { width: '100%', height: '100%' },
+  tapBusy: { position: 'absolute', left: 0, right: 0, top: 0, bottom: 0, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.25)' },
   preview: { height: 260, borderRadius: radius.md, overflow: 'hidden', backgroundColor: c.surface2 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: space.lg },
   add: { gap: space.md },
