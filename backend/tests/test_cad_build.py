@@ -222,3 +222,22 @@ def test_oval_end_is_a_rounded_rectangle(tmp_path):
     assert D.value(d, radii.pop()) == pytest.approx(4.5, abs=0.25)
     rep = B.build(measured(d), tmp_path)
     assert rep["volume_mm3"] == pytest.approx(poly.area * 50, rel=0.01)
+
+
+def test_radius_that_does_not_fit_is_shrunk_not_the_whole_part_boxed(tmp_path):
+    """Оценка за радиус 3,6 мм на стена от 3,5 мм (ъгъл-скоба отпред): само радиусът се свива да се събере, а
+    очертанието остава. Преди целият детайл ставаше кутия."""
+    from app.cad import assemble as A
+
+    d = D.new("block", 40, 30, 25)
+    x = D.level_for(d, "x", 3.5, "Стъпало", "стъпалото", view="side")
+    z = D.level_for(d, "z", 3.0, "Стъпало", "стъпалото", view="side")
+    r = D.add_dim(d, "r", 3.6, "Радиус", "Радиус", kind="radius")
+    d["views"]["side"]["pts"] = [["x0", "z0", None], ["xL", "z0", None], ["xL", z, None], [x, z, None],
+                                 [x, "zH", r], ["x0", "zH", None]]  # fmt: skip
+    A.repair(d)
+    D.check(d)
+    assert len(d["views"]["side"]["pts"]) == 6 and not d["notes"]
+    assert D.value(d, r) < 3.5
+    rep = B.build(measured(d), tmp_path)
+    assert rep["volume_mm3"] < 0.4 * 40 * 30 * 25  # ъгъл, а не кутия

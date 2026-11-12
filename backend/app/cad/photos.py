@@ -37,6 +37,11 @@ SCALE_FREE = 1.6  # толкова по-отблизо или по-отдале�
 PRIOR_COST = 0.08  # колко (в log на пропорциите) струва да не вярваме на посоките от приложението
 FUSE_IOU = 0.86  # под това съвпадение две противоположни снимки не се усредняват
 MATCH_IOU = 0.8  # под това съвпадение (в мм) противоположните снимки не са едно и също
+# Перспективата смалява по-далечното, затова двете противоположни снимки на висок предмет (ъгъл, стоящ на края си)
+# се различават само с вдлъбнатини: едното очертание е почти цялото в другото. Тогава са една страна и
+# обединението им е истинското очертание, дори при по-малко съвпадение.
+CONTAIN = 0.96  # толкова от по-малкото очертание е в другото
+CONTAIN_IOU = 0.6  # но не по-малко съвпадение от това
 RATIO_WARN = 1.15  # пропорциите на снимката и мерките се разминават повече: предупреждение
 RATIO_DROP = 1.25  # още повече: снимката не е ползвана (под ъгъл или друга страна)
 MARK_WALL = 0.015  # тъмно петно по-близо до ръба (дял от размера) не е отвор
@@ -153,6 +158,17 @@ def iou(a: Polygon, b: Polygon) -> float:
     return a.intersection(b).area / max(a.union(b).area, 1e-12)
 
 
+def inside(a: Polygon, b: Polygon) -> float:
+    """Колко от по-малкото очертание е в другото."""
+    return a.intersection(b).area / max(min(a.area, b.area), 1e-12)
+
+
+def same_side(a: Polygon, b: Polygon, limit: float) -> bool:
+    """Двете очертания (нормирани до едни размери) са една страна: съвпадат или се различават само с вдлъбнатини
+    от перспективата (едното е в другото)."""
+    return iou(a, b) >= limit or (iou(a, b) >= CONTAIN_IOU and inside(a, b) >= CONTAIN)
+
+
 def roundness(poly: Polygon) -> float:
     """Относителното отклонение от кръг на очертание, нормирано до единичен квадрат (елипса също е "кръгла")."""
     pts = np.asarray(poly.exterior.coords)[:-1]
@@ -199,6 +215,7 @@ def layout(shots: dict, sizes: tuple[float, float, float] | None = None, flips: 
         orient[name] = [view, eu, ev]
     warnings: list[str] = []
     quality: dict[str, float] = {}
+    ok: dict[str, bool] = {}
     sure: dict[str, bool] = {}  # обръщането на снимката е ясно (несиметричен предмет)
     alts: dict[str, list] = {}  # обръщанията (по u, по v), които пасват почти еднакво добре
     ends: dict[str, float] = {}  # same_end на основната снимка отстрани (за проверка)
@@ -240,6 +257,7 @@ def layout(shots: dict, sizes: tuple[float, float, float] | None = None, flips: 
                 k = next((j for j, c in enumerate(cands) if np.allclose(c[0], cu) and np.allclose(c[1], cv)), k)
             orient[other] = [view, *cands[k]]
             quality[other] = round(float(scores[k]), 3)
+            ok[other] = same_side(base, frames[other].normalized(*cands[k]), FUSE_IOU)
             ck = cands[k]
             alts[other] = [[int(round(float(a @ ck[0]))), int(round(float(b @ ck[1])))] for (a, b), sc in
                            zip(cands, scores) if sc >= scores[k] - SURE_MARGIN]  # fmt: skip
@@ -249,14 +267,14 @@ def layout(shots: dict, sizes: tuple[float, float, float] | None = None, flips: 
             # Отвор само на тази снимка се добавя, само ако е ясно как е обърната (от очертанието или линиите вътре;
             # иначе може да е от грешната страна; пропуснат отвор се добавя на ръка, а грешен би развалил детайла).
             sure[other] = bool(scores[k] - rest > SURE_MARGIN) or len(alts[other]) == 1
-            if scores[k] < FUSE_IOU:
+            if not ok[other]:
                 warnings.append(f"Снимката {TITLE[other]} не съвпада добре със снимката {TITLE[primary]}: ползвам "
                                 f"само {TITLE[primary]}. Ако е друга страна, снимайте я отново.")  # fmt: skip
         for n in members:
             orient[n].append(n == primary)
     out = {"orient": {n: {"view": v[0], "eu": [float(x) for x in v[1]], "ev": [float(x) for x in v[2]],
                           "primary": bool(v[3])} for n, v in orient.items()},
-           "iou": quality, "sure": sure, "alts": alts, "warnings": warnings, "ends": ends}  # fmt: skip
+           "iou": quality, "same": ok, "sure": sure, "alts": alts, "warnings": warnings, "ends": ends}  # fmt: skip
     out["round"] = {"top": is_round(frames, orient, "top"), "end": is_round(frames, orient, "end")}
     return out
 
@@ -434,7 +452,7 @@ def placement(shot: dict, o: dict, U: float, V: float, depth: dict | None = None
     if depth is not None:
         outer, holes, ratio = unproject(shot, f, eu, ev, outer, holes, U, V, math.sqrt(ka * kb), depth)
     return {"outer": outer, "holes": holes, "marks": marks, "mark_info": f.mark_info, "A": A, "U": U, "V": V,
-            "ratio": ratio, "ortho": ortho(f.q)}  # fmt: skip
+            "ratio": ratio, "ortho": ortho(f.q), "own": outer}  # fmt: skip
 
 
 # --- Перспективата ---------------------------------------------------------------------------------------------------
@@ -445,6 +463,7 @@ def placement(shot: dict, o: dict, U: float, V: float, depth: dict | None = None
 # защото формата се уточнява.
 
 F35_DEFAULT = 26.0  # мм, основната камера на повечето телефони
+SPIKE = 0.01  # по-тънкото от това (дял от по-малкия размер) във върнатото на масата очертание е шип, не детайл
 GROW = 0.025  # раздуване на изгледите при сглобяване на формата за височините (дял от размера)
 NEAR = {"top": (2, 1), "side": (1, -1), "end": (0, 1)}  # оста към телефона и от коя страна гледа изгледът (det > 0)
 
@@ -541,7 +560,7 @@ def unproject(shot, f: Frame, eu, ev, outer, holes, U, V, scale, depth) -> tuple
         hh = np.minimum(hh, 0.9 * zc)
         return c + (p - c) * ((zc - hh) / zc)[:, None]
 
-    q = back(f.q, h_out)
+    q = despike(back(f.q, h_out), eu, ev)
     hs = [back(hq, height(hq, huv, True)) for hq, huv in zip(f.holes, holes)]
     a, b = q @ eu, q @ ev
     a0, a1 = np.percentile(a, [0.3, 99.7])
@@ -551,6 +570,31 @@ def unproject(shot, f: Frame, eu, ev, outer, holes, U, V, scale, depth) -> tuple
         return np.c_[np.clip((p @ eu - a0) / (a1 - a0), 0, 1) * U, np.clip((p @ ev - b0) / (b1 - b0), 0, 1) * V]
 
     return mm(q), [mm(x) for x in hs], float(((a1 - a0) / U) / ((b1 - b0) / V))
+
+
+def despike(q: np.ndarray, eu: np.ndarray, ev: np.ndarray) -> np.ndarray:
+    """Очертанието, върнато на масата, без шиповете: стена, видяна отстрани (ивицата между близкия и далечния ръб),
+    се връща на масата като линия без дебелина, която стърчи от ъгъла. Шипът пречи да се познаят ъглите и, ако е
+    най-външното, разтяга мащаба (ъгълът излизаше с крак 36,5 вместо 40 мм). Махат се частите, по-тънки от SPIKE от
+    по-малкия размер; острите ъгли остават остри. Само ако шиповете разтягат размера: иначе нищо не се пипа."""
+    from shapely.validation import make_valid
+
+    poly = make_valid(Polygon(q))
+    a, b = q @ eu, q @ ev
+    e = SPIKE * min(np.ptp(a), np.ptp(b))
+    if e <= 0:
+        return q
+    opened = poly.buffer(-e, join_style=2).buffer(e, join_style=2)
+    if opened.is_empty or opened.area < 0.9 * poly.area:
+        return q  # нещо по-голямо от шип (тънък детайл): както е
+    out = np.asarray(largest(opened).exterior.coords)[:-1]
+    if len(out) < 8:
+        return q
+    if max(np.ptp(a) - np.ptp(out @ eu), np.ptp(b) - np.ptp(out @ ev)) < 0.5 * e:
+        return q  # шиповете (ако има) не са най-външното: очертанието остава, както е (ъглите се познават и така)
+    from .fit import resample
+
+    return resample(np.r_[out, out[:1]], float(np.hypot(np.ptp(a), np.ptp(b))) / max(len(q), 200))
 
 
 def view_sizes(view: str, L: float, W: float, H: float) -> tuple[float, float]:
@@ -612,7 +656,7 @@ def combine(shots: dict, lay: dict, L: float, W: float, H: float, solid, fuse_pa
 
         primary = next(n for n in names if lay["orient"][n]["primary"])
         p = place(primary)
-        others = [n for n in names if n != primary and lay["iou"].get(n, 0) >= FUSE_IOU]
+        others = [n for n in names if n != primary and lay.get("same", {}).get(n, lay["iou"].get(n, 0) >= FUSE_IOU)]
         if not fits(p):  # основната снимка не пасва на мерките: другата на същия изглед, ако пасва, иначе нищо
             alt = [n for n in names if n != primary]
             q = place(alt[0]) if alt else None
@@ -632,7 +676,7 @@ def combine(shots: dict, lay: dict, L: float, W: float, H: float, solid, fuse_pa
             q = place(others[0])
             pa = largest(Polygon(p["outer"]).buffer(0))
             qa = largest(Polygon(q["outer"]).buffer(0))
-            if fits(q) and iou(pa, qa) >= MATCH_IOU:
+            if fits(q) and same_side(pa, qa, MATCH_IOU):
                 fused = fuse(p, q, U, V)
                 if fused is not None:
                     extra = lay.get("sure", {}).get(others[0], False)
@@ -643,8 +687,12 @@ def combine(shots: dict, lay: dict, L: float, W: float, H: float, solid, fuse_pa
                     holes += mark_pairs(p, q, holes, alts, U, V)
                     p = p | {"outer": fused["outer"], "holes": holes}
                     used.append(others[0])
-        p_holes = p["holes"] + dark_holes(p, p["holes"], U, V)
-        each = [p["ortho"]] + ([place(others[0])["ortho"]] if others else [])
+        p_holes = widen(p["holes"], p.get("marks", []), U, V)
+        p_holes += dark_holes(p, p_holes, U, V)
+        # Всяка снимка поотделно (за по-тесните краища): с поправената перспектива, ако е поправена. Иначе по-високата
+        # част по средата (стената на Т-профил) изглежда по-дълга от основата и прилича на щепсел в края.
+        key = "ortho" if solid is None else "own"
+        each = [p[key]] + ([place(others[0])[key]] if others else [])
         out[view] = {"outer": p["outer"], "holes": p_holes, "U": U, "V": V, "from": used, "each": each}
     return out, warnings
 
@@ -664,7 +712,9 @@ def hole_union(a: list, b: list, extra: bool = True, outer_a=None, outer_b=None)
             pg = largest(Polygon(g).buffer(0))
             if k in used or ph.area <= 0 or pg.area <= 0:
                 continue
-            if ph.intersection(pg).area >= 0.5 * min(ph.area, pg.area):
+            # Един отвор: застъпват се поне наполовина или средите им са по-близо от радиуса на по-големия (от
+            # двете страни перспективата го измества различно и по-малкият може да е наполовина извън другия).
+            if same_hole(ph, pg, 0.5):
                 best, k_best = pg, k
                 break
         if best is None:
@@ -704,7 +754,7 @@ def dark_holes(p: dict, holes: list, U: float, V: float) -> list:
         if not info or info.get("dark", 1) > HOLE_DARK or info.get("sat", 1) > HOLE_SAT:
             continue
         mp = largest(Polygon(m).buffer(0))
-        if mp.area <= 0 or any(mp.intersection(h).area > 0.3 * mp.area for h in have):
+        if mp.area <= 0 or any(same_hole(mp, h, 0.3) for h in have):
             continue
         if edge.distance(mp) < MARK_WALL * max(U, V):
             continue
@@ -713,6 +763,34 @@ def dark_holes(p: dict, holes: list, U: float, V: float) -> list:
         out.append(np.asarray(mp.exterior.coords)[:-1])
         have.append(mp)
     return out
+
+
+def widen(holes: list, marks: list, U: float, V: float) -> list:
+    """Дълбок отвор встрани от средата на кадъра: през него се вижда само част (масата), а до нея е тъмната му
+    стена. Ръбът на отвора обхваща и двете, затова отворът е обвивката им (оценката за диаметъра беше 3,5 вместо
+    5 мм). Само петно, долепено до отвора, когато обвивката не е много по-голяма от двете заедно."""
+    out = []
+    marks = [largest(Polygon(m).buffer(0)) for m in marks]
+    for h in holes:
+        hp = largest(Polygon(h).buffer(0))
+        if hp.area > 0:
+            for m in marks:
+                if (m.area > 0 and same_hole(hp, m, 0.3) and hp.distance(m) <= 0.01 * max(U, V)
+                        and m.union(hp).convex_hull.area <= 1.5 * (hp.area + m.area)):  # fmt: skip
+                    hp = m.union(hp).convex_hull
+            h = np.asarray(hp.exterior.coords)[:-1]
+        out.append(np.asarray(h))
+    return out
+
+
+def same_hole(a: Polygon, b: Polygon, share: float) -> bool:
+    """Едно и също място: застъпват се поне с `share` от по-малкото или средите им са по-близо от радиуса на
+    по-голямото (дълбок отвор: виждащата се през него част и тъмната стена до нея са изместени, а от двете страни
+    перспективата ги измества различно)."""
+    if a.area <= 0 or b.area <= 0:
+        return False
+    close = a.centroid.distance(b.centroid) <= math.sqrt(max(a.area, b.area) / math.pi)
+    return close or a.intersection(b).area >= share * min(a.area, b.area)
 
 
 def mark_pairs(p: dict, q: dict, holes: list, alts: list, U: float, V: float) -> list:
@@ -724,7 +802,7 @@ def mark_pairs(p: dict, q: dict, holes: list, alts: list, U: float, V: float) ->
     edge = largest(Polygon(p["outer"]).buffer(0)).exterior
     for m in p.get("marks", []):
         mp = largest(Polygon(m).buffer(0))
-        if mp.area <= 0 or any(mp.intersection(h).area > 0.3 * mp.area for h in have):
+        if mp.area <= 0 or any(same_hole(mp, h, 0.3) for h in have):
             continue
         if edge.distance(mp) < MARK_WALL * max(U, V):
             continue  # до самия ръб: сянка на стена (изрез, стъпало), видяна от перспективата, а не отвор
@@ -753,7 +831,7 @@ def confirmed(p: dict, q: dict, alts: list, U: float, V: float) -> list:
     for h in q["holes"]:
         h = np.asarray(h)
         hp = largest(Polygon(h).buffer(0))
-        if hp.area <= 0 or any(hp.intersection(m).area > 0.3 * hp.area for m in matched):
+        if hp.area <= 0 or any(same_hole(hp, m, 0.3) for m in matched):
             continue  # вече е от основната снимка
         hits = []
         for su, sv in alts:
