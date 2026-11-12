@@ -54,10 +54,12 @@ def is_turned(views: dict, L: float, W: float, H: float) -> bool:
     return a.intersection(b).area / max(a.union(b).area, 1e-9) > 0.9
 
 
-def profile_corners(outer: np.ndarray, U: float, V: float) -> list[tuple[float, float, float]] | None:
+def profile_corners(outer: np.ndarray, U: float, V: float,
+                    cs: list | None = None) -> list[tuple[float, float, float]] | None:
     """Горната половина на очертанието на детайл от струг като ъгли (x, радиус, радиус на заобляне) отляво надясно,
-    от същото разпознаване на прави и дъги като при другите изгледи (заоблените краища стават дъги, а не стъпала)."""
-    cs = fit.corners(outer, U, V)
+    от същото разпознаване на прави и дъги като при другите изгледи (заоблените краища стават дъги, а не стъпала).
+    cs: вече намерените ъгли (с по-тесните краища)."""
+    cs = fit.corners(outer, U, V) if cs is None else cs
     if cs is None:
         return None
     R = V / 2
@@ -104,7 +106,8 @@ def assemble(views: dict, L: float, W: float, H: float, flat: bool = False) -> d
         if cs is not None:
             cs = fit.symmetric_round(cs, v["U"], v["V"])
             if name in ("top", "side"):  # по-тесен/по-тънък край (флашка, химикалка): къси стъпала
-                tabs = each_tabs(v)
+                other = views.get("side" if name == "top" else "top")
+                tabs = each_tabs(v, whole_tabs(other) if other is not None else None)
                 cs = fit.apply_tabs(cs, tabs, v["U"], v["V"])
                 if name == "top":
                     top_tabs = tabs
@@ -123,30 +126,121 @@ def assemble(views: dict, L: float, W: float, H: float, flat: bool = False) -> d
         cs = fit.apply_tabs([(0.0, 0.0, 0.0), (L, 0.0, 0.0), (L, H, 0.0), (0.0, H, 0.0)], tabs, L, H)
         d["views"]["side"] = view_pts(d, cs, "x", "z", L, H, "side", radius_dims)
     group_holes(d)
-    try:
-        D.check(d)
-    except D.DesignError:
-        # Оценките от снимката не пасват (например стъпало, почти колкото ръба): изгледите стават правоъгълници.
-        for name in ("top", "side", "end"):
-            a, b = D.VIEW_AXES[name]
-            if not d["views"].get(name, {}).get("round"):
-                d["views"][name] = {"pts": D.box(a, b)}
-        D.unused_cleanup(d)
-        d["notes"].append("Очертанията от снимките не се събраха: започваме от кутия; добавете елементите ръчно.")
+    repair(d)
     D.unused_cleanup(d)
     return d
 
 
-def each_tabs(v: dict) -> list[dict]:
+MIN_RADIUS = 0.3  # мм: по-малка оценка за радиус, свита да се събере, е остър ъгъл
+
+
+def fits(d: dict) -> bool:
+    try:
+        D.check(d)
+        return True
+    except D.DesignError:
+        return False
+
+
+def repair(d: dict) -> None:
+    """Оценките от снимката, които не се събират, се поправят една по една, а не цялото на кутия: първо радиусите
+    (заобляне, по-голямо от стената до него: оценка 3,6 мм на стена от 3 мм развали целия ъгъл-скоба), после само
+    изгледите, които още не стават. Кутия е само последното."""
+    if fits(d):
+        return
+    for name in ("top", "side", "end"):
+        if d["views"].get(name, {}).get("pts") and not d["views"][name].get("round"):
+            shrink_radii(d, name)
+    if fits(d):
+        return
+    boxed = []
+    for name in ("end", "side", "top"):  # от по-малко сигурния изглед (краят е най-малък на снимката)
+        if fits(d):
+            break
+        spec = d["views"].get(name, {})
+        if spec.get("round") or not spec.get("pts"):
+            continue
+        a, b = D.VIEW_AXES[name]
+        if spec["pts"] != D.box(a, b):
+            d["views"][name] = {"pts": D.box(a, b)}
+            boxed.append(D.VIEW_NAME[name])
+    D.unused_cleanup(d)
+    if not fits(d):  # например елемент извън детайла: махат се елементите, изгледите остават
+        d["features"] = [f for f in d["features"] if f["t"] not in ("hole", "rect", "slot")]
+        D.unused_cleanup(d)
+    if boxed:
+        d["notes"].append(f"Очертанието {' и '.join(boxed)} от снимките не се събра с другите: там е правоъгълник; "
+                          "добавете стъпалата ръчно, ако има.")  # fmt: skip
+
+
+def shrink_radii(d: dict, view: str) -> None:
+    """Радиусите на изгледа, свити колкото да се съберат дъгите на всяка страна (с малко резерв); твърде малките
+    стават остри ъгли. Общ размер за няколко ъгъла взема най-малката стойност."""
+    import math
+
+    pts = D.outline(d, view)
+    rows = d["views"][view]["pts"]
+    n = len(pts)
+    if n < 3:
+        return
+    cut, tan = [], []
+    for k, (u, v, r) in enumerate(pts):
+        pu, pv, _ = pts[k - 1]
+        nu, nv, _ = pts[(k + 1) % n]
+        ang = D.corner_angle((pu, pv), (u, v), (nu, nv))
+        t = math.tan(ang / 2) if 1e-3 < ang < math.pi - 1e-3 else 0.0
+        tan.append(t)
+        cut.append(r / t if r > 0 and t > 0 else (math.inf if r > 0 else 0.0))
+    scale = [1.0] * n
+    for k in range(n):
+        if pts[k][2] <= 0:
+            continue
+        for j in (k - 1, k):  # двете страни на ъгъла: (k-1, k) и (k, k+1)
+            a, b = j % n, (j + 1) % n
+            side = math.dist(pts[a][:2], pts[b][:2])
+            need = cut[a] + cut[b]
+            if need > 0.95 * side:
+                scale[k] = min(scale[k], 0.95 * side / need if math.isfinite(need) else 0.0)
+    best: dict[str, float] = {}
+    for k, row in enumerate(rows):
+        rid = row[2]
+        if rid:
+            best[rid] = min(best.get(rid, math.inf), pts[k][2] * scale[k])
+    for k, row in enumerate(rows):
+        rid = row[2]
+        if rid and best[rid] < MIN_RADIUS:
+            row[2] = None
+    for rid, r in best.items():
+        if r >= MIN_RADIUS and r < D.value(d, rid):
+            d["dims"][rid]["v"] = d["dims"][rid]["est"] = round(r, 2)
+
+
+def whole_tabs(v: dict) -> set[int]:
+    """Краищата, по-тесни на общото очертание на изгледа."""
+    return {t["end"] for t in fit.end_tabs(v["outer"], v["U"], v["V"])}
+
+
+def each_tabs(v: dict, other: set[int] | None = None) -> list[dict]:
     """По-тесните краища на изгледа: от общото очертание и от всяка снимка поотделно (на двете противоположни
     снимки стъпалото може да е от различни страни и обединението да го скрие). За всеки край - средното от
-    снимките, които го показват."""
+    снимките, които го показват. Когато има две снимки, край, който е по-тесен само на едната (а не на общото
+    очертание), е от перспективата: по-високата част по средата (стената на Т-профил) е по-близо до телефона и
+    изглежда по-дълга от основата, като щепсел. Истинският по-тесен край (флашка) е и на двете, а ако се е видял
+    само на едната (сянка, пръсти), и в другия изглед (other: по-тесните краища отгоре за изгледа отпред и обратно;
+    флашката е по-тясна и по-тънка в същия край, а стената на Т-профила изглежда по-дълга само отгоре)."""
     found: dict[int, list] = {}
-    for outline in [v["outer"]] + list(v.get("each", [])):
+    whole = {t["end"] for t in fit.end_tabs(v["outer"], v["U"], v["V"])}
+    each = list(v.get("each", []))
+    seen: dict[int, int] = {}
+    for k, outline in enumerate([v["outer"]] + each):
         for t in fit.end_tabs(outline, v["U"], v["V"]):
             found.setdefault(t["end"], []).append(t)
+            if k:
+                seen[t["end"]] = seen.get(t["end"], 0) + 1
     out = []
     for end, ts in found.items():
+        if len(each) >= 2 and end not in whole and seen.get(end, 0) < 2 and other is not None and end not in other:
+            continue
         out.append({"end": end, **{k: float(np.mean([t[k] for t in ts])) for k in ("len", "lo", "hi")}})
     return out
 
@@ -300,7 +394,10 @@ def group_holes(d: dict) -> None:
 def turned(views: dict, L: float, W: float, H: float) -> dict:
     d = D.new("turned", L, W, H)
     top = views["top"]
-    prof = profile_corners(top["outer"], top["U"], top["V"])
+    cs = fit.corners(top["outer"], top["U"], top["V"])
+    if cs is not None:  # по-тесен край (върхът на химикалка): късо стъпало, което разпознаването на прави пропуска
+        cs = fit.apply_tabs(cs, each_tabs(top), top["U"], top["V"])
+    prof = profile_corners(top["outer"], top["U"], top["V"], cs)
     if prof is None:  # гладък цилиндър или капсула, които разпознаването на прави едва не хваща: еднакви краища
         r = fit.rounded_box(top["outer"], top["U"], top["V"])
         if r is not None:

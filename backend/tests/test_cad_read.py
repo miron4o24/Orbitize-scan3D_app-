@@ -108,7 +108,8 @@ def test_block_from_six_photos(sess, tmp_path):
     names = {q["name"]: q["est"] for q in D.questions(d)}
     assert names["Стъпало по дължината (от левия край)"] == pytest.approx(25, abs=1.0)
     assert names["Стъпало по височината (от горната страна)"] == pytest.approx(8, abs=1.2)
-    assert names["Радиус на заоблен ъгъл"] == pytest.approx(6, abs=1.0)
+    radii = [q["est"] for q in D.questions(d) if q["name"] == "Радиус на заоблен ъгъл"]
+    assert any(abs(r - 6) <= 1.0 for r in radii)  # R6 (лъжлив радиус във вътрешния ъгъл на изреза се мери 0)
     end = {tuple(r) for r in d["views"]["end"]["pts"]}
     assert end == {tuple(r) for r in D.box("y", "z")}  # отстрани е правоъгълник: без лъжливи стъпала
     assert solid_iou(truth, measured(d)) > 0.95  # камерата е близо (перспектива), а това са само оценките
@@ -198,3 +199,25 @@ def test_side_photo_with_the_part_turned_around(sess, tmp_path):
 
     assert height(49.5) < height(25) - 1.5  # тесният край е отдясно, както отгоре
     assert height(2.0) > height(49.5) + 1.0  # отляво е заобленият край на капачката, а не стъпалото
+
+
+def test_tall_angle_bracket_close_to_the_phone(sess, tmp_path):
+    """Ъгъл-скоба 40 x 30 x 25 (стени 3 мм), сниман отблизо: отгоре високата стена изглежда по-голяма от основата, а
+    стоящ на края си - основата е 40 мм по-близо до телефона и изглежда с 40% по-широка. Перспективата прави лъжливи
+    вдлъбнатини само на едната от двете противоположни снимки, затова те са една страна (обединението е истинското
+    очертание); отпред е L с тънки стени. Преди: детайлът ставаше кутия (5 пъти по-тежък)."""
+    truth = D.new("block", 40, 30, 25)
+    x = D.level_for(truth, "x", 3.0, "С", "с", view="side")
+    z = D.level_for(truth, "z", 3.0, "С", "с", view="side")
+    truth["views"]["side"]["pts"] = [["x0", "z0", None], ["xL", "z0", None], ["xL", z, None], [x, z, None],
+                                     [x, "zH", None], ["x0", "zH", None]]  # fmt: skip
+    truth = measured(truth)
+    plan, lay, d = read(sess, truth, tmp_path, P.NAMES, (40, 30, 25), yaw=9.0, seed=5)
+    assert lay["same"]["bottom"] and lay["same"]["left"]  # противоположните снимки са една страна
+    for view, (a, b) in (("top", ("x", "y")), ("end", ("y", "z"))):  # правоъгълници, без лъжливи стъпала
+        assert {tuple(r) for r in d["views"][view]["pts"]} == {tuple(r) for r in D.box(a, b)}
+    side = D.outline(d, "side")
+    assert len(side) == 6 and not d["notes"]
+    walls = {i: 3.0 for i, x in d["dims"].items() if x["kind"] == "position" and abs(x["est"] - 3.0) < 1.5}
+    assert len(walls) == 2  # дебелината на двете стени се пита (оценка до 1,5 мм от 3)
+    assert solid_iou(truth, measured(D.set_values(d, walls))) > 0.97  # с измерените стени: същият детайл
