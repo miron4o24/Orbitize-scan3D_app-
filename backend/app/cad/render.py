@@ -251,6 +251,11 @@ def base_view(d: dict, view: str, size=(1000, 640), margin=120) -> Sheet:
         sh.poly(pts, fill=PAPER, outline=INK, width=3)
     for x0, x1 in split_lines(d, view):  # граница между части (капачка и тяло): отдолу x0, отгоре x1
         sh.line((x0, -V * 0.04), (x1, V * 1.04), BLUE, 3, dash=16)
+    slant, sections = narrow_marks(d, view)
+    for x0, x1 in slant:  # наклоненият край на тялото до по-тесния край
+        sh.line((x0, 0), (x1, V), INK, 3)
+    for pts in sections:  # сечението на по-тесния край
+        sh.poly(pts, outline=INK, width=2)
     if view == "profile":  # оста и отворът по нея (скрит: пунктир)
         R = V / 2
         sh.line((-U * 0.04, R), (U * 1.04, R), SOFT, 2, dash=14)
@@ -524,7 +529,28 @@ def overlay_shapes(d: dict, view: str, face: str | None = None) -> tuple[float, 
     U, V = view_size(d, shape_view)
     polys = [(None, silhouette(d, shape_view))] + [(f, p) for f, p in features_in(d, shape_view)
                                                    if not (face and f.get("depth") and f.get("face") != face)]
-    return U, V, polys
+    return U, V, polys + [(None, p) for p in narrow_marks(d, shape_view, face)[1]]
+
+
+def narrow_marks(d: dict, view: str, face: str | None = None) -> tuple[list, list]:
+    """По-тесните краища (D.narrow_ends) в изгледа: наклоненият край на тялото отпред [(x долу, x горе)] и
+    сечението на по-тесния край отстрани [точки в мм] (само на снимката на неговия край, ако е дадена)."""
+    lines, sections = [], []
+    if d["kind"] != "block":
+        return lines, sections
+    for n in D.narrow_ends(d):
+        try:
+            xb, xt = D.coord(d, n["bottom"]), D.coord(d, n["top"])
+            y0, y1, z0, z1 = (D.coord(d, n[k][i]) for k in ("y", "z") for i in (0, 1))
+        except D.DesignError:
+            continue
+        if view == "side" and abs(xb - xt) > 1e-6:
+            lines.append((xb, xt))
+        if view == "end" and n["round"] and (face is None or face == ("right" if n["sign"] == "+" else "left")):
+            W, H = view_size(d, "end")
+            pts = silhouette(d, "end")
+            sections.append(np.c_[y0 + pts[:, 0] * (y1 - y0) / W, z0 + pts[:, 1] * (z1 - z0) / H])
+    return lines, sections
 
 
 def overlay_sheet(d: dict, view: str, photo: Image.Image, A, side: int = 1100, face: str | None = None):
@@ -541,6 +567,8 @@ def overlay(d: dict, view: str, photo: Image.Image, A, side: int = 1100, face: s
     if not (d["kind"] == "turned" and view == "end"):
         for x0, x1 in split_lines(d, "profile" if d["kind"] == "turned" else view):
             sh.line((x0, 0), (x1, V), ACCENT, 3, dash=14)
+        for x0, x1 in narrow_marks(d, view)[0]:  # наклоненият край на тялото до по-тесния край
+            sh.line((x0, 0), (x1, V), ACCENT, 3)
     return sh.im
 
 
