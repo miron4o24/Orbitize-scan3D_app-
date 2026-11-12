@@ -86,6 +86,9 @@ def features_in(d: dict, view: str) -> list[tuple[dict, np.ndarray]]:
             r = D.value(d, f["d"]) / 2
             t = np.linspace(0, 2 * math.pi, 48)
             out.append((f, np.c_[cu + r * np.cos(t), cv + r * np.sin(t)]))
+        elif f["t"] == "rect" and f.get("shape"):
+            w, h = D.value(d, f["w"]), D.value(d, f["h"])
+            out.append((f, np.array([(cu + (a - 0.5) * w, cv + (b - 0.5) * h) for a, b in f["shape"]])))
         elif f["t"] == "rect":
             w, h = D.value(d, f["w"]), D.value(d, f["h"])
             r = D.value(d, f["r"]) if f.get("r") else 0.0

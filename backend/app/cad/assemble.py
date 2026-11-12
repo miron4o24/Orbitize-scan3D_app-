@@ -321,7 +321,7 @@ def free_view(d: dict, v: dict, a: str, b: str, view: str) -> dict:
 
 
 def add_hole(d: dict, pts: np.ndarray, axis: str, view: str, size: float) -> None:
-    shape = fit.hole_shape(pts, size)
+    shape = fit.hole_shape(pts, size, D.total(d, axis))
     a, b = D.plane_axes(axis)
     fid = D.new_feature_id(d, shape["t"])
     f = {"id": fid, "t": shape["t"], "axis": axis, "side": "+", "view": view,
@@ -345,7 +345,9 @@ def add_hole(d: dict, pts: np.ndarray, axis: str, view: str, size: float) -> Non
                            "С вътрешните челюсти.", show={"feature": fid, "along": a})  # fmt: skip
         f["h"] = D.add_dim(d, "h", shape["h"], "Височина на отвора", f"Измерете отвора по {D.axis_word(b)}",
                            "С вътрешните челюсти.", show={"feature": fid, "along": b})  # fmt: skip
-        if shape.get("r"):
+        if shape.get("shape"):  # по формата от снимката, вписана в ширината и височината
+            f["shape"], f["corners"] = shape["shape"], shape["corners"]
+        elif shape.get("r"):
             f["r"] = D.add_dim(d, "r", shape["r"], "Радиус в ъглите на отвора", "Радиус в ъглите на отвора",
                                "Ако не можете да го измерите, оставете оценката.", "radius", optional=True,
                                show={"feature": fid})  # fmt: skip

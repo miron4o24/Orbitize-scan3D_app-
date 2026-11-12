@@ -535,6 +535,8 @@ def label(d: dict, f: dict) -> str:
     if t == "hole":
         return "Отвор" + (" (резба " + f["thread"] + ")" if f.get("thread") else "")
     if t == "rect":
+        if f.get("shape"):
+            return "Отвор по формата от снимката" if f.get("depth") is None else "Джоб по формата от снимката"
         return "Правоъгълен " + ("изрез" if f.get("depth") is None else "джоб")
     if t == "slot":
         return "Канал"

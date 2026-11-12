@@ -221,3 +221,28 @@ def test_tall_angle_bracket_close_to_the_phone(sess, tmp_path):
     walls = {i: 3.0 for i, x in d["dims"].items() if x["kind"] == "position" and abs(x["est"] - 3.0) < 1.5}
     assert len(walls) == 2  # дебелината на двете стени се пита (оценка до 1,5 мм от 3)
     assert solid_iou(truth, measured(D.set_values(d, walls))) > 0.97  # с измерените стени: същият детайл
+
+
+def test_hole_seen_only_by_mobilesam_is_kept_when_the_table_shows_through():
+    """Сив ключ на кафяво дърво: IS-Net запълва отвора за халката, а цветът не се търси (детайлът е като фона).
+    Отворът на MobileSAM остава, ако през него се вижда фонът (кафяво), а не тъмен надпис с оттенъка на детайла."""
+    import numpy as np
+    from PIL import Image
+
+    from app.cad import vision as V
+
+    rng = np.random.default_rng(0)
+    img = np.empty((300, 400, 3), np.float32)
+    img[:] = [120, 95, 75]
+    img += rng.normal(0, 12, img.shape)
+    img[80:220, 100:300] = [105, 100, 112]  # детайлът: сив с лек син оттенък
+    img[120:180, 240:270] = [118, 94, 76]  # отвор: дървото отдолу
+    img[120:180, 130:160] = [50, 48, 56]  # тъмен надпис върху детайла
+    im = Image.fromarray(np.clip(img, 0, 255).astype(np.uint8))
+    solid = np.zeros((300, 400), bool)
+    solid[80:220, 100:300] = True
+    off = np.array([0.0, 0.0])
+    hole = np.array([[240, 120], [270, 120], [270, 180], [240, 180]], float)
+    logo = np.array([[130, 120], [160, 120], [160, 180], [130, 180]], float)
+    got = V.through_holes(im, solid, off, [hole, logo], [])
+    assert len(got) == 1 and got[0][:, 0].min() == 240

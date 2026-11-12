@@ -351,3 +351,44 @@ def test_edge_rounding_the_kernel_cannot_make_is_reduced_not_a_dead_end(tmp_path
     rep = B.build(D.set_values(d, {k["edge"]: 1.8, k["in"]: None, k["tip"]: None, k["out"]: None}), tmp_path)
     assert len(calls) == 2 and rep["volume_mm3"] > 0
     assert any("1,8 мм не става" in n and "1,35 мм" in n for n in rep["adjusted"])
+
+
+def test_semicircle_end_arcs_that_just_touch_keep_lines_and_arcs():
+    """Краят на кука е полукръг: двата радиуса запълват точно страната (4,2 + 4,2 на 8,4 мм). Шумът от закръгляването
+    правеше заобленото очертание да се пресича, приликата със снимката ставаше 0 и куката - гладка форма без мерки."""
+    from shapely.geometry import Polygon
+
+    from app.cad import fit
+
+    cs = [(0.0, 0.0, 0.0), (40.0, 0.0, 4.2000001), (40.0, 8.4, 4.2000001), (0.0, 8.4, 0.0)]
+    assert Polygon(fit.rounded(fit.fitting_arcs(cs))).is_valid
+
+
+def test_key_hole_shaped_like_a_d_follows_the_photo(tmp_path):
+    """Отворът за халката на ключ (D: права отляво, дъга отдясно, 5,5 x 10 мм) в пластина от 2 мм не е кръг с
+    диаметър 10, нито канал: формата е по снимката, а се мерят ширината, височината и положението."""
+    import numpy as np
+    from shapely.geometry import Point, box
+
+    from app.cad import fit
+
+    d_shape = box(0, 0, 3, 10).union(Point(3, 5).buffer(2.5, 64).intersection(box(3, 0, 6, 10)))
+    d_shape = d_shape.union(box(0, 0, 3.0, 10)).buffer(0)
+    pts = np.asarray(d_shape.exterior.coords)[:-1] + [40, 6]
+    shape = fit.hole_shape(pts, 54, depth=2.0)
+    assert shape["t"] == "rect" and shape.get("shape")
+    assert shape["w"] == pytest.approx(5.5, abs=0.1) and shape["h"] == pytest.approx(10, abs=0.1)
+    circle = np.c_[np.cos(np.linspace(0, 6.28, 80)), np.sin(np.linspace(0, 6.28, 80))] * 4 + [20, 10]
+    assert fit.hole_shape(circle, 54, depth=2.0)["t"] == "hole"
+    slot = fit.slot_poly({"u": 20, "v": 10, "len": 12, "w": 4, "angle": 0})
+    assert fit.hole_shape(np.asarray(slot.exterior.coords)[:-1], 54, depth=2.0)["t"] == "slot"
+
+    d = D.new("block", 54, 23, 2)
+    d["flat"] = True
+    f = {"t": "rect", "axis": "z", "side": "+", "w": D.add_dim(d, "w", shape["w"], "Ширина", "Ширина"),
+         "h": D.add_dim(d, "h", shape["h"], "Височина", "Височина"), "u": {"lvl": "xc", "anchor": "center"},
+         "v": {"lvl": "yc", "anchor": "center"}, "id": "rect1", "shape": shape["shape"], "corners": shape["corners"]}
+    d["features"].append(f)
+    rep = B.build(measured(d), tmp_path)
+    assert rep["volume_mm3"] == pytest.approx((54 * 23 - d_shape.area) * 2, rel=0.01)
+    assert "Отвор по формата от снимката" in " ".join(rep["elements"])
