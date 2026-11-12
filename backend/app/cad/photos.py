@@ -254,6 +254,16 @@ def layout(shots: dict, sizes: tuple[float, float, float] | None = None, flips: 
                         decided[i] = True
                         if flip > same:
                             cu, cv = (-cu, cv) if i == 0 else (cu, -cv)
+                # Отгоре и отдолу симетрично (флашка): скосеният край (стъпало, по-дълго от едната страна) е от една и
+                # съща страна и на двете снимки, иначе обединението го скрива.
+                if not decided[1] and any(np.allclose(cands[j][0], cu) and np.allclose(cands[j][1], -cv) for j in near):
+                    mine, theirs = slant_sides(frames[primary], eu, ev), slant_sides(frames[other], cu, cv)
+                    common = [e for e in mine if e in theirs]
+                    if common and all(mine[e] != theirs[e] for e in common):
+                        cv = -cv
+                        decided[1] = True
+                    elif common:
+                        decided[1] = True
                 k = next((j for j, c in enumerate(cands) if np.allclose(c[0], cu) and np.allclose(c[1], cv)), k)
             orient[other] = [view, *cands[k]]
             quality[other] = round(float(scores[k]), 3)
@@ -361,6 +371,25 @@ def line_match(a: Frame, ea: np.ndarray, b: Frame, eb: np.ndarray) -> int:
     снимка по оста eb. Печатът и отворите не пресичат цялата ширина, затова не участват."""
     la, lb = full_lines(axis_profile(a, ea)), full_lines(axis_profile(b, eb))
     return sum(1 for x in la if any(abs(x - y) <= 0.08 for y in lb))
+
+
+def slant_sides(f: Frame, eu: np.ndarray, ev: np.ndarray) -> dict[int, int]:
+    """По-тесните краища с ясно по-дълго стъпало от едната страна (скосеният край на флашка): {край по u: +1, ако е
+    по-дълго откъм по-голямото v, иначе -1}."""
+    from .fit import end_tabs, tab_lengths
+
+    poly = f.normalized(eu, ev, aspect=True)
+    if poly.is_empty:
+        return {}
+    U = 100.0  # мащаб, в който допуските на end_tabs (в мм) са малки спрямо очертанието
+    q = np.asarray(poly.exterior.coords) * U
+    V = float(np.ptp(q[:, 1]))
+    out = {}
+    for t in end_tabs(q, U, V):
+        a, b = tab_lengths(t, U)
+        if a != b:
+            out[t["end"]] = 1 if b > a else -1
+    return out
 
 
 def log_aspect(f: Frame, eu: np.ndarray, ev: np.ndarray) -> float:

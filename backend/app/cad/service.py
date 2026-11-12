@@ -278,7 +278,7 @@ def assemble(job: Path, values: dict, flips: dict | None = None, flat: bool = Fa
     except ValueError as e:
         raise D.DesignError("Въведете общите размери в милиметри.") from e
     flips = sanitize_flips(flips)
-    lay = P.layout(sh, (L, W, H), flips)
+    lay = layout(job, sh, (L, W, H), flips)
     views, warnings = P.views_mm(sh, lay, L, W, H)
     flat = bool(flat) or H <= FLAT_RATIO * min(L, W)
     if flat:
@@ -347,6 +347,62 @@ def side_rounding(job: Path, sh: dict, lay: dict, L: float, W: float, H: float) 
 
 
 SEAM_COVER = 0.9  # колко от ширината трябва да пресича линия, за да е граница между части
+
+
+SEAM_SIDE = 1.5  # косата граница личи на снимката отстрани поне толкова пъти по-силно наобратно: снимката е обърната
+
+
+def layout(job: Path, sh: dict, sizes: tuple, flips: dict) -> dict:
+    """photos.layout с обръщането отпред по косата граница между частите. Предмет, еднакъв отгоре и отдолу
+    (флашка), се вижда отстрани еднакво и обърнат: само границата капачка/тяло, по-близо до края отгоре, отколкото
+    отдолу, казва коя страна на снимката отстрани е горната. Иначе всичко отпред (скосеният край, стъпалата) е
+    наобратно спрямо снимката отгоре."""
+    lay = P.layout(sh, sizes, flips)
+    L, W, H = sizes
+    side = next((n for n, o in lay["orient"].items() if o["view"] == "side" and o["primary"]), None)
+    if side is None or H <= FLAT_RATIO * min(L, W):
+        return lay
+    try:
+        cuts = [(x, xb) for x, xb in seams(job, sh, lay, L, W, H) if xb is not None and abs(x - xb) > D.SPLIT_SLANT]
+    except Exception:  # noqa: BLE001 - снимка, която не се чете: без проверката
+        return lay
+    if not cuts:
+        return lay
+    same, flipped = seam_side(job, sh, lay, L, H, cuts)
+    if flipped < SEAM_SIDE * same or flipped - same < 3.0:
+        return lay
+    fl = dict(flips)
+    fu, fv = fl.get("side", [False, False])
+    fl["side"] = [fu, not fv]
+    return P.layout(sh, sizes, fl)
+
+
+def seam_side(job: Path, sh: dict, lay: dict, L: float, H: float, cuts: list) -> tuple[float, float]:
+    """Колко силно личи косата граница на снимките отстрани (промяната на яркостта напряко на линията): както е
+    (X отгоре при Z = H) и обърната отгоре-надолу."""
+    from scipy import ndimage
+
+    from .vision import load
+
+    score = [0.0, 0.0]
+    t = np.linspace(0.15, 0.85, 40)
+    for name, o in lay["orient"].items():
+        if o["view"] != "side" or name not in sh or not photo_path(job, name):
+            continue
+        A = P.placement(sh[name], o, L, H)["A"]
+        im = ndimage.gaussian_filter(np.asarray(load(photo_path(job, name)).convert("L"), np.float32), 1.0)
+        for x, xb in cuts:
+            for k, (za, zb) in enumerate(((H, 0.0), (0.0, H))):
+                a, b = np.array([x, za]), np.array([xb, zb])
+                d = (b - a) / np.linalg.norm(b - a)
+                n = np.array([-d[1], d[0]])
+                p = a + np.outer(t, b - a)
+                vals = []
+                for off in np.linspace(-1.0, 1.0, 9):  # профил напряко на линията, ±1 мм
+                    px = A[:, :2] @ (p + off * n).T + A[:, 2:3]
+                    vals.append(ndimage.map_coordinates(im, [px[1], px[0]], order=1))
+                score[k] += float(np.median(np.abs(np.diff(np.array(vals), axis=0)).max(0)))
+    return score[0], score[1]
 
 
 def seams(job: Path, sh: dict, lay: dict, L: float, W: float, H: float = 0.0) -> list:
@@ -563,7 +619,7 @@ def view_photos(job: Path, d: dict) -> dict:
     if "top" not in sh:
         return {}
     L, W, H = sizes(d)
-    lay = P.layout(sh, (L, W, H), d.get("flips") or {})
+    lay = layout(job, sh, (L, W, H), d.get("flips") or {})
     out = {}
     for name, o in lay["orient"].items():
         if not o["primary"]:
@@ -617,7 +673,7 @@ def photo_jpg(job: Path, name: str) -> bytes:
     if name not in sh:
         raise D.DesignError("Снимката още не е прочетена.")
     L, W, H = sizes(d)
-    lay = P.layout({k: v for k, v in sh.items() if photo_path(job, k)}, (L, W, H), d.get("flips") or {})
+    lay = layout(job, {k: v for k, v in sh.items() if photo_path(job, k)}, (L, W, H), d.get("flips") or {})
     o = lay["orient"][name]
     U, V = P.view_sizes(o["view"], L, W, H)
     im = R.overlay(d, o["view"], load(path), P.placement(sh[name], o, U, V)["A"])

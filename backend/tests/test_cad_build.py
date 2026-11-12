@@ -264,3 +264,27 @@ def test_usb_plug_is_a_narrow_end_up_to_its_step():
     fixed = fit.apply_tabs(cs, tabs, 52, 21)
     tip = [c for c in fixed if c[0] == 52]
     assert len(tip) == 2 and all(c[2] == 0 for c in tip)
+
+
+def test_slanted_end_of_a_usb_stick_has_a_longer_step_on_one_side():
+    """Флашка 52 x 9 отпред: краят срещу капачката е скосен - долната половина на тялото свършва 7 мм преди върха,
+    горната 3 мм, а по-тясното парче по средата стърчи от него. Стъпалото е там, където е на всяка страна, а не еднакво
+    (преди и двете бяха 3,9 мм). Почти еднаквите стъпала от двете страни остават едно."""
+    import numpy as np
+    from shapely.geometry import Polygon, box
+
+    from app.cad import fit
+
+    body = Polygon([(0, 0), (45, 0), (49, 9), (0, 9)])
+    tab = box(40, 1.1, 52, 7.9)
+    outer = np.asarray(body.union(tab).exterior.coords)[:-1]
+    tabs = fit.end_tabs(outer, 52, 9)
+    assert len(tabs) == 1 and tabs[0]["end"] == 1
+    lo, hi = fit.tab_lengths(tabs[0], 52)
+    assert lo == pytest.approx(6.5, abs=0.6) and hi == pytest.approx(3.4, abs=0.6)
+    cs = [(0.0, 0.0, 0.0), (45.0, 0.0, 0.0), (49.0, 9.0, 0.0), (0.0, 9.0, 0.0)]
+    fixed = fit.apply_tabs(cs, tabs, 52, 9)
+    assert sorted({round(c[0], 1) for c in fixed if 0 < c[0] < 52}) == [round(52 - lo, 1), round(52 - hi, 1)]
+    even = fit.end_tabs(np.asarray(box(0, 0, 48, 9).union(box(47, 1.1, 52, 7.9)).exterior.coords)[:-1], 52, 9)
+    a, b = fit.tab_lengths(even[0], 52)
+    assert a == b

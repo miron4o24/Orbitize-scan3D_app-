@@ -241,7 +241,8 @@ def each_tabs(v: dict, other: set[int] | None = None) -> list[dict]:
     for end, ts in found.items():
         if len(each) >= 2 and end not in whole and seen.get(end, 0) < 2 and other is not None and end not in other:
             continue
-        out.append({"end": end, **{k: float(np.mean([t[k] for t in ts])) for k in ("len", "lo", "hi")}})
+        out.append({"end": end, **{k: float(np.mean([t[k] for t in ts])) for k in ("len", "lo", "hi")},
+                    **{k: float(np.median([t.get(k, t["len"]) for t in ts])) for k in ("len_lo", "len_hi")}})
     return out
 
 
