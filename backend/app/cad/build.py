@@ -423,11 +423,13 @@ def solid(text: str):
     return shape
 
 
-def build(raw: dict, out: Path) -> dict:
-    """Строи детайла в `out`: part.py, part.step, part.stl, part.glb, design.json. Връща отчета."""
+def build(raw: dict, out: Path, adjusted: list[str] | None = None) -> dict:
+    """Строи детайла в `out`: part.py, part.step, part.stl, part.glb, design.json. Връща отчета. Радиусите, които не
+    се събират, първо се свиват (D.fit_radii); adjusted: бележките за вече свитите (service.build)."""
     import cadquery as cq
 
     d = clean(raw)
+    adjusted = list(adjusted or []) + D.fit_notes(d, D.fit_radii(d))
     D.check(d)
     text = code(d)
     try:
@@ -455,7 +457,8 @@ def build(raw: dict, out: Path) -> dict:
               "volume_mm3": round(volume, 1), "solids": len(shape.Solids()),
               "kind": d["kind"], "measured": len(s["measured"]), "estimated": len(s["estimated"]),
               "estimated_names": [d["dims"][i]["name"] for i in s["estimated"]],
-              "elements": [x["text"] for x in D.describe(d)], "triangles": int(len(mesh.faces))}  # fmt: skip
+              "elements": [x["text"] for x in D.describe(d)], "triangles": int(len(mesh.faces)),
+              "adjusted": adjusted}  # fmt: skip
     (out / "report.json").write_text(json.dumps(report, ensure_ascii=False), encoding="utf-8")
     return report
 

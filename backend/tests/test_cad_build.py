@@ -288,3 +288,47 @@ def test_slanted_end_of_a_usb_stick_has_a_longer_step_on_one_side():
     even = fit.end_tabs(np.asarray(box(0, 0, 48, 9).union(box(47, 1.1, 52, 7.9)).exterior.coords)[:-1], 52, 9)
     a, b = fit.tab_lengths(even[0], 52)
     assert a == b
+
+
+def hook_design() -> tuple[dict, dict]:
+    """Куката от телефона (54 x 41 x 4): вътрешната извивка R14,45 (полукръг), външната R20,36, връх R2,94, оценки."""
+    d = D.new("block", 54, 41, 4)
+    d["flat"] = True
+    x1 = D.level_for(d, "x", 5.23, "Стъпало", "стъпалото", view="top")
+    y1 = D.level_for(d, "y", 6.06, "Стъпало", "стъпалото", view="top")
+    y2 = D.level_for(d, "y", 41 - 6.04, "Стъпало", "стъпалото", view="top")
+    x2 = D.level_for(d, "x", 54 - 24.01, "Стъпало", "стъпалото", view="top")
+    r = {k: D.add_dim(d, "r", est, "Радиус на заоблен ъгъл", "Радиус", kind="radius", optional=True)
+         for k, est in (("in", 14.45), ("tip", 2.94), ("out", 20.36))}  # fmt: skip
+    d["views"]["top"]["pts"] = [[x1, y1, r["in"]], [x1, y2, r["in"]], [x2, y2, r["tip"]], [x2, "yW", r["tip"]],
+                                ["x0", "yW", r["out"]], ["x0", "y0", r["out"]], ["xL", "y0", None], ["xL", y1, None]]
+    d = D.add_feature(d, {"t": "fillet", "edges": "flat"})
+    steps = {d["levels"][lv]["dim"]: d["dims"][d["levels"][lv]["dim"]]["est"] for lv in (x1, y1, y2, x2)}
+    return d, {"in": r["in"], "tip": r["tip"], "out": r["out"], "edge": d["features"][-1]["r"], **steps}
+
+
+def test_hook_radius_left_to_the_photo_follows_the_measurements(tmp_path):
+    """"Не мога да го измеря" за радиус на куката, а другите мерки малко по-различни от снимката: оценката се свива,
+    колкото да се събере, вместо "радиусът е твърде голям" (и тогава дори 0,1 мм за друг радиус не помагаше).
+    Вътрешен радиус 0,1 мм: външният (оценка) се свива, за да остане стена, на която става заоблянето на ръбовете."""
+    d, k = hook_design()
+    steps = {i: v for i, v in k.items() if i not in ("in", "tip", "out", "edge")}
+    wider = D.set_values(d, {**{i: 7.0 for i in steps if d["dims"][i]["est"] < 7}, k["edge"]: 1,
+                             k["in"]: None, k["tip"]: None, k["out"]: None})  # fmt: skip
+    rep = B.build(wider, tmp_path / "a")
+    assert rep["volume_mm3"] > 0 and any("14,45" in n for n in rep["adjusted"])
+    for inner, edge in ((0.1, 1.9), (0.0, 1.0), (2.0, 1.5)):
+        sharp = D.set_values(d, {**steps, k["edge"]: edge, k["in"]: inner, k["tip"]: None, k["out"]: None})
+        rep = B.build(sharp, tmp_path / f"b{inner}")
+        assert rep["volume_mm3"] > 0 and any("20,36" in n for n in rep["adjusted"])
+
+
+def test_measured_radius_too_big_says_how_big_it_can_be(tmp_path):
+    """Измерен радиус, много по-голям от мястото си: грешката казва кой и колко най-много става; до 5% по-голям
+    (полукръгъл край, мерен отделно от ширината) се свива без грешка."""
+    d, k = hook_design()
+    steps = {i: (7.0 if d["dims"][i]["est"] < 7 else v) for i, v in k.items() if i not in ("in", "tip", "out", "edge")}
+    with pytest.raises(D.DesignError, match="най-много 13,49"):
+        B.build(D.set_values(d, {**steps, k["edge"]: 1, k["in"]: 16, k["tip"]: None, k["out"]: None}), tmp_path / "a")
+    rep = B.build(D.set_values(d, {**steps, k["edge"]: 1, k["in"]: 14, k["tip"]: None, k["out"]: None}), tmp_path / "b")
+    assert any("измерено 14 мм" in n for n in rep["adjusted"])
