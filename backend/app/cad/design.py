@@ -830,7 +830,8 @@ def add_round(d: dict, rb: dict) -> dict:
         f["fin_x"] = [round(min(max(x / L, 0.0), 1.0), 5) for x in rb["fin_x"]]
         f["fin"] = add_dim(d, "t", max(1.0, FIN_EST * H), "Дебелина на издатината встрани",
                            "Измерете дебелината на издатината встрани (например щипката)",
-                           "С челюстите на шублера. Тя е на височината на оста.", show={"feature": f["id"]})  # fmt: skip
+                           "С челюстите на шублера. Тя е на височината на оста.",
+                           show={"feature": f["id"]})  # fmt: skip
     d["features"].append(f)
     return d
 
