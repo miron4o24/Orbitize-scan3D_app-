@@ -14,7 +14,7 @@ from . import design as D
 
 RESERVED = {"cq", "math", "plane", "outline", "cut_tool", "rounded_rect", "round_view", "body", "result", "top",
             "side", "end", "profile", "top_solid", "side_solid", "end_solid", "lambda", "None", "True", "False",
-            "narrow_end", "inside", "curve", "shaped", "tidy", "round_body", "round_profile"}
+            "narrow_end", "inside", "curve", "shaped", "tidy", "round_body", "round_profile", "boss"}
 OPEN = 1.0  # мм: с толкова изрязването на канал до стената излиза извън нея от двете страни (без допиращи се стени)
 FEATURE_KEYS = {"hole": ("d", "depth"), "rect": ("w", "h", "depth", "r"), "slot": ("len", "w", "depth"),
                 "fillet": ("r",), "chamfer": ("c",), "split": (), "round": ("fin",)}  # fmt: skip
@@ -139,6 +139,10 @@ def clean(raw: dict) -> dict:
                 g["angle"] = 90 if f.get("angle") == 90 else 0
             if t == "rect" and f.get("shape") is not None:
                 g["shape"], g["corners"] = clean_shape(f.get("shape"), f.get("corners"))
+            if f.get("boss"):  # издатина (assemble.add_boss): навън, с височина
+                if not g.get("depth"):
+                    raise D.DesignError("Издатина без височина.")
+                g["boss"], g["outside"] = True, bool(f.get("outside"))
             if t == "rect" and f.get("open"):  # канал до стената (assemble.add_notch)
                 o = f["open"]
                 if not (isinstance(o, dict) and len(o) == 1 and next(iter(o)) in ("u", "v")
@@ -285,6 +289,23 @@ def inside(pts, y0, y1, z0, z1, W, H):
     по-тесния край, като на тялото (заобленото сечение на флашка)."""
     ky, kz = (y1 - y0) / W, (z1 - z0) / H
     return [(y0 + u * ky, z0 + v * kz, r * min(ky, kz)) for u, v, r in pts]
+
+
+def boss(body, axis, side, u, v, size, height, sketch, outside):
+    """Издатина с очертанието `sketch` в (u, v) на стената `side` по оста `axis`: извън детайла с височина `height`
+    (outside: измерената дебелина е без нея), или в него - тогава около нея тялото е по-тънко с толкова."""
+    if outside:
+        lo, hi = (size, size + height) if side == "+" else (-height, 0.0)
+    else:
+        lo, hi = (size - height, size) if side == "+" else (0.0, height)
+    at = hi if axis == "y" else lo  # равнината по Y изтегля към по-малки Y
+    prism = sketch(cq.Workplane(plane(axis, at)).center(u, v)).extrude(hi - lo)
+    if outside:
+        return body.union(prism)
+    bb = body.val().BoundingBox()
+    span = 2 * max(bb.xlen, bb.ylen, bb.zlen) + 2
+    layer = cq.Workplane(plane(axis, at)).rect(span, span).extrude(hi - lo)
+    return body.cut(layer.cut(prism))
 
 
 def round_body(top_solid, L, W, H, yc, profile, fin, fin_x=(0.0, 1.0)):
@@ -460,6 +481,10 @@ def code(d: dict) -> str:
             else:
                 sk = f"lambda wp: wp.slot2D({f['len']}, {f['w']}, {f.get('angle', 0)})"
             note = D.label(d, f) + (f", {D.FACE_NAME[f['face']]}" if f.get("face") else "")
+            if f.get("boss") and f.get("depth"):  # издатина (камерата на телефон): навън от стената си
+                lines.append(f"body = boss(body, '{f['axis']}', '{f['side']}', {u}, {v}, {size}, {depth}, {sk}, "
+                             f"{bool(f.get('outside'))})  # {_txt(note, 70)}")  # fmt: skip
+                continue
             lines.append(f"body = body.cut(cut_tool('{f['axis']}', '{f['side']}', {u}, {v}, {size}, {depth}, {sk}))"
                          f"  # {_txt(note, 80)}")  # fmt: skip
     splits = [f for f in feats if f["t"] == "split"]

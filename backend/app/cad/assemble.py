@@ -368,6 +368,27 @@ def add_notch(d: dict, c: dict, axis: str, view: str) -> None:
 BLIND_DEPTH = 1.5  # оценката за дълбочината на глух отвор: толкова пъти по-малкия му размер, до половината детайл
 
 
+BOSS_NAMES = (("на отвора", "на издатината"), ("Отвор", "Издатина"), ("отвора", "издатината"),
+              ("Дълбочина", "Височина"), ("дълбочината", "височината"), ("дълбокомера", "дълбокомера или челюстите"))
+
+
+def add_boss(d: dict, found: dict, size: float) -> None:
+    """Издатина на тънък детайл (камерата на телефон, service.bump): очертанието отгоре, на стената си, с
+    височина. Като глух отвор (размерите и положението се питат), но стърчи навън: "outside" - извън измерената
+    дебелина (тя е на тялото), иначе в нея (тялото е по-тънко около издатината)."""
+    add_hole(d, np.asarray(found["pts"], float), "z", "top", size, blind=found["face"])
+    f = d["features"][-1]
+    f["boss"], f["outside"] = True, bool(found["outside"])
+    dim = d["dims"][f["depth"]]
+    dim["v"] = dim["est"] = round(float(found["height"]), 2)
+    keys = [f[k] for k in ("d", "w", "h", "len", "r", "depth") if f.get(k)]
+    keys += [d["levels"][p["lvl"]]["dim"] for p in (f["u"], f["v"]) if p["lvl"] in d["levels"]]
+    for i in keys:
+        for field in ("name", "ask", "hint"):
+            for a, b in BOSS_NAMES:
+                d["dims"][i][field] = d["dims"][i][field].replace(a, b)
+
+
 def add_hole(d: dict, pts: np.ndarray, axis: str, view: str, size: float, blind: str | None = None) -> None:
     """Отвор (кръгъл, канал или правоъгълен) по оста `axis`: проходен, или глух от стената `blind` (с дълбочина за
     мерене; оценката е само приблизителна - отвътре отворът не се вижда)."""

@@ -11,6 +11,7 @@ job/cad/out/        - последният построен детайл: part.s
 
 import json
 import logging
+import math
 import os
 import shutil
 import threading
@@ -18,6 +19,7 @@ import time
 from pathlib import Path
 
 import numpy as np
+from shapely.geometry import Polygon
 
 from . import assemble as AS
 from . import design as D
@@ -281,7 +283,8 @@ def assemble(job: Path, values: dict, flips: dict | None = None, flat: bool = Fa
     flips = sanitize_flips(flips)
     lay = layout(job, sh, (L, W, H), flips)
     views, warnings = P.views_mm(sh, lay, L, W, H)
-    flat = bool(flat) or H <= FLAT_RATIO * min(L, W)
+    chosen = bool(flat)
+    flat = chosen or H <= FLAT_RATIO * min(L, W)
     if flat:
         sides = [P.TITLE[n] for n in ("front", "back", "right", "left")]  # предупрежденията за тях не важат
         warnings = [w for w in warnings if not any(t in w for t in sides)]
@@ -291,6 +294,14 @@ def assemble(job: Path, values: dict, flips: dict | None = None, flat: bool = Fa
     for x, x_bottom in seams(job, sh, lay, L, W, H):
         if all(abs(x - lx) > 0.04 * L for lx in xs):  # не е ръбът на стъпало
             d = D.add_split(d, x, x_bottom)
+    if flat and not chosen and d["kind"] == "block" and any(n in sh for n in ("front", "back", "right", "left")):
+        try:
+            found = bump(job, sh, lay, L, W, H)
+        except Exception:  # noqa: BLE001 - издатината е допълнение: без нея, ако нещо в снимките не се чете
+            log.exception("издатината не се прочете")
+            found = None
+        if found:
+            AS.add_boss(d, found, max(L, W))
     rb = fit.round_body(views["top"]["outer"], L, W, H) if flat and d["kind"] == "block" and "top" in views else None
     if rb:  # "плосък" детайл, дебел колкото широк (химикалка): кръгъл, а не плоча с очертанието отгоре
         d = D.add_round(d, rb)
@@ -314,6 +325,150 @@ def assemble(job: Path, values: dict, flips: dict | None = None, flat: bool = Fa
     d["flips"] = flips
     d["flat"] = flat
     return response(job, d, lay["warnings"] + warnings)
+
+
+BUMP_RISE = 0.1  # издатина: стърчи поне толкова от дебелината на тялото на снимката отстрани
+BUMP_MIN = 0.05  # и е поне толкова от дължината на изгледа
+BUMP_MAX = 0.7  # и най-много толкова (иначе е самото тяло, наклонено)
+
+
+def side_bump(pl: dict) -> dict | None:
+    """Издатина на снимка отстрани на тънък детайл (камерата на гърба на телефон): {"lo", "hi" (мм по изгледа),
+    "side" ("-" към v = 0 или "+"), "rise" (дял от дебелината на тялото)}. Очертанието е в мащаба на дължината (по
+    v е както на снимката, а не свито до измерената дебелина)."""
+    q = np.asarray(pl["outer"], float).copy()
+    q[:, 1] /= pl["ratio"]  # v в същия мащаб като u
+    poly = Polygon(q).buffer(0)
+    if poly.is_empty:
+        return None
+    U = pl["U"]
+    xs = np.linspace(0.02 * U, 0.98 * U, 200)
+    lo = np.full(len(xs), np.nan)
+    hi = np.full(len(xs), np.nan)
+    from shapely.geometry import LineString
+
+    big = float(np.ptp(q[:, 1])) + 10
+    for i, x in enumerate(xs):
+        c = poly.intersection(LineString([(x, -big), (x, big)]))
+        if not c.is_empty:
+            lo[i], hi[i] = c.bounds[1], c.bounds[3]
+    ok = ~np.isnan(lo)
+    if ok.sum() < 50:
+        return None
+    # Тялото: издатината може да е повече от половината ширина (камерата отстрани), затова не средното, а там,
+    # където тялото е най-тънко без самите заоблени краища.
+    lo_b, hi_b = float(np.nanpercentile(lo, 70)), float(np.nanpercentile(hi, 30))
+    body = hi_b - lo_b
+    best = None
+    for side, out in (("-", lo_b - lo), ("+", hi - hi_b)):
+        up = ok & (out > BUMP_RISE * body)
+        k, n = 0, len(xs)
+        while k < n:  # най-дългата поредица
+            if not up[k]:
+                k += 1
+                continue
+            j = k
+            while j + 1 < n and up[j + 1]:
+                j += 1
+            length = xs[j] - xs[k]
+            if BUMP_MIN * U <= length <= BUMP_MAX * U and (best is None or length > best["hi"] - best["lo"]):
+                rise = float(np.median(out[k:j + 1])) / body
+                best = {"lo": float(xs[k]), "hi": float(xs[j]), "side": side, "rise": rise}
+            k = j + 1
+    return best
+
+
+def bump(job: Path, sh: dict, lay: dict, L: float, W: float, H: float) -> dict | None:
+    """Издатина на тънък детайл, видяна на снимките отстрани (камерата на телефон): {"face" ("top"/"bottom"),
+    "pts" (очертанието ѝ в мм отгоре, от снимката на стената ѝ с MobileSAM), "height" (мм), "outside" (измерената
+    дебелина е без нея)}. Къде е по дължината и ширината - от снимките отпред/отзад и отстрани; точното очертание
+    (кръг, правоъгълник) - от снимката на стената, по която стърчи; коя е тя - тази, на която MobileSAM вижда там
+    отделен предмет с такъв размер."""
+    from scipy import ndimage
+    from skimage import color, measure
+
+    from .vision import load, sam, sam_candidates
+
+    found = {"side": [], "end": []}
+    for name, o in lay["orient"].items():
+        if o["view"] not in found or name not in sh:
+            continue
+        U = L if o["view"] == "side" else W
+        try:
+            b = side_bump(P.placement(sh[name], o, U, H))
+        except (ValueError, ZeroDivisionError):
+            b = None
+        if b:
+            found[o["view"]].append(b)
+    if not found["side"] and not found["end"]:
+        return None
+    models = sam()
+    if models is None:
+        return None
+    rise = float(np.median([b["rise"] for v in found.values() for b in v]))
+    xs = found["side"] or [{"lo": 0.0, "hi": L}]
+    ys = found["end"] or [{"lo": 0.0, "hi": W}]
+    x0, x1 = float(np.median([b["lo"] for b in xs])), float(np.median([b["hi"] for b in xs]))
+    y0, y1 = float(np.median([b["lo"] for b in ys])), float(np.median([b["hi"] for b in ys]))
+    size = (x1 - x0) * (y1 - y0)
+    best = None
+    for face in ("bottom", "top"):
+        if face not in sh or not photo_path(job, face):
+            continue
+        o = lay["orient"][face]
+        pl = P.placement(sh[face], o, L, W)
+        A = np.asarray(pl["A"], float)
+        im = load(photo_path(job, face))
+        lab = color.rgb2lab(np.asarray(im.convert("RGB"), np.float32) / 255)
+        outline = Polygon(np.asarray(pl["outer"])).buffer(0)
+        # Посоките по дължината и ширината на снимките отстрани може да са огледални: всички четири места.
+        for cx in {(x0 + x1) / 2, L - (x0 + x1) / 2}:
+            for cy in {(y0 + y1) / 2, W - (y0 + y1) / 2}:
+                px = A[:, :2] @ [cx, cy] + A[:, 2]
+                hx, hy = BUMP_BOX * (x1 - x0) / 2, BUMP_BOX * (y1 - y0) / 2
+                corners = np.array([[cx - hx, cy - hy], [cx + hx, cy - hy], [cx + hx, cy + hy], [cx - hx, cy + hy]])
+                cp = corners @ A[:, :2].T + A[:, 2]
+                box = (*cp.min(0), *cp.max(0))
+                # Мястото от снимките отстрани като кутия за MobileSAM и всички негови предложения: издатината е
+                # предметът в кутията (кръгът на камерата), а не цялото.
+                for logits, _ in sam_candidates(models, im, [(float(px[0]), float(px[1]))], box):
+                    m = logits > 0
+                    ring = ndimage.binary_dilation(m, iterations=12) & ~ndimage.binary_dilation(m, iterations=4)
+                    core = ndimage.binary_erosion(m, iterations=4)
+                    if core.sum() < 100 or ring.sum() < 100:
+                        continue
+                    contrast = float(np.linalg.norm(np.median(lab[core], 0) - np.median(lab[ring], 0)))
+                    if contrast < BUMP_CONTRAST:
+                        continue  # петно без ръб (част от екрана), а не отделен предмет
+                    cs = measure.find_contours(np.pad(m.astype(float), 1), 0.5)
+                    if not cs:
+                        continue
+                    pts = max(cs, key=len)[:, ::-1] - 1
+                    mm = (pts - A[:, 2]) @ np.linalg.inv(A[:, :2]).T
+                    poly = Polygon(mm).buffer(0)
+                    if poly.is_empty or poly.geom_type != "Polygon" or not outline.contains(poly.centroid):
+                        continue
+                    if not BUMP_AREA[0] * size <= poly.area <= BUMP_AREA[1] * size or poly.area > 0.5 * outline.area:
+                        continue  # не е с размера на мястото от снимките отстрани (или е целият детайл)
+                    bx0, by0, bx1, by1 = poly.bounds
+                    err = abs(math.log((bx1 - bx0) / (x1 - x0))) + abs(math.log((by1 - by0) / (y1 - y0)))
+                    if best is None or err < best[0]:
+                        best = (err, face, np.asarray(poly.exterior.coords)[:-1])
+    if best is None:
+        return None
+    body = H  # измерената дебелина: без издатината, ако снимките отстрани са по-дебели с нея (дебелината е по
+    # тялото, както в приложението - "най-дебелото място", но хората мерят тялото), иначе с нея
+    ratios = [P.placement(sh[n], o, L if o["view"] == "side" else W, H)["ratio"] for n, o in lay["orient"].items()
+              if o["view"] in found and n in sh]  # fmt: skip
+    total_ratio = float(np.median(ratios)) if ratios else 1.0  # < 1: на снимката е по-дебел от измереното
+    outside = abs(math.log(total_ratio * (1 + rise))) < abs(math.log(total_ratio))
+    height = rise * body if outside else H * rise / (1 + rise)
+    return {"face": best[1], "pts": best[2], "height": float(height), "outside": bool(outside)}
+
+
+BUMP_AREA = (0.3, 3.0)  # очертанието от MobileSAM е толкова пъти лицето на мястото от снимките отстрани
+BUMP_CONTRAST = 15.0  # издатината се различава от стената около нея поне толкова (Lab): кръгът на камерата
+BUMP_BOX = 1.3  # кутията за MobileSAM е толкова по-голяма от мястото (снимките отстрани не са съвсем точни)
 
 
 def side_rounding(job: Path, sh: dict, lay: dict, L: float, W: float, H: float) -> float | None:

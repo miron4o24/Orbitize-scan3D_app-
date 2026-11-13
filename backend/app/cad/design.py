@@ -588,6 +588,9 @@ def corner_angle(p, c, n) -> float:
 
 def label(d: dict, f: dict) -> str:
     t = f["t"]
+    if f.get("boss"):
+        return "Издатина" + {"hole": " (кръгла)", "slot": " (продълговата)"}.get(t, "") + (
+            ", извън дебелината" if f.get("outside") else "")
     if t == "hole":
         return "Отвор" + (" (резба " + f["thread"] + ")" if f.get("thread") else "")
     if t == "rect":
