@@ -646,3 +646,35 @@ def test_partial_cutout_is_replaced_only_when_the_rest_looks_like_the_part():
     table = box(200, 300, 1000, 600)  # химикалката и масата около нея
     assert not V.partial(im, pen, table)
     assert not V.partial(im, pen, pen.buffer(2))  # почти същото: не е "само част"
+
+
+def test_camera_bump_seen_from_the_side_is_a_round_boss_on_the_back(tmp_path):
+    """Телефон 165 x 75,5 x 8,5 (тънък: плосък): камерата на гърба (кръг Ø30, 2 мм) личи на снимките отстрани като
+    издатина, а измерената дебелина е без нея. Моделът е тялото с кръгла издатина навън, а не само правоъгълник."""
+    import numpy as np
+    from shapely.geometry import box
+
+    from app.cad import assemble as A
+    from app.cad import service as SV
+
+    # Снимката отстрани в мм, свита до измерената дебелина 8,5 (тялото 8,5 + издатината 2 = 10,5 на снимката).
+    side = box(0, 2, 165, 10.5).union(box(25, 0, 55, 2))
+    q = np.asarray(side.exterior.coords)[:-1] * [1, 8.5 / 10.5]
+    b = SV.side_bump({"outer": q, "ratio": 8.5 / 10.5, "U": 165.0})
+    assert b and b["side"] == "-" and b["lo"] == pytest.approx(25, abs=2) and b["hi"] == pytest.approx(55, abs=2)
+    assert b["rise"] == pytest.approx(2 / 8.5, abs=0.03)
+    assert SV.side_bump({"outer": np.asarray(box(0, 0, 165, 8.5).exterior.coords)[:-1], "ratio": 1.0, "U": 165.0}) is None
+
+    t = np.linspace(0, 2 * np.pi, 120, endpoint=False)
+    disk = np.c_[40 + 15 * np.cos(t), 37.75 + 15 * np.sin(t)]
+    for outside, H, vol in ((True, 8.5, 165 * 75.5 * 8.5 + np.pi * 15**2 * 2),
+                            (False, 10.5, 165 * 75.5 * 8.5 + np.pi * 15**2 * 2)):  # fmt: skip
+        d = D.new("block", 165, 75.5, H)
+        A.add_boss(d, {"pts": disk, "face": "bottom", "height": 2.0, "outside": outside}, 165)
+        f = d["features"][0]
+        assert f["boss"] and f["t"] == "hole" and f["side"] == "-"
+        assert D.value(d, f["d"]) == pytest.approx(30, abs=0.5) and D.value(d, f["depth"]) == 2.0
+        assert "издатината" in d["dims"][f["d"]]["name"]
+        rep = B.build(measured(d), tmp_path / str(outside))
+        assert rep["volume_mm3"] == pytest.approx(vol, rel=0.005)
+        assert any("Издатина" in e for e in rep["elements"])

@@ -529,7 +529,37 @@ def overlay_shapes(d: dict, view: str, face: str | None = None) -> tuple[float, 
     U, V = view_size(d, shape_view)
     polys = [(None, silhouette(d, shape_view))] + [(f, p) for f, p in features_in(d, shape_view)
                                                    if not (face and f.get("depth") and f.get("face") != face)]
-    return U, V, polys + [(None, p) for p in narrow_marks(d, shape_view, face)[1]]
+    return U, V, polys + [(None, p) for p in narrow_marks(d, shape_view, face)[1]] + bosses_beside(d, shape_view)
+
+
+def bosses_beside(d: dict, view: str) -> list:
+    """Издатините по Z (камерата на телефон), видени отпред и отстрани: правоъгълникът на профила им."""
+    if view not in ("side", "end"):
+        return []
+    out = []
+    H = D.value(d, "H")
+    for f in d["features"]:
+        if not (f.get("boss") and f["axis"] == "z" and f.get("depth") and D.present(d, f)):
+            continue
+        try:
+            place = D.feature_place(d, f)
+            h = D.value(d, f["depth"])
+            if f["t"] == "hole":
+                du = dv = D.value(d, f["d"])
+            elif f["t"] == "slot":
+                ln, w = D.value(d, f["len"]), D.value(d, f["w"])
+                du, dv = (ln, w) if f.get("angle", 0) == 0 else (w, ln)
+            else:
+                du, dv = D.value(d, f["w"]), D.value(d, f["h"])
+        except D.DesignError:
+            continue
+        c, half = (place["u"], du / 2) if view == "side" else (place["v"], dv / 2)
+        if f.get("outside"):
+            z0, z1 = (H, H + h) if f["side"] == "+" else (-h, 0.0)
+        else:
+            z0, z1 = (H - h, H) if f["side"] == "+" else (0.0, h)
+        out.append((f, np.array([(c - half, z0), (c + half, z0), (c + half, z1), (c - half, z1)])))
+    return out
 
 
 def narrow_marks(d: dict, view: str, face: str | None = None) -> tuple[list, list]:
