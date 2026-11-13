@@ -21,6 +21,7 @@ import numpy as np
 
 from . import assemble as AS
 from . import design as D
+from . import fit
 from . import photos as P
 from . import render as R
 
@@ -290,7 +291,12 @@ def assemble(job: Path, values: dict, flips: dict | None = None, flat: bool = Fa
     for x, x_bottom in seams(job, sh, lay, L, W, H):
         if all(abs(x - lx) > 0.04 * L for lx in xs):  # не е ръбът на стъпало
             d = D.add_split(d, x, x_bottom)
-    if flat and d["kind"] == "block":
+    rb = fit.round_body(views["top"]["outer"], L, W, H) if flat and d["kind"] == "block" and "top" in views else None
+    if rb:  # "плосък" детайл, дебел колкото широк (химикалка): кръгъл, а не плоча с очертанието отгоре
+        d = D.add_round(d, rb)
+        d["notes"].append("Детайлът е дебел колкото широк, затова е взет като кръгъл (сечението е кръг). Ако е "
+                          "ъглест, махнете „Кръгло тяло“ или го снимайте и отстрани.")  # fmt: skip
+    elif flat and d["kind"] == "block":
         d = D.add_feature(d, {"t": "fillet", "edges": "flat"})
         f = d["features"][-1]
         dim = d["dims"][f["r"]]

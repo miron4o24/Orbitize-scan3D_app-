@@ -293,9 +293,56 @@ def second_opinion(im: Image.Image, solid: np.ndarray, off: np.ndarray, outline:
     iou = a.intersection(b).area / a.union(b).area
     if touches(outline, im.size) or (inside and iou < SAM_SWITCH):
         return field_, hard, box, outer, holes, off2
+    if partial(im, a, b):  # IS-Net е взел само част от детайла (сива химикалка на сиво дърво: само върха)
+        return field_, hard, box, outer, holes, off2
     if iou >= SAM_SAME:
         return [h + off2 for h in holes]
     return None
+
+
+SAM_COVER = 0.9  # IS-Net е вътре в MobileSAM поне толкова
+SAM_MORE = 1.2  # а MobileSAM е поне толкова по-голям
+SAM_FRAME = 0.25  # и не повече от толкова от кадъра (не масата или листът)
+SAM_LIKE = 22.0  # и добавеното е с цвета на детайла: до толкова (Lab) от него и по-близо до него, отколкото до фона
+
+
+def partial(im: Image.Image, a: Polygon, b: Polygon) -> bool:
+    """IS-Net (a) е изрязал само част от детайла, а MobileSAM (b, в пиксели на снимката) - целия: a е вътре в b, b е
+    ясно по-голям, но не е масата, а добавеното е с цвета на детайла, а не на фона около него (сянка, лист)."""
+    from skimage import color
+    from skimage.draw import polygon as fill
+
+    W, H = im.size
+    if a.area <= 0 or b.area < SAM_MORE * a.area or b.area > SAM_FRAME * W * H:
+        return False
+    if a.intersection(b).area < SAM_COVER * a.area:
+        return False
+    x0, y0, x1, y1 = (int(v) for v in b.buffer(40).bounds)
+    x0, y0, x1, y1 = max(x0, 0), max(y0, 0), min(x1, W), min(y1, H)
+    lab = color.rgb2lab(np.asarray(im.crop((x0, y0, x1, y1)).convert("RGB"), np.float32) / 255)
+
+    def mask(poly):
+        m = np.zeros(lab.shape[:2], bool)
+        if poly.is_empty:
+            return m
+        for g in getattr(poly, "geoms", [poly]):
+            q = np.asarray(g.exterior.coords) - [x0, y0]
+            rr, cc = fill(q[:, 1], q[:, 0], m.shape)
+            m[rr, cc] = True
+        return m
+
+    part, whole = mask(a), mask(b)
+    extra = whole & ~ndimage.binary_dilation(part, iterations=3)
+    extra = ndimage.binary_erosion(extra, iterations=3)
+    ring = ndimage.binary_dilation(whole, iterations=25) & ~ndimage.binary_dilation(whole, iterations=6)
+    # И около изрязаното от IS-Net: ключ на бял лист със светкавица е бял като листа, а MobileSAM взима листа.
+    around = ndimage.binary_dilation(part, iterations=25) & ~ndimage.binary_dilation(part, iterations=6)
+    part = ndimage.binary_erosion(part, iterations=3)
+    if extra.sum() < 200 or ring.sum() < 200 or part.sum() < 50 or around.sum() < 200:
+        return False
+    e, p_, g, n = (np.median(lab[m], 0) for m in (extra, part, ring, around))
+    near = float(np.linalg.norm(e - p_))
+    return near <= SAM_LIKE and near < float(np.linalg.norm(e - g)) and near < float(np.linalg.norm(e - n))
 
 
 SAM_SAME = 0.85  # очертанията на IS-Net и MobileSAM са на един и същ предмет: отворите на MobileSAM се проверяват

@@ -5,6 +5,7 @@ import { test } from 'node:test';
 import { elevation, isUsableAim, viewDir, type Vec3 } from './coverage.ts';
 import { OrbitTracker } from './orbit.ts';
 import { judge, measure } from './quality.ts';
+import { clampZoom, pinch, unproject } from './zoom.ts';
 
 const W = 128;
 const H = 96;
@@ -136,4 +137,20 @@ test('print export: Y-up model becomes Z-up and is scaled to the requested size'
   assert.ok(Math.abs(ext[2] - 80) < 1e-3, `z extent ${ext[2]}`); // старото Y (височина) сега е Z
   assert.ok(Math.abs(ext[0] - 20) < 1e-3 && Math.abs(ext[1] - 40) < 1e-3, `${ext}`);
   assert.match(exportForPrint(tall, 'obj', 80) as string, /^v /m);
+});
+
+test('zoom: a tap maps back to the photo point, pinch keeps the point under the fingers', () => {
+  const w = 400;
+  const h = 300;
+  const none = { s: 1, x: 0, y: 0 };
+  assert.deepEqual(unproject(none, w, h, 120, 80), { x: 120, y: 80 });
+  // Два пъти около точката (100, 50): тя остава под пръстите, а точка до нея е наполовина по-близо.
+  const z = pinch(none, w, h, { x: 100, y: 50 }, { x: 100, y: 50 }, 2);
+  const p = unproject(z, w, h, 100, 50);
+  assert.ok(Math.abs(p.x - 100) < 1e-9 && Math.abs(p.y - 50) < 1e-9);
+  const q = unproject(z, w, h, 140, 50);
+  assert.ok(Math.abs(q.x - 120) < 1e-9);
+  // Снимката винаги покрива рамката: не може да се избута извън нея, нито да се смали под 1.
+  assert.deepEqual(clampZoom({ s: 2, x: 999, y: -999 }, w, h), { s: 2, x: 200, y: -150 });
+  assert.equal(clampZoom({ s: 0.3, x: 10, y: 10 }, w, h).s, 1);
 });

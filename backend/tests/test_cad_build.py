@@ -589,3 +589,60 @@ def test_slanted_end_before_a_usb_plug_keeps_the_plug_rectangular(tmp_path):
     assert plug.area == pytest.approx(12 * 4.6, rel=0.04)
     middle = mesh.section(plane_origin=[39, 0, 0], plane_normal=[1, 0, 0]).to_2D()[0].area
     assert 12 * 4.6 * 1.05 < middle < end.area * 0.97  # наклоненият край на тялото
+
+
+def test_flat_pen_is_a_round_body_with_its_clip(tmp_path):
+    """Химикалка 140 x 15 x 11, снимана само отгоре и отдолу (избран "плосък детайл"): дебела колкото е широко
+    тялото ѝ, затова е кръгла (сечение кръг Ø11), а щипката встрани е тънка издатина - не плоча 11 мм с
+    очертанието отгоре."""
+    import numpy as np
+    import trimesh
+    from shapely.geometry import Polygon, box
+
+    from app.cad import fit
+
+    body = Polygon([(0, 3), (8, 3), (15, 0), (120, 0), (140, 4), (140, 7), (120, 11), (15, 11), (8, 8), (0, 8)])
+    clip = box(20, 10, 60, 15)
+    outer = np.asarray(body.union(clip).exterior.coords)[:-1]
+    rb = fit.round_body(outer, 140, 15, 11)
+    assert rb is not None and rb["axis"] == pytest.approx(5.5, abs=0.3)
+    assert rb["fin"] > 0 and rb["fin_x"][0] == pytest.approx(20, abs=2) and rb["fin_x"][1] == pytest.approx(60, abs=2)
+    assert fit.round_body(np.asarray(box(0, 0, 54, 41).exterior.coords)[:-1], 54, 41, 4) is None  # кука: плоска
+    d = D.new("block", 140, 15, 11)
+    d["flat"] = True
+    d["views"]["top"] = {"pts": [[D.frac_level("x", u, 140), D.frac_level("y", v, 15), None] for u, v in outer],
+                         "free": True}
+    d = D.add_round(d, rb)
+    d = D.set_values(d, {d["features"][0]["fin"]: 1.5})
+    rep = B.build(measured(d), tmp_path)
+    assert any("Кръгло тяло" in e for e in rep["elements"])
+    mesh = trimesh.load(tmp_path / "part.stl", force="mesh")
+
+    def section(x):
+        return mesh.section(plane_origin=[x, 0, 0], plane_normal=[1, 0, 0]).to_2D()[0]
+
+    barrel = section(90)
+    assert barrel.area == pytest.approx(np.pi * 5.5**2, rel=0.03)  # кръг Ø11, не правоъгълник 11 x 11
+    with_clip = section(40)
+    assert with_clip.area == pytest.approx(np.pi * 5.5**2 + 1.5 * 4.0, rel=0.06)  # и щипката 1,5 x ~4
+
+
+def test_partial_cutout_is_replaced_only_when_the_rest_looks_like_the_part():
+    """IS-Net изрязва само върха на сива химикалка на сиво дърво: MobileSAM взима цялата и се ползва, защото
+    добавеното е с цвета на химикалката. Ако добавеното е масата (с цвета на фона), остава IS-Net."""
+    import numpy as np
+    from PIL import Image
+    from shapely.geometry import box
+
+    from app.cad import vision as V
+
+    rgb = np.zeros((900, 1200, 3), np.uint8)
+    rgb[:] = (150, 135, 110)  # дърво
+    rgb[420:480, 200:1000] = (172, 172, 178)  # химикалката
+    im = Image.fromarray(rgb)
+    tip = box(850, 420, 1000, 480)
+    pen = box(200, 420, 1000, 480)
+    assert V.partial(im, tip, pen)
+    table = box(200, 300, 1000, 600)  # химикалката и масата около нея
+    assert not V.partial(im, pen, table)
+    assert not V.partial(im, pen, pen.buffer(2))  # почти същото: не е "само част"
