@@ -581,6 +581,27 @@ def hole_shape(pts: np.ndarray, size: float, depth: float | None = None) -> dict
     return shaped_hole(pts) or out
 
 
+def detail_shape(pts: np.ndarray) -> dict:
+    """Формата на детайл по стената (порт, екран, бутон): кръг, ако е кръгъл, иначе правоъгълник с радиуса в
+    ъглите от това колко липсва от ъглите му (USB-C: радиус половината височина, USB-A: почти остри ъгли).
+    Детайлите са успоредни на ръбовете, затова без канал под ъгъл."""
+    poly = largest_poly(Polygon(np.asarray(pts, float)).buffer(0))
+    x0, y0, x1, y1 = poly.bounds
+    w, h = x1 - x0, y1 - y0
+    if abs(w - h) <= DETAIL_ROUND * max(w, h) and poly.area >= DETAIL_FILL * math.pi * (w + h) ** 2 / 16:
+        c = poly.centroid
+        return {"t": "hole", "u": float(c.x), "v": float(c.y), "d": float((w + h) / 2)}
+    # Заоблен ъгъл с радиус r отстои от ъгъла на описания правоъгълник с r(√2 - 1). Перспективата прави
+    # очертанието леко трапец (два ъгъла отстоят повече), затова второто най-малко от четирите.
+    gaps = sorted(poly.exterior.distance(Point(x, y)) for x, y in ((x0, y0), (x1, y0), (x1, y1), (x0, y1)))
+    r = gaps[1] / (math.sqrt(2) - 1)
+    return {"t": "rect", "u": (x0 + x1) / 2, "v": (y0 + y1) / 2, "w": w, "h": h, "r": min(r, 0.499 * min(w, h))}
+
+
+DETAIL_ROUND = 0.12  # кръгъл детайл: ширината и височината се различават до толкова
+DETAIL_FILL = 0.88  # и запълва поне толкова от кръга си
+
+
 def half_round(poly: Polygon) -> bool:
     """Два съседни ъгъла остри, другите два заоблени (D): нито канал, нито правоъгълник."""
     from shapely.geometry import box

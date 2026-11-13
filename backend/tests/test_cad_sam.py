@@ -66,3 +66,42 @@ def test_tap_with_an_exclusion_point(tmp_path):
     r = V.segment(S.session(), path, [(1150 / W, 900 / H), (300 / W, 400 / H, 0)])
     assert overlap(r) > 0.93
     assert not Polygon(r["outer"]).buffer(0).contains(Polygon([(290, 390), (310, 390), (310, 410)]))
+
+
+def test_ports_window_and_button_on_a_face_are_found_but_not_print_or_glare():
+    """Стената на powerbank: екран (тъмен правоъгълник), USB-A и USB-C (тъмни отвори с цветно езиче), кръгъл бутон
+    (само ръб, тъмен като стената). Белият надпис, синьото лого и отблясъкът не са детайли."""
+    from app.cad import details as DT
+
+    rng = np.random.default_rng(2)
+    wood = np.clip(np.array([150, 120, 90]) + rng.normal(0, 12, (H // 8, W // 8, 1)), 0, 255).astype(np.uint8)
+    im = Image.fromarray(wood).resize((W, H), Image.BICUBIC).filter(ImageFilter.GaussianBlur(3))
+    d = ImageDraw.Draw(im)
+    body = (500, 500, 1900, 1300)
+    d.rounded_rectangle(body, radius=90, fill=(38, 40, 44))
+    d.rounded_rectangle((560, 560, 1060, 900), radius=30, fill=(10, 10, 12))  # екранът
+    d.rounded_rectangle((1150, 600, 1420, 700), radius=8, fill=(14, 14, 16))  # USB-A: тъмен отвор
+    d.rectangle((1175, 615, 1395, 665), fill=(225, 90, 110))  # и розовото езиче в него
+    d.rounded_rectangle((1500, 615, 1700, 685), radius=35, fill=(14, 14, 16))  # USB-C
+    d.rounded_rectangle((1535, 637, 1665, 663), radius=10, fill=(220, 120, 50))  # контактите
+    d.rectangle((620, 960, 780, 1060), fill=(30, 70, 170))  # синьо лого: печат, не порт
+    d.ellipse((1250, 950, 1370, 1070), outline=(12, 12, 14), width=6)  # бутонът
+    d.text((620, 1100), "INPUT 5V 3A  OUTPUT 9V 2A", fill=(190, 190, 190), font_size=48)  # печатът
+    d.rectangle((1500, 900, 1540, 1250), fill=(235, 235, 238))  # отблясък
+    im = im.filter(ImageFilter.GaussianBlur(1.0))
+    outer = np.array([[500, 500], [1900, 500], [1900, 1300], [500, 1300]], float)
+    found = DT.find(V.sam(), im, outer)
+    kinds = sorted(f["kind"] for f in found)
+    boxes = {f["kind"]: Polygon(f["pts"]).bounds for f in found}
+
+    def near(kind, want):
+        return any(f["kind"] == kind and Polygon(f["pts"]).buffer(0).intersection(box(*want)).area
+                   >= 0.6 * box(*want).area for f in found)  # fmt: skip
+
+    assert near("panel", (560, 560, 1060, 900)), boxes
+    assert near("port", (1150, 600, 1420, 700)) and near("port", (1500, 615, 1700, 685)), boxes
+    assert near("button", (1250, 950, 1370, 1070)), boxes
+    assert all(not Polygon(f["pts"]).buffer(0).intersects(box(1500, 900, 1540, 1250)) for f in found), boxes
+    assert all(not Polygon(f["pts"]).buffer(0).intersects(box(620, 1100, 1300, 1160)) for f in found), boxes
+    assert all(not Polygon(f["pts"]).buffer(0).intersects(box(630, 970, 770, 1050)) for f in found), boxes
+    assert len(kinds) == 4, kinds

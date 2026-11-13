@@ -92,7 +92,7 @@ def pill(L=140.0, Dm=64.0, r=None):
 def test_block_from_six_photos(sess, tmp_path):
     truth = block()
     plan, lay, d = read(sess, truth, tmp_path, P.NAMES, (70, 40, 20))
-    assert [(q["id"], q["photo"]) for q in plan] == [("L", "top"), ("W", "top"), ("H", "front")]
+    assert [(q["id"], q["photo"]) for q in plan] == [("L", "top"), ("W", "top"), ("H", "right")]
     o = lay["orient"]
     assert {n: o[n]["view"] for n in o} == {"top": "top", "bottom": "top", "front": "side", "back": "side",
                                             "right": "end", "left": "end"}  # fmt: skip
@@ -158,7 +158,8 @@ def test_flat_part_pointing_away(sess, tmp_path):
     plan, lay, d = read(sess, truth, tmp_path, P.NAMES, (51, 21, 8), yaw=88.0, seed=4, own_axis=True)
     views = {n: o["view"] for n, o in lay["orient"].items()}
     assert views == {"top": "top", "bottom": "top", "front": "side", "back": "side", "right": "end", "left": "end"}
-    assert [(q["id"], q["photo"]) for q in plan] == [("L", "top"), ("W", "top"), ("H", "front")]
+    # Височината - на снимката отстрани, до ширината (отпред тесният край изглеждаше като ширината).
+    assert [(q["id"], q["photo"]) for q in plan] == [("L", "top"), ("W", "top"), ("H", "right")]
     assert not d["views"]["side"].get("round") and not d["views"]["end"].get("round")
     assert solid_iou(truth, measured(d)) > 0.95
 

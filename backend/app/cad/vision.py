@@ -428,9 +428,23 @@ def segment(sess, path, points: list | None = None) -> dict:
     if touches(outer + off, im.size):
         raise ValueError("cut")
     return {"outer": np.round(outer + off, 2).tolist(), "holes": [np.round(h + off, 2).tolist() for h in holes],
+            **find_details(im, outer + off),
             "size": list(im.size), "f35": focal35(path), "lines": line_profiles(im, outer + off),
             "looks": looks(im, outer + off), "profiles": PROFILES,
             **marks_of(np.asarray(im.crop(box), np.float32), solid, off), "by": by}  # fmt: skip
+
+
+DETAILS_V = 2  # версията на детайлите по стената (app/cad/details.py): по-старите се търсят наново
+
+
+def find_details(im: Image.Image, outer: np.ndarray) -> dict:
+    """Детайлите по стената на снимката (екран, портове, бутон): {"details": [{"pts", "kind"}], "details_v"}."""
+    from . import details as DT
+
+    models = sam()
+    found = DT.find(models, im, outer) if models is not None else []
+    return {"details": [{"pts": np.round(f["pts"], 1).tolist(), "kind": f["kind"]} for f in found],
+            "details_v": DETAILS_V}
 
 
 def marks_of(rgb: np.ndarray, solid: np.ndarray, off: np.ndarray) -> dict:

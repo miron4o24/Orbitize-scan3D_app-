@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 
 import numpy as np
-from shapely.geometry import Polygon
+from shapely.geometry import Point, Polygon
 
 from . import assemble as AS
 from . import design as D
@@ -182,7 +182,12 @@ def shots(job: Path) -> dict:
             im, outer = VI.load(photo_path(job, name)), np.asarray(result[name]["outer"])
             result[name] |= {"lines": VI.line_profiles(im, outer), "looks": VI.looks(im, outer),
                              "profiles": VI.PROFILES}  # fmt: skip
-        if todo or old:
+        plain = [n for n in result if result[n].get("details_v") != VI.DETAILS_V]  # без детайлите по стената
+        if plain:
+            with _busy:
+                for name in plain:
+                    result[name] |= VI.find_details(VI.load(photo_path(job, name)), np.asarray(result[name]["outer"]))
+        if todo or old or plain:
             write_json(cache, result)
         return result
 
@@ -302,6 +307,7 @@ def assemble(job: Path, values: dict, flips: dict | None = None, flat: bool = Fa
             found = None
         if found:
             AS.add_boss(d, found, max(L, W))
+    add_details(d, sh, lay, L, W, H, flat)
     rb = fit.round_body(views["top"]["outer"], L, W, H) if flat and d["kind"] == "block" and "top" in views else None
     if rb:  # "плосък" детайл, дебел колкото широк (химикалка): кръгъл, а не плоча с очертанието отгоре
         d = D.add_round(d, rb)
@@ -325,6 +331,48 @@ def assemble(job: Path, values: dict, flips: dict | None = None, flat: bool = Fa
     d["flips"] = flips
     d["flat"] = flat
     return response(job, d, lay["warnings"] + warnings)
+
+
+DETAIL_VIEW = {"top": "top", "bottom": "top", "front": "side", "back": "side", "right": "end", "left": "end"}
+
+
+def add_details(d: dict, sh: dict, lay: dict, L: float, W: float, H: float, flat: bool) -> None:
+    """Детайлите по стените от снимките (екранът, портовете, бутонът - vision.find_details) като глухи елементи от
+    стената си: в мм на изгледа (по снимката), без тези на мястото на вече намерен елемент. Плосък детайл - само
+    отгоре и отдолу (снимките отстрани са в ръка)."""
+    if d["kind"] != "block":
+        return
+    for name, view in DETAIL_VIEW.items():
+        if name not in sh or name not in lay["orient"] or (flat and view != "top"):
+            continue
+        o = lay["orient"][name]
+        if o["view"] != view or not sh[name].get("details"):
+            continue
+        U, V = P.view_sizes(view, L, W, H)
+        A = np.asarray(P.placement(sh[name], o, U, V)["A"], float)
+        inv = np.linalg.inv(A[:, :2])
+        axis = {"top": "z", "side": "y", "end": "x"}[view]
+        for found in sh[name]["details"]:
+            mm = (np.asarray(found["pts"], float) - A[:, 2]) @ inv.T
+            poly = Polygon(mm).buffer(0)
+            if poly.is_empty or poly.geom_type != "Polygon" or taken(d, axis, poly):
+                continue
+            AS.add_detail(d, np.asarray(poly.exterior.coords)[:-1], axis, view, max(U, V), P.FACE[name],
+                          found["kind"])
+
+
+def taken(d: dict, axis: str, poly: Polygon) -> bool:
+    """На това място по оста вече има елемент (отвор, издатина, канал)."""
+    for f in d["features"]:
+        if f.get("axis") != axis or f["t"] not in ("hole", "rect", "slot") or not D.present(d, f):
+            continue
+        try:
+            place = D.feature_place(d, f)
+        except D.DesignError:
+            continue
+        if poly.distance(Point(place["u"], place["v"])) < 0.5:
+            return True
+    return False
 
 
 BUMP_RISE = 0.1  # издатина: стърчи поне толкова от дебелината на тялото на снимката отстрани
@@ -819,7 +867,7 @@ def question_png(job: Path, dim: str) -> bytes:
     f = P.Frame(sh[q["photo"]])
     U, V = f.ext(o["eu"]), f.ext(o["ev"])  # пиксели като мм: само за положението на линията
     A = P.placement(sh[q["photo"]], o, U, V)["A"]
-    return png(R.overall(load(photo_path(job, q["photo"])), A, U, V, dim, q["along"], q["photo"]))
+    return png(R.overall(load(photo_path(job, q["photo"])), A, U, V, dim, q["along"], q["photo"], q.get("known")))
 
 
 def photo_jpg(job: Path, name: str) -> bytes:

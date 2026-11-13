@@ -586,8 +586,13 @@ def corner_angle(p, c, n) -> float:
 # --- Описание с думи -----------------------------------------------------------------------------------------------
 
 
+DETAIL_TITLE = {"port": "Порт", "panel": "Прозорец/панел (например екранът)", "button": "Бутон", "dot": "Отворче"}
+
+
 def label(d: dict, f: dict) -> str:
     t = f["t"]
+    if f.get("kind") in DETAIL_TITLE:
+        return DETAIL_TITLE[f["kind"]]
     if f.get("boss"):
         return "Издатина" + {"hole": " (кръгла)", "slot": " (продълговата)"}.get(t, "") + (
             ", извън дебелината" if f.get("outside") else "")

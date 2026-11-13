@@ -1063,10 +1063,14 @@ def overall(lay: dict, flat: bool = False) -> list[dict]:
             out.append(question("W", "top", "v"))
     if rnd["end"]:
         out.append(question("D", primary.get("end"), "u"))
-    elif "side" in primary:
-        out.append(question("H", primary["side"], "v"))
+    elif rnd["top"] and "side" in primary:  # изправен цилиндър: отпред е диаметърът (вече измерен) и височината
+        out.append(question("H", primary["side"], "v") | {"known": "D"})
     elif "end" in primary:
-        out.append(question("H", primary["end"], "v"))
+        # Отстрани се виждат и ширината, и височината: ширината (вече измерена) е до въпроса, за да не се сбъркат
+        # (отпред тесният край на детайла изглеждаше като ширината и я питаше втори път).
+        out.append(question("H", primary["end"], "v") | {"known": "W"})
+    elif "side" in primary:
+        out.append(question("H", primary["side"], "v") | {"known": "L"})
     else:
         out.append(question("H", None, "v"))
     if flat and out[-1]["id"] == "H":  # снимките отстрани на плосък детайл са в ръка: линията е върху чертежа
@@ -1079,7 +1083,8 @@ def overall(lay: dict, flat: bool = False) -> list[dict]:
 ASK = {
     "L": ("Дължина", "Измерете дължината по оранжевата линия.", "Най-дългата страна, от край до край."),
     "W": ("Ширина", "Измерете ширината по оранжевата линия.", "Напряко на дължината."),
-    "H": ("Височина", "Измерете височината по оранжевата линия.", "Колко е висок, както лежи на първата снимка."),
+    "H": ("Височина", "Измерете височината по оранжевата линия (не ширината).",
+          "Колко е висок, както лежи на първата снимка: от масата до горната страна."),
     "D": ("Диаметър", "Измерете диаметъра по оранжевата линия.", "Най-дебелото място на кръглото сечение."),
 }
 
