@@ -679,3 +679,49 @@ def test_camera_bump_seen_from_the_side_is_a_round_boss_on_the_back(tmp_path):
         rep = B.build(measured(d), tmp_path / str(outside))
         assert rep["volume_mm3"] == pytest.approx(vol, rel=0.005)
         assert any("Издатина" in e for e in rep["elements"])
+
+
+def test_ports_display_and_button_seen_on_the_photos_are_in_the_model(tmp_path):
+    """Powerbank 98 x 39 x 30: USB-C (заоблен правоъгълник 9 x 3,2) и USB-A (13 x 5,4) в левия край, екранът (58 x
+    32) отгоре и кръглият бутон (Ø7) отзад са глухи елементи от стената си с мерки, а не изгубени."""
+    import numpy as np
+    from shapely.geometry import LineString, Point, box
+
+    from app.cad import assemble as A
+
+    d = D.new("block", 98, 39, 30)
+    usb_c = LineString([(27.6, 12), (33.4, 12)]).buffer(1.6, quad_segs=16)
+    usb_a = box(5, 9.3, 18, 14.7)
+    window = box(37, 3.5, 95, 35.5).buffer(-3).buffer(3, quad_segs=8)
+    button = Point(84, 15).buffer(3.5, quad_segs=24)
+    for poly, axis, view, size, face, kind in ((usb_c, "x", "end", 39, "left", "port"),
+                                               (usb_a, "x", "end", 39, "left", "port"),
+                                               (window, "z", "top", 98, "top", "panel"),
+                                               (button, "y", "side", 98, "back", "button")):  # fmt: skip
+        A.add_detail(d, np.asarray(poly.exterior.coords)[:-1], axis, view, size, face, kind)
+    kinds = [f["kind"] for f in d["features"]]
+    assert kinds == ["port", "port", "panel", "button"]
+    c, a, w, b = d["features"]
+    assert c["t"] == "rect" and D.value(d, c["r"]) == pytest.approx(1.6, abs=0.25)  # USB-C: полукръгли краища
+    assert D.value(d, a["w"]) == pytest.approx(13, abs=0.2) and D.value(d, a["depth"]) == pytest.approx(13, abs=0.2)
+    assert b["t"] == "hole" and D.value(d, b["d"]) == pytest.approx(7, abs=0.2)
+    assert D.value(d, w["depth"]) == 0.5 and "панела" in d["dims"][w["w"]]["name"]
+    rep = B.build(measured(d), tmp_path)
+    cut = usb_c.area * 9.2 + usb_a.area * 13 + window.area * 0.5 + button.area * 0.3
+    assert rep["volume_mm3"] == pytest.approx(98 * 39 * 30 - cut, rel=0.003)
+    assert sum("Порт" in e for e in rep["elements"]) == 2 and any("Бутон" in e for e in rep["elements"])
+
+
+def test_height_is_asked_on_the_end_photo_next_to_the_width():
+    """Височината се пита на снимката отстрани, където се вижда и ширината (сива, вече измерена): отпред тесният
+    край изглеждаше като ширината и тя се питаше втори път."""
+    from app.cad import photos as P
+
+    orient = {n: {"view": v, "eu": [1, 0], "ev": [0, 1], "primary": n in ("top", "front", "right")}
+              for n, v in (("top", "top"), ("front", "side"), ("right", "end"))}  # fmt: skip
+    qs = P.overall({"orient": orient, "round": {"top": False, "end": False}})
+    h = next(q for q in qs if q["id"] == "H")
+    assert h["photo"] == "right" and h["known"] == "W" and "не ширината" in h["ask"]
+    orient.pop("right")
+    h = next(q for q in P.overall({"orient": orient, "round": {"top": False, "end": False}}) if q["id"] == "H")
+    assert h["photo"] == "front" and h["known"] == "L"

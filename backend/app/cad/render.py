@@ -450,7 +450,8 @@ def photo_caption(sh: Sheet, name: str):
     label(sh.draw, (24 + (r - l) / 2 + 10, sh.im.height - 36), text, INK, 24)
 
 
-def overall(photo: Image.Image | None, A, U: float, V: float, dim: str, along: str, name: str = "") -> Image.Image:
+def overall(photo: Image.Image | None, A, U: float, V: float, dim: str, along: str, name: str = "",
+            known: str | None = None) -> Image.Image:
     """Общ размер върху снимката (преди да има описание): линия по цялата дължина ("u") или височина ("v") на
     изгледа, а диаметърът през средата. Без снимка (височина без снимка отстрани): схема."""
     text = "Ø ?" if dim == "D" else "?"
@@ -469,8 +470,13 @@ def overall(photo: Image.Image | None, A, U: float, V: float, dim: str, along: s
         sh.dimension((0, 0), (U, 0), (0, 70), text)
     else:
         sh.dimension((U, 0), (U, V), (70, 0), text)
+        if known:  # вече измереният размер напряко (ширината), сив: да не се сбърка с този
+            sh.dimension((0, 0), (U, 0), (0, 70), KNOWN.get(known, known), SOFT, 3, 26)
     photo_caption(sh, name)
     return sh.im
+
+
+KNOWN = {"W": "ширината (вече)", "L": "дължината (вече)", "D": "диаметъра (вече)"}
 
 
 def turned_end(d: dict, dim_id: str, star: bool = False, size=(1000, 640)) -> Image.Image:

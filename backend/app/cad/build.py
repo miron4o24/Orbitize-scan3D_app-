@@ -139,6 +139,8 @@ def clean(raw: dict) -> dict:
                 g["angle"] = 90 if f.get("angle") == 90 else 0
             if t == "rect" and f.get("shape") is not None:
                 g["shape"], g["corners"] = clean_shape(f.get("shape"), f.get("corners"))
+            if f.get("kind") in D.DETAIL_TITLE:  # детайл по стената (assemble.add_detail)
+                g["kind"] = f["kind"]
             if f.get("boss"):  # издатина (assemble.add_boss): навън, с височина
                 if not g.get("depth"):
                     raise D.DesignError("Издатина без височина.")

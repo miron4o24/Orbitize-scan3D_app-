@@ -389,10 +389,38 @@ def add_boss(d: dict, found: dict, size: float) -> None:
                 d["dims"][i][field] = d["dims"][i][field].replace(a, b)
 
 
-def add_hole(d: dict, pts: np.ndarray, axis: str, view: str, size: float, blind: str | None = None) -> None:
+DETAIL = {  # детайл по стената (app/cad/details.py): думата в размерите, оценката за дълбочината
+    "port": ("порта", None), "panel": ("панела", 0.5), "button": ("бутона", 0.3), "dot": ("отворчето", 1.0),
+}  # fmt: skip
+
+
+def add_detail(d: dict, pts: np.ndarray, axis: str, view: str, size: float, face: str, kind: str) -> None:
+    """Детайл по стената, видян на снимката (екранът, порт, бутон, светодиод): глух елемент от стената с размерите
+    и положението си и с дълбочина за мерене. Порт: дълбок колкото е дълъг (USB-A около 12 мм), до 45% от детайла;
+    останалите - плитки (екранът е малко вдлъбнат, бутонът - с процеп). 0 за размер го маха."""
+    if kind not in DETAIL:
+        return
+    add_hole(d, pts, axis, view, size, blind=face, shape=fit.detail_shape(pts))
+    f = d["features"][-1]
+    f["kind"] = kind
+    word, depth = DETAIL[kind]
+    if depth is None:
+        long = max(d["dims"][f[k]]["v"] for k in ("d", "w", "h", "len") if f.get(k))
+        depth = max(3.0, long)
+    dim = d["dims"][f["depth"]]
+    dim["v"] = dim["est"] = round(float(min(depth, 0.45 * D.total(d, axis))), 2)
+    keys = [f[k] for k in ("d", "w", "h", "len", "r", "depth") if f.get(k)]
+    keys += [d["levels"][p["lvl"]]["dim"] for p in (f["u"], f["v"]) if p["lvl"] in d["levels"]]
+    for i in keys:
+        for field in ("name", "ask", "hint"):
+            d["dims"][i][field] = d["dims"][i][field].replace("отвора", word).replace("канала", word)
+
+
+def add_hole(d: dict, pts: np.ndarray, axis: str, view: str, size: float, blind: str | None = None,
+             shape: dict | None = None) -> None:
     """Отвор (кръгъл, канал или правоъгълен) по оста `axis`: проходен, или глух от стената `blind` (с дълбочина за
     мерене; оценката е само приблизителна - отвътре отворът не се вижда)."""
-    shape = fit.hole_shape(pts, size, D.total(d, axis))
+    shape = shape or fit.hole_shape(pts, size, D.total(d, axis))
     a, b = D.plane_axes(axis)
     fid = D.new_feature_id(d, shape["t"])
     face = blind or {"z": "top", "y": "front", "x": "left"}[axis]
