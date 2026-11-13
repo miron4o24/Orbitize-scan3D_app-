@@ -2,7 +2,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { File, Paths } from 'expo-file-system';
 import { Image } from 'expo-image';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, Text, View, type GestureResponderEvent } from 'react-native';
+import { ActivityIndicator, Alert, Pressable, Text, View } from 'react-native';
 import type { Object3D } from 'three';
 
 import { ModelView } from '@/components/ModelView';
@@ -23,6 +23,7 @@ import {
   type CadState,
 } from '@/lib/api';
 import { parseGlb } from '@/lib/model';
+import { ZoomTap } from './ZoomTap';
 import { font, makeStyles, radius, space, useColors } from '@/theme';
 
 // "Какво виждам": снимките с разпознатото очертание, детайлът в 3D по оценките (за да се види, че е разчетен
@@ -151,14 +152,11 @@ export function Review({
 function TapPhoto({ jobId, photo, stamp, busy, onRemove }: { jobId: string; photo: CadPhoto; stamp: string; busy: boolean; onRemove: (id: string) => void }) {
   const s = useStyles();
   const c = useColors();
-  const [size, setSize] = useState({ width: 0, height: 0 });
   const [looking, setLooking] = useState(false);
   const [hint, setHint] = useState<string | null>(null);
 
-  async function tap(e: GestureResponderEvent) {
-    if (busy || looking || !size.width || !size.height) return;
-    const x = Math.min(1, Math.max(0, e.nativeEvent.locationX / size.width));
-    const y = Math.min(1, Math.max(0, e.nativeEvent.locationY / size.height));
+  async function tap(x: number, y: number) {
+    if (busy || looking) return;
     setLooking(true);
     setHint(null);
     try {
@@ -181,20 +179,16 @@ function TapPhoto({ jobId, photo, stamp, busy, onRemove }: { jobId: string; phot
 
   return (
     <>
-      <Pressable
-        onPress={tap}
-        onLayout={(e) => setSize({ width: e.nativeEvent.layout.width, height: e.nativeEvent.layout.height })}
-        style={s.photo}
-        accessibilityRole="imagebutton"
-        accessibilityLabel={`${PHOTO_TITLE[photo]}: докоснете отвор, за да го махнете`}
-      >
-        <Image source={{ uri: cadPhotoUrl(jobId, photo, stamp), headers: authHeaders() }} style={s.fill} contentFit="contain" transition={150} />
+      <View>
+        <ZoomTap ratio={4 / 3} disabled={busy || looking} onTap={tap} label={`${PHOTO_TITLE[photo]}: докоснете отвор, за да го махнете`}>
+          <Image source={{ uri: cadPhotoUrl(jobId, photo, stamp), headers: authHeaders() }} style={s.fill} contentFit="contain" transition={150} />
+        </ZoomTap>
         {looking && (
-          <View style={s.tapBusy}>
+          <View style={s.tapBusy} pointerEvents="none">
             <ActivityIndicator color={c.accent} />
           </View>
         )}
-      </Pressable>
+      </View>
       {hint && <Small>{hint}</Small>}
     </>
   );

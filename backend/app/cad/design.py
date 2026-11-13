@@ -602,6 +602,9 @@ def label(d: dict, f: dict) -> str:
         return f"Заобляне на {EDGE_SETS[f['edges']]}"
     if t == "chamfer":
         return f"Фаска на {EDGE_SETS[f['edges']]}"
+    if t == "round":
+        return "Кръгло тяло по снимката отгоре (химикалка, маркер): сечението е кръг с диаметър дебелината" + (
+            ", с издатина встрани (например щипка)" if f.get("fin") else "")
     if t == "split":
         return "Граница между две части (например капачка и тяло)" + (", по диагонал по страните" if f.get("at2") else "")
     return t
@@ -672,7 +675,7 @@ def used_dims(d: dict) -> list[str]:
                     take(d["levels"][lvl]["dim"])
             radii.append(row[2])
     for f in d["features"]:
-        for key in ("d", "w", "h", "len", "depth", "r", "c"):
+        for key in ("d", "w", "h", "len", "depth", "r", "c", "fin"):
             if isinstance(f.get(key), str):
                 take(f[key])
         for key in ("u", "v"):
@@ -811,6 +814,25 @@ def add_feature(d: dict, spec: dict) -> dict:
 
 
 SPLIT_SLANT = 0.6  # мм: граница, по-разместена от това отгоре и отдолу, минава по диагонал по страните
+
+
+FIN_EST = 0.12  # оценката за дебелината на издатината встрани (щипката на химикалка): толкова от диаметъра
+
+
+def add_round(d: dict, rb: dict) -> dict:
+    """Кръгло тяло (fit.round_body) вместо плочата на плосък детайл: профилът е дял от дължината и от радиуса
+    (половината дебелина), оста - дял от ширината; издатината встрани е с дебелина за мерене."""
+    L, W, H = value(d, "L"), value(d, "W"), value(d, "H")
+    f = {"id": new_feature_id(d, "round"), "t": "round", "view": "top", "y": frac_level("y", rb["axis"], W),
+         "profile": [[round(min(max(x / L, 0.0), 1.0), 5), round(min(max(r / (H / 2), 0.0), 1.0), 5)]
+                     for x, r in rb["profile"]]}  # fmt: skip
+    if rb["fin"]:
+        f["fin_x"] = [round(min(max(x / L, 0.0), 1.0), 5) for x in rb["fin_x"]]
+        f["fin"] = add_dim(d, "t", max(1.0, FIN_EST * H), "Дебелина на издатината встрани",
+                           "Измерете дебелината на издатината встрани (например щипката)",
+                           "С челюстите на шублера. Тя е на височината на оста.", show={"feature": f["id"]})  # fmt: skip
+    d["features"].append(f)
+    return d
 
 
 def add_split(d: dict, x: float, x_bottom: float | None = None) -> dict:

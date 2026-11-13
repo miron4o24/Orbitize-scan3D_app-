@@ -763,6 +763,51 @@ def notches(outer: np.ndarray, U: float, V: float, each: list | None = None) -> 
     return np.asarray(filled.exterior.coords)[:-1], [c for _, c in found]
 
 
+ROUND_THICK = 0.75  # плосък детайл, дебел поне толкова от ширината на тялото си: кръгъл (химикалка, маркер)
+ROUND_LONG = 3.0  # и поне толкова пъти по-дълъг, отколкото дебел
+ROUND_BINS = 120  # точките на профила по дължината
+FIN_SHARE = 0.03  # издатина встрани от кръглото тяло (щипката) - ако е поне толкова от очертанието отгоре
+FIN_OUT = 0.08  # и стърчи поне толкова от дебелината
+
+
+def round_body(outer: np.ndarray, U: float, V: float, H: float) -> dict | None:
+    """Кръгло тяло, снимано само отгоре и отдолу (химикалка): {"axis": средата му по ширината (мм), "profile":
+    [(x, радиус) в мм], "fin": издатината встрани (щипка) - лицето ѝ в мм2}, или None, ако не е такова. Тялото е
+    там, където ширината е до дебелината (H, измерена), оста е по средата му, а радиусът по дължината е по-малкото
+    разстояние до двата ръба (щипката е само от едната страна)."""
+    poly = largest_poly(Polygon(np.asarray(outer, float)).buffer(0))
+    if poly.is_empty or U < ROUND_LONG * H:
+        return None
+    xs = np.linspace(0, U, ROUND_BINS + 1)[1:-1]
+    lo, hi = np.full(len(xs), np.nan), np.full(len(xs), np.nan)
+    for i, x in enumerate(xs):
+        c = poly.intersection(LineString([(x, -1), (x, V + 1)]))
+        if not c.is_empty:
+            lo[i], hi[i] = c.bounds[1], c.bounds[3]
+    ok = ~np.isnan(lo)
+    width = hi - lo
+    body = ok & (width <= 1.15 * H)  # без щипката
+    if body.sum() < 0.3 * len(xs):
+        return None
+    if float(np.median(width[body])) < ROUND_THICK * H:
+        return None  # по-тясно, отколкото е дебело: плоско е (стои на ръба си) или мерките са други
+    axis = float(np.median((lo[body] + hi[body]) / 2))
+    r = np.where(ok, np.minimum(axis - lo, hi - axis), 0.0)
+    r = np.clip(r, 0.0, H / 2)
+    from scipy import ndimage as nd
+
+    r = nd.median_filter(r, size=3, mode="nearest")
+    profile = [(float(x), float(v)) for x, v in zip(xs, r)]
+    band = Polygon([(x, axis - v) for x, v in profile] + [(x, axis + v) for x, v in profile[::-1]]).buffer(0)
+    out = poly.difference(band.buffer(FIN_OUT * H))  # без тънките ивици по ръба (очертанието е малко по-широко)
+    parts = [g for g in getattr(out, "geoms", [out]) if g.geom_type == "Polygon" and g.area > 0]
+    fin = max(parts, key=lambda g: g.area, default=None)
+    if fin is None or fin.area < FIN_SHARE * poly.area:
+        return {"axis": axis, "profile": profile, "fin": 0.0, "fin_x": None}
+    x0, _, x1, _ = fin.bounds
+    return {"axis": axis, "profile": profile, "fin": float(fin.area), "fin_x": (float(x0), float(x1))}
+
+
 CURVE_STEP = 0.02  # точките на гладкото очертание: през толкова от по-големия размер (и не повече от CURVE_MAX)
 CURVE_MAX = 180
 CURVE_CORNER = 50.0  # завой (градуси) на късо разстояние: остър ъгъл, в който кривата се прекъсва

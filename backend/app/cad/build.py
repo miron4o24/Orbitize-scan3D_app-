@@ -14,10 +14,10 @@ from . import design as D
 
 RESERVED = {"cq", "math", "plane", "outline", "cut_tool", "rounded_rect", "round_view", "body", "result", "top",
             "side", "end", "profile", "top_solid", "side_solid", "end_solid", "lambda", "None", "True", "False",
-            "narrow_end", "inside", "curve", "shaped", "tidy"}
+            "narrow_end", "inside", "curve", "shaped", "tidy", "round_body", "round_profile"}
 OPEN = 1.0  # мм: с толкова изрязването на канал до стената излиза извън нея от двете страни (без допиращи се стени)
 FEATURE_KEYS = {"hole": ("d", "depth"), "rect": ("w", "h", "depth", "r"), "slot": ("len", "w", "depth"),
-                "fillet": ("r",), "chamfer": ("c",), "split": ()}  # fmt: skip
+                "fillet": ("r",), "chamfer": ("c",), "split": (), "round": ("fin",)}  # fmt: skip
 
 
 # --- Проверка на описанието от приложението ------------------------------------------------------------------------
@@ -95,6 +95,21 @@ def clean(raw: dict) -> dict:
                 if not level_ok(d, f["at2"], "x"):
                     raise D.DesignError("Непозната граница между части.")
                 g["at2"] = f["at2"]
+            d["features"].append(g)
+            continue
+        if t == "round":  # кръгло тяло по снимката отгоре (D.add_round)
+            prof = f.get("profile")
+            if not (isinstance(prof, list) and 3 <= len(prof) <= 400 and level_ok(d, f.get("y"), "y")):
+                raise D.DesignError("Непознато кръгло тяло.")
+            rows = []
+            for q in prof:
+                if not (isinstance(q, (list, tuple)) and len(q) == 2 and all(isinstance(x, (int, float)) for x in q)):
+                    raise D.DesignError("Непознато кръгло тяло.")
+                rows.append([min(max(float(q[0]), 0.0), 1.0), min(max(float(q[1]), 0.0), 1.0)])
+            g.update({"y": f["y"], "profile": rows, "view": "top"})
+            fx = f.get("fin_x")
+            if isinstance(fx, list) and len(fx) == 2 and all(isinstance(x, (int, float)) for x in fx):
+                g["fin_x"] = sorted(min(max(float(x), 0.0), 1.0) for x in fx)
             d["features"].append(g)
             continue
         if t in ("fillet", "chamfer"):
@@ -272,6 +287,21 @@ def inside(pts, y0, y1, z0, z1, W, H):
     return [(y0 + u * ky, z0 + v * kz, r * min(ky, kz)) for u, v, r in pts]
 
 
+def round_body(top_solid, L, W, H, yc, profile, fin, fin_x=(0.0, 1.0)):
+    """Кръгло тяло: профилът (дял от дължината, дял от радиуса H / 2) завъртян около оста по дължината на
+    височина H / 2 и при Y = yc; издатината встрани (щипката) - очертанието отгоре с дебелина `fin` около оста,
+    между fin_x (дял от дължината)."""
+    pts = [(L * x, max(H / 2 * r, 0.02 * H)) for x, r in profile]
+    pts = [(0.0, pts[0][1])] + [p for p in pts if 1e-6 < p[0] < L - 1e-6] + [(L, pts[-1][1])]
+    wp = cq.Workplane("XY").moveTo(0, 0).lineTo(*pts[0]).spline(pts[1:-1], includeCurrent=True).lineTo(*pts[-1])
+    solid = wp.lineTo(L, 0).close().revolve(360, (0, 0, 0), (1, 0, 0)).translate((0, yc, H / 2))
+    if fin > 0:
+        x0, x1 = L * fin_x[0], L * fin_x[1]
+        slab = cq.Workplane(plane("z", H / 2 - fin / 2)).center((x0 + x1) / 2, W / 2).rect(x1 - x0, W + 2).extrude(fin)
+        solid = solid.union(top_solid.intersect(slab))
+    return solid
+
+
 def narrow_end(body, sign, x_bottom, x_top, section):
     """По-тесен край по дължината ("+" отдясно, "-" отляво): тялото свършва по наклонената равнина от x_bottom на
     долната страна до x_top на горната, а отвъд нея остава само сечението `section` (функция от равнина X)."""
@@ -386,6 +416,15 @@ def code(d: dict) -> str:
                 lines.append(f"body = body.intersect({p})")
         for n in D.narrow_ends(d):
             lines += narrow_lines(d, n, lv)
+        for f in d["features"]:
+            if f["t"] == "round" and D.present(d, f):
+                prof = ", ".join(f"({num(x)}, {num(r)})" for x, r in f["profile"])
+                fin = f.get("fin") if f.get("fin") and not D.zero(d, f.get("fin")) else "0.0"
+                fx = f.get("fin_x") or [0.0, 1.0]
+                lines += ["", "# --- Кръгло тяло по снимката отгоре: профилът е дял от дължината и от радиуса ---",
+                          f"round_profile = [{prof}]",
+                          f"body = round_body(body, L, W, H, {lv(f['y'])}, round_profile, {fin}, "
+                          f"({num(fx[0])}, {num(fx[1])}))"]
     feats = [f for f in d["features"] if D.present(d, f)]  # с размер 0 ги няма
     edge_feats = [f for f in feats if f["t"] in ("fillet", "chamfer")]
     cut_feats = [f for f in feats if f["t"] in ("rect", "slot")]
