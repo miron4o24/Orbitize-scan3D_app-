@@ -28,11 +28,13 @@ else:  # изпълнение като скрипт (fuse.py и motion.py го �
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     from app import parallel as PAR
 
-MODEL = Path(
-    os.environ.get(
-        "DEPTH_MODEL", Path(__file__).resolve().parent.parent / "tools" / "depth" / "depth_anything_v2_small.onnx"
-    )
-)
+# Depth Anything V2 Base, ако е изтеглен, иначе Small. Small прави боята релеф: черните нарисувани очи на фигурка
+# излизаха ясни вдлъбнатини с ръб, печатът по метал - изпъкнал; при Base лицето е почти гладко, а косата и стойката -
+# по-чисти. Около 3 пъти по-бавен (4 с вместо 1,5 с на кадър на лаптоп) и 390 MB. Лицензът на Base е CC BY-NC 4.0
+# (нетърговска употреба), на Small - Apache 2.0.
+MODELS = Path(__file__).resolve().parent.parent / "tools" / "depth"
+BEST = MODELS / "depth_anything_v2_base.onnx"
+MODEL = Path(os.environ.get("DEPTH_MODEL", BEST if BEST.exists() else MODELS / "depth_anything_v2_small.onnx"))
 MODEL_URL = "https://huggingface.co/onnx-community/depth-anything-v2-small/resolve/main/onnx/model.onnx"
 SIZE = 518  # собствената разделителна способност на мрежата (дългата страна на изрязването на предмета)
 MAX_SIDE = 1920  # кадрите първо се смаляват до това (вижте predict)
