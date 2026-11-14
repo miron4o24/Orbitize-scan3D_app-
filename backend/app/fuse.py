@@ -27,7 +27,7 @@ import numpy as np
 import pymeshlab
 import trimesh
 from PIL import Image, ImageDraw
-from scipy import ndimage
+from scipy import ndimage, sparse
 from scipy.spatial import cKDTree
 from skimage import measure
 
@@ -70,6 +70,12 @@ FLAP = 0.0125  # от размера: по-тънките от двойно то
 HULL_POINTS = 1_000_000  # точки вътре в обвивката, нарисувани във всеки кадър за проверка на маската му (вижте hull_view)
 BLUR = 1.5  # клетки: осредненият обем се заглажда преди извличане на повърхността (без това: трохи и ръбове)
 FACES = 200_000
+# Заглаждане, което пази ръбовете (вижте smooth_keeping_edges): стена се усреднява със съседите си само доколкото
+# нормалите им са близки (SMOOTH_TURN, разлика на единичните нормали: 0,35 е около 20 градуса), така че ситните
+# вълни по гладка повърхност изчезват, а ръб или стъпало остават остри. 0 прохода: изключено.
+SMOOTH_PASSES = 0
+SMOOTH_TURN = 0.35
+SMOOTH_MOVES = 30  # проходи, които местят върховете към новите нормали
 # Думата на кадър за повърхност намалява с това колко косо я вижда (косинусът между лъча му и нормалата на
 # повърхността, никога под FACING_MIN): при плъзгащ ъгъл пиксел покрива дълга ивица повърхност и грешката на
 # дълбочината му лежи по повърхността. 0: изключено.
@@ -263,6 +269,38 @@ def rim_support(hull_w: trimesh.Trimesh, poses: list) -> np.ndarray:
     return np.sum(PAR.each(one, poses), axis=0)
 
 
+def smooth_keeping_edges(mesh: trimesh.Trimesh, passes: int, turn: float = SMOOTH_TURN) -> trimesh.Trimesh:
+    """Мрежата със загладени нормали на стените (двустранен филтър, Zheng и др. 2011: всяка нормала става средното
+    на съседните по връх, претеглени по близост на центровете, по площ и по близост на нормалите) и върхове,
+    преместени към тях (Sun и др. 2007)."""
+    f = mesh.faces
+    rows = np.repeat(np.arange(len(f)), 3)
+    shape = (len(f), len(mesh.vertices))
+    by_vertex = sparse.csr_matrix((np.ones(len(rows), np.float32), (rows, f.ravel())), shape=shape)
+    near = (by_vertex @ by_vertex.T).tocoo()
+    i, j = near.row[near.row != near.col], near.col[near.row != near.col]
+    centre, area, n = mesh.triangles_center, mesh.area_faces, mesh.face_normals.copy()
+    reach = float(np.linalg.norm(centre[i] - centre[j], axis=1).mean())
+    close = np.exp(-np.sum((centre[i] - centre[j]) ** 2, axis=1) / (2 * reach**2)) * area[j]
+    for _ in range(passes):
+        w = close * np.exp(-np.sum((n[i] - n[j]) ** 2, axis=1) / (2 * turn**2))
+        total = n * area[:, None]
+        for k in range(3):
+            total[:, k] += np.bincount(i, weights=w * n[j, k], minlength=len(n))
+        n = total / np.maximum(np.linalg.norm(total, axis=1, keepdims=True), 1e-12)
+    v = mesh.vertices.copy()
+    count = np.maximum(np.bincount(f.ravel(), minlength=len(v)), 1)[:, None]
+    for _ in range(SMOOTH_MOVES):
+        centre = v[f].mean(1)
+        move = np.zeros_like(v)
+        for corner in range(3):
+            step = n * np.einsum("ij,ij->i", n, centre - v[f[:, corner]])[:, None]
+            for k in range(3):
+                move[:, k] += np.bincount(f[:, corner], weights=step[:, k], minlength=len(v))
+        v += move / count
+    return trimesh.Trimesh(v, f, process=False)
+
+
 def hull_distance(hull: trimesh.Trimesh, lo: np.ndarray, shape, step: float) -> np.ndarray:
     """Разстояние със знак (световни единици) от клетките на мрежата до обвивката: отрицателно вътре."""
     vg = hull.voxelized(step).fill()
@@ -450,7 +488,10 @@ def fuse(dense: Path, inputs: Path, crops_file: Path, out: Path) -> None:
     if ms.current_mesh().face_number() > FACES:
         ms.meshing_decimation_quadric_edge_collapse(targetfacenum=FACES, preservenormal=True, preservetopology=True)
     m = ms.current_mesh()
-    trimesh.Trimesh(m.vertex_matrix(), m.face_matrix()).export(out)
+    mesh = trimesh.Trimesh(m.vertex_matrix(), m.face_matrix())
+    if SMOOTH_PASSES > 0:
+        mesh = smooth_keeping_edges(mesh, SMOOTH_PASSES)
+    mesh.export(out)
     out.with_suffix(".json").write_text(json.dumps({"frames": used, "total": len(names)}))
 
 
