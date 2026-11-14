@@ -18,6 +18,7 @@ import trimesh
 from PIL import Image
 from scipy import ndimage
 from scipy.spatial import cKDTree
+from scipy.spatial.transform import Rotation
 
 from . import depth as D
 from . import fuse as F
@@ -50,11 +51,19 @@ EXPRESS_VOXEL = 0.004
 # когато инкременталният раздели сканирането на части).
 ONE_PIECE = 0.95
 # Ако инкременталният алгоритъм със SIFT разположи по-малко от толкова от кадрите в една част, кадрите се разполагат
-# и с научени особености (ALIKED) и съпоставяне (LightGlue): метална колонка - SIFT я раздели на страната (24 кадъра)
-# и горната страна (15), без общи кадри, а ALIKED + LightGlue разположи всичките 48 в една част. Само тогава, защото
-# е няколко пъти по-бавно на процесор; моделите от двата начина се оценяват заедно по очертанията на предмета.
+# и с научени особености (ALIKED) и съпоставяне (LightGlue), но само за да се съединят частите на SIFT (вижте
+# bridge_pieces). Метална колонка върху поднос с повтарящи се сладкиши: SIFT я раздели на ниския кръг (28 кадъра) и
+# високия (15), без общи кадри; ALIKED + LightGlue разположи всичките 48 в една част, но десетина от високите - на
+# грешно място (повтарящата се шарка), различно при всяко пускане, а очертанията на кръгъл предмет не го издават:
+# гъстите точки след това минаваха през 81% от формата. Затова неговият модел не се използва сам. Само тогава, защото
+# е няколко пъти по-бавно на процесор.
 LEARNED_BELOW = 0.95
 LEARNED_FEATURES = 2048  # на кадър: при 4096 съпоставянето е 3 пъти по-бавно, а кадрите - същите
+# Кадър е на едно и също място в два модела, когато след напасването им центърът му е до толкова от размаха на
+# камерите, а посоката му - до толкова градуса; за съединяване трябват поне толкова такива кадъра.
+BRIDGE_CENTER = 0.03
+BRIDGE_TURN = 5.0
+BRIDGE_MIN = 4
 # От размера на предмета: колко пред измерена точка от повърхността кадър трябва да вижда през обвивката, за да я
 # издълбае (гъстите точки имат шум от няколко десети от процента).
 FREE_MARGIN = 0.02
@@ -325,9 +334,8 @@ def read_views(model: Path) -> M.Views:
     )
 
 
-def mvs_indices(path: Path) -> list[int]:
-    """За всяко изображение по реда в images.bin, индексът му в сцената на OpenMVS (InterfaceCOLMAP добавя
-    регистрираните изображения по реда на идентификаторите в COLMAP)."""
+def read_image_ids(path: Path) -> list[int]:
+    """Идентификаторите в COLMAP на изображенията по реда в images.bin (реда на read_views)."""
     ids = []
     with open(path, "rb") as f:
         (n,) = struct.unpack("<Q", f.read(8))
@@ -338,6 +346,13 @@ def mvs_indices(path: Path) -> list[int]:
                 pass
             (n2d,) = struct.unpack("<Q", f.read(8))
             f.seek(24 * n2d, 1)
+    return ids
+
+
+def mvs_indices(path: Path) -> list[int]:
+    """За всяко изображение по реда в images.bin, индексът му в сцената на OpenMVS (InterfaceCOLMAP добавя
+    регистрираните изображения по реда на идентификаторите в COLMAP)."""
+    ids = read_image_ids(path)
     rank = {colmap_id: i for i, colmap_id in enumerate(sorted(ids))}
     return [rank[i] for i in ids]
 
@@ -751,12 +766,116 @@ def solve_cameras(job: Path, work: Path, photos: Path, n_photos: int, sh: Callab
     return best, placed, stray, all_masks, photo_masks
 
 
+def same_place(a: M.Views, b: M.Views):
+    """Подобието X_b = s R X_a + t между два модела на камерите от общите им кадри, когато поне BRIDGE_MIN от тях са
+    на едно и също място и в двата (вижте BRIDGE_CENTER): (s, R, t, имената на тези кадри) или None. Устойчиво на
+    грешно разположени кадри: всяка двойка общи кадри предлага подобие (завъртането от първия, мащабът от
+    разстоянието между двата), печели това с най-много съгласни кадри и се уточнява по центровете им."""
+    shared = [n for n in a.names if n in set(b.names)]
+    if len(shared) < BRIDGE_MIN:
+        return None
+    ia, ib = [a.names.index(n) for n in shared], [b.names.index(n) for n in shared]
+    Ca, Cb, Ra, Rb = a.centers[ia], b.centers[ib], a.R[ia], b.R[ib]
+    span = float(np.ptp(b.centers, axis=0).max())
+
+    def agree(s, R, t):
+        off = np.linalg.norm(s * Ca @ R.T + t - Cb, axis=1) / span
+        turn = np.einsum("nij,jk,nik->n", Rb, R, Ra)  # следата на Rb R Ra^T
+        return (off <= BRIDGE_CENTER) & (np.degrees(np.arccos(np.clip((turn - 1) / 2, -1, 1))) <= BRIDGE_TURN)
+
+    best = None
+    for i in range(len(shared)):
+        R = Rb[i].T @ Ra[i]
+        for j in range(len(shared)):
+            far = np.linalg.norm(Ca[i] - Ca[j])
+            if i == j or far < 1e-9:
+                continue
+            s = np.linalg.norm(Cb[i] - Cb[j]) / far
+            ok = agree(s, R, Cb[i] - s * R @ Ca[i])
+            if best is None or ok.sum() > best[3].sum():
+                best = (s, R, Cb[i] - s * R @ Ca[i], ok)
+    if best is None or best[3].sum() < BRIDGE_MIN:
+        return None
+    ok = best[3]
+    ma, mb = Ca[ok].mean(0), Cb[ok].mean(0)
+    U, S, Vt = np.linalg.svd((Ca[ok] - ma).T @ (Cb[ok] - mb))
+    flip = np.diag([1, 1, np.sign(np.linalg.det(Vt.T @ U.T))])
+    R = Vt.T @ flip @ U.T
+    s = float((S * np.diag(flip)).sum() / ((Ca[ok] - ma) ** 2).sum())
+    again = agree(s, R, mb - s * R @ ma)
+    if again.sum() >= ok.sum():
+        best = (s, R, mb - s * R @ ma, again)
+    return best[0], best[1], best[2], [n for n, k in zip(shared, best[3]) if k]
+
+
+def bridge_pieces(job: Path, work: Path, photos: Path, learned: Path, sh: Callable[[str, list], None]) -> None:
+    """Частите на инкременталния алгоритъм (SIFT), съединени през модел с научени особености, в sparse/bridged/0.
+    Частите на SIFT са точни, но без общи кадри; моделът от ALIKED + LightGlue ги съдържа всичките, но с някои на
+    грешно място. Най-голямата част е основата; всяка друга се пренася при нея през кадрите, които са на едно и също
+    място и в нея, и в научения модел (same_place), както и основата. След това точките на SIFT се триангулират
+    наново при тези камери и всичко се уточнява (bundle_adjuster). Оценява се по очертанията като другите модели."""
+    sparse, db = work / "sparse", work / "db.db"
+    pieces = sorted((d for d in (sparse / "incremental").iterdir() if (d / "images.bin").exists()),
+                    key=lambda d: -len(read_views(d)))  # fmt: skip
+    models = sorted((d for d in learned.iterdir() if (d / "images.bin").exists()), key=lambda d: -len(read_views(d)))
+    if len(pieces) < 2 or not models:
+        return
+    base = read_views(pieces[0])
+    poses = dict(zip(read_image_ids(pieces[0] / "images.bin"), zip(base.names, base.R, base.t)))
+    joined = [len(base)]
+    for other in pieces[1:]:
+        views = read_views(other)
+        for model in models:
+            mid = read_views(model)
+            down, up = same_place(mid, base), same_place(views, mid)
+            if down is None or up is None:
+                continue
+            s = down[0] * up[0]
+            R = down[1] @ up[1]
+            t = down[0] * down[1] @ up[2] + down[2]
+            for image, name, Rc, C in zip(read_image_ids(other / "images.bin"), views.names, views.R, views.centers):
+                if all(name != known[0] for known in poses.values()):
+                    turned = Rc @ R.T
+                    poses[image] = (name, turned, -turned @ (s * R @ C + t))
+            joined.append(len(views))
+            note(job, f"camera solving: a piece of {len(views)} frames joined through {len(up[3])} frames the learned "
+                 f"features place the same way ({len(down[3])} for the biggest piece)")  # fmt: skip
+            break
+    if len(joined) < 2:
+        note(job, "camera solving: the learned features do not join the pieces")
+        return
+    start, placed, out = work / "bridge", work / "bridge-points", sparse / "bridged" / "0"
+    for d in (start, placed, out):
+        d.mkdir(parents=True, exist_ok=True)
+    try:
+        sh("camera solving", [COLMAP, "model_converter", "--input_path", pieces[0], "--output_path", start,
+            "--output_type", "TXT"])  # fmt: skip
+        lines, camera = [], next(iter(read_cameras(pieces[0] / "cameras.bin")))
+        for image, (name, Rc, tc) in sorted(poses.items()):
+            pose = [*np.roll(Rotation.from_matrix(Rc).as_quat(), 1), *tc]  # w x y z, после отместването
+            lines += [f"{image} {' '.join(repr(float(v)) for v in pose)} {camera} {name}", ""]
+        (start / "images.txt").write_text("\n".join(lines) + "\n")
+        (start / "points3D.txt").write_text("")
+        for own in ("rigs.txt", "frames.txt"):  # COLMAP 4: без тях позите се четат от images.txt
+            (start / own).unlink(missing_ok=True)
+        sh("camera solving", [COLMAP, "point_triangulator", "--database_path", db, "--image_path", photos,
+            "--input_path", start, "--output_path", placed])  # fmt: skip
+        sh("camera solving", [COLMAP, "bundle_adjuster", "--input_path", placed, "--output_path", out])
+    except Failed:
+        shutil.rmtree(out.parent, ignore_errors=True)
+        note(job, "camera solving: joining the pieces through the learned features failed; not used")
+        return
+    note(job, f"camera solving: joined {len(joined)} pieces ({' + '.join(map(str, joined))} frames) through the "
+         f"learned features into one of {len(read_views(out))} frames")  # fmt: skip
+
+
 def learned_cameras(job: Path, work: Path, photos: Path, names: list[str], paired: bool,
                     sh: Callable[[str, list], None]) -> None:
-    """Кадрите, разположени и с ALIKED + LightGlue (вижте LEARNED_BELOW), в sparse/learned и sparse/merged-learned:
-    оценяват се заедно с моделите от SIFT. Не става ли (няма моделите, грешка) - остават само те."""
-    sparse, db = work / "sparse", work / "learned.db"
-    out = sparse / "learned"
+    """Кадрите, разположени и с ALIKED + LightGlue (вижте LEARNED_BELOW), в work/learned (не в sparse/: този модел
+    не се оценява и не се използва сам), и частите на SIFT, съединени през него (bridge_pieces). Не става ли (няма
+    моделите, грешка) - остават само моделите от SIFT."""
+    db = work / "learned.db"
+    out = work / "learned"
     out.mkdir(parents=True, exist_ok=True)
     note(job, "camera solving: placing the frames again with learned features (ALIKED + LightGlue)")
     try:
@@ -781,7 +900,7 @@ def learned_cameras(job: Path, work: Path, photos: Path, names: list[str], paire
         return
     sizes = [len(read_views(d)) for d in sorted(out.iterdir()) if (d / "images.bin").exists()]
     note(job, f"camera solving: learned features placed {' + '.join(map(str, sizes)) or 'no'} frames")
-    merge_pieces(job, work, sparse, "learned", sh)
+    bridge_pieces(job, work, photos, out, sh)
 
 
 def refine_cameras(job: Path, work: Path, model: Path, sh: Callable[[str, list], None]) -> Path:
