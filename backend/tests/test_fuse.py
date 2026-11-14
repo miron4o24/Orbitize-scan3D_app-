@@ -22,3 +22,22 @@ def test_facing_is_the_cosine_to_the_surface():
     holes = flat.copy()
     holes[10:20, 10:20] = 0
     assert (F.facing(holes, K, box)[9:21, 9:21] == 1.0).all()
+
+
+def test_smoothing_flattens_ripples_and_keeps_the_edges():
+    import trimesh
+
+    box = trimesh.creation.box(extents=(2.0, 2.0, 2.0))
+    for _ in range(5):
+        box = box.subdivide()
+    rng = np.random.default_rng(0)
+    noisy = trimesh.Trimesh(box.vertices + rng.normal(scale=0.004, size=box.vertices.shape), box.faces, process=False)
+    smooth = F.smooth_keeping_edges(noisy, 20)
+
+    def off(mesh):  # колко е всеки връх от повърхността на куба
+        return np.abs(np.abs(mesh.vertices).max(1) - 1.0)
+
+    assert off(smooth).mean() < 0.4 * off(noisy).mean()
+    # Ръбовете не са закръглени: върховете при тях остават на куба.
+    edge = np.sort(np.abs(box.vertices), axis=1)[:, 1] > 0.97
+    assert off(smooth)[edge].max() < 0.02
