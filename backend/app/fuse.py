@@ -26,7 +26,9 @@ from pathlib import Path
 import numpy as np
 import pymeshlab
 import trimesh
+from PIL import Image, ImageDraw
 from scipy import ndimage
+from scipy.spatial import cKDTree
 from skimage import measure
 
 if __package__:
@@ -48,6 +50,14 @@ AI_WEIGHT = 0.5  # глас, където само AI е видял повърх
 FREE_WEIGHT = 0.3  # глас за празно пространство пред повърхността: издълбава, но един грешен кадър не може да пробие дупка
 AI_FREE = 0.3  # и от него, където само AI е видял повърхността (без това дръжката на дрелка се разкъсваше)
 HULL_WEIGHT = 0.3  # думата на обвивката от очертанията, част от тази на един кадър
+# Където очертанието на кадър минава по обвивката, а погледът е по повърхността ѝ (вижте rim_support), предметът
+# наистина я докосва: там думата ѝ е толкова кадъра (при RIM_FULL такива кадъра). AI дълбочината прави печат и
+# боядисани петна релефни (лого по метална колонка, очите на фигурка - вдлъбнатини), а лъскав метал дава шумни карти
+# на OpenMVS; обвивката там е вярна (колонка: страната е докосната от очертанията на 24 кадъра наоколо).
+HULL_RIM = 0.0
+RIM_FULL = 3
+RIM_ACROSS = 0.2  # синус на ъгъла между погледа и повърхността на обвивката, под който кадърът минава по нея
+RIM_PX = 2.0  # пиксели от очертанието на обвивката в кадъра
 OUTSIDE = 0.02  # от размера: отвъд това извън обвивката нищо не се слива (масата и стаята)
 FLOOR_BAND = 0.06  # от размера: колко високо над масата може да стигне лист от нея (меката възглавница се издува)
 FLAP = 0.0125  # от размера: по-тънките от двойно това листове там са маса, а не предмет (вижте floor_sheet)
@@ -211,6 +221,33 @@ def hull_view(points: np.ndarray, spacing: float, dm: DepthMap, box) -> tuple[np
     return shown, ndimage.binary_erosion(shown, iterations=r + edge)
 
 
+def rim_support(hull_w: trimesh.Trimesh, poses: list) -> np.ndarray:
+    """За всеки връх на обвивката (световни координати): в колко кадъра лежи на собственото ѝ очертание в кадъра, с
+    погледа по повърхността ѝ. Там очертанието на предмета (маските) я докосва. poses: (R, C, K, кутия) на кадрите."""
+    v, n = hull_w.vertices, hull_w.vertex_normals
+    tri = hull_w.faces
+
+    def one(pose):
+        R, C, K, (x0, y0, x1, y1) = pose
+        x = PAR.turned(v - C, R)
+        z = np.maximum(x[:, 2], 1e-9)
+        u = K[0, 0] * x[:, 0] / z + K[0, 2] - x0
+        w = K[1, 1] * x[:, 1] / z + K[1, 2] - y0
+        ray = (v - C) / np.linalg.norm(v - C, axis=1, keepdims=True)
+        across = np.einsum("ij,ij->i", n, ray)
+        front = across[tri].mean(1) < 0  # стените към камерата покриват очертанието на затворената обвивка
+        img = Image.new("1", (x1 - x0, y1 - y0), 0)
+        draw = ImageDraw.Draw(img)
+        for t in tri[front]:
+            draw.polygon([(u[t[0]], w[t[0]]), (u[t[1]], w[t[1]]), (u[t[2]], w[t[2]])], fill=1)
+        inside = ndimage.distance_transform_edt(np.asarray(img))
+        ui = np.clip(np.round(u).astype(int), 0, x1 - x0 - 1)
+        wi = np.clip(np.round(w).astype(int), 0, y1 - y0 - 1)
+        return (inside[wi, ui] <= RIM_PX) & (np.abs(across) < RIM_ACROSS) & (x[:, 2] > 1e-9)
+
+    return np.sum(PAR.each(one, poses), axis=0)
+
+
 def hull_distance(hull: trimesh.Trimesh, lo: np.ndarray, shape, step: float) -> np.ndarray:
     """Разстояние със знак (световни единици) от клетките на мрежата до обвивката: отрицателно вътре."""
     vg = hull.voxelized(step).fill()
@@ -304,6 +341,7 @@ def fuse(dense: Path, inputs: Path, crops_file: Path, out: Path) -> None:
     sdf = hull_distance(hull, lo, tuple(shape), step).ravel()
     tsdf = np.clip(sdf / trunc, -1, 1)
     weight = np.full(tsdf.shape, HULL_WEIGHT, np.float32)
+    rim_cells = np.flatnonzero(np.abs(sdf) <= trunc) if HULL_RIM > 0 else None
     active = np.flatnonzero(sdf <= OUTSIDE * size)
     inside = np.flatnonzero(sdf < 0)
     del sdf
@@ -344,6 +382,16 @@ def fuse(dense: Path, inputs: Path, crops_file: Path, out: Path) -> None:
     note(f"{used} of {len(names)} frames have depth to fuse")
     if used < 3:
         raise SystemExit(f"only {used} frames' depth could be used")
+    if rim_cells is not None:
+        sup = rim_support(trimesh.Trimesh(hull.vertices @ to_up, hull.faces, process=False),
+                          [(R, C, K, box) for (R, C, K), box, *_ in frames])  # fmt: skip
+        at = np.stack(np.unravel_index(rim_cells, tuple(shape)), 1) * step + lo
+        _, near = cKDTree(hull.vertices).query(at, workers=-1)
+        extra = HULL_RIM * np.minimum(sup[near], RIM_FULL) / RIM_FULL
+        weight[rim_cells] += extra.astype(np.float32)
+        note(f"outlines touch {np.mean(sup >= RIM_FULL):.0%} of the hull in {RIM_FULL}+ frames, "
+             f"{np.mean(sup >= 1):.0%} in at least one")  # fmt: skip
+        del at, near, extra
 
     def vote(tsdf: np.ndarray, weight: np.ndarray, prev: np.ndarray | None) -> int:
         starts = range(0, len(active), BLOCK)

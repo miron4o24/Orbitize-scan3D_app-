@@ -49,6 +49,12 @@ EXPRESS_VOXEL = 0.004
 # Един инкрементален модел с този дял от кадрите: глобалният алгоритъм не се изпълнява допълнително (помага само
 # когато инкременталният раздели сканирането на части).
 ONE_PIECE = 0.95
+# Ако инкременталният алгоритъм със SIFT разположи по-малко от толкова от кадрите в една част, кадрите се разполагат
+# и с научени особености (ALIKED) и съпоставяне (LightGlue): метална колонка - SIFT я раздели на страната (24 кадъра)
+# и горната страна (15), без общи кадри, а ALIKED + LightGlue разположи всичките 48 в една част. Само тогава, защото
+# е няколко пъти по-бавно на процесор; моделите от двата начина се оценяват заедно по очертанията на предмета.
+LEARNED_BELOW = 0.95
+LEARNED_FEATURES = 2048  # на кадър: при 4096 съпоставянето е 3 пъти по-бавно, а кадрите - същите
 # От размера на предмета: колко пред измерена точка от повърхността кадър трябва да вижда през обвивката, за да я
 # издълбае (гъстите точки имат шум от няколко десети от процента).
 FREE_MARGIN = 0.02
@@ -100,6 +106,13 @@ def note(job: Path, text: str):
             f.write(f"\n[{time.strftime('%H:%M:%S')}] {text}\n")
     except OSError:  # задачата е изтрита междувременно
         pass
+
+
+@functools.cache
+def has_learned_features() -> bool:
+    """COLMAP 4 с особености ALIKED и съпоставяне LightGlue (моделите ONNX се изтеглят при първото използване)."""
+    r = subprocess.run([COLMAP, "feature_extractor", "-h"], capture_output=True, text=True)
+    return "AlikedExtraction" in r.stdout + r.stderr
 
 
 @functools.cache
@@ -706,6 +719,10 @@ def solve_cameras(job: Path, work: Path, photos: Path, n_photos: int, sh: Callab
     if not one_piece:
         for family in ("incremental", "global"):
             merge_pieces(job, work, sparse, family, sh)
+        biggest = max((len(read_views(d)) for d in sparse.rglob("*") if (d / "images.bin").exists()
+                       and "global" not in d.parent.name), default=0)  # fmt: skip
+        if biggest < LEARNED_BELOW * n_photos and has_learned_features():
+            learned_cameras(job, work, photos, names, paired, sh)
 
     # Всяко решение се оценява по AI маските: при верни положения формата от очертанията от всички кадри съвпада с
     # маската на всеки кадър; несъвпадащите са грешно разположени и отпадат.
@@ -732,6 +749,39 @@ def solve_cameras(job: Path, work: Path, photos: Path, n_photos: int, sh: Callab
              f"{int(has.sum())} with the object cut out consistent with its outline")  # fmt: skip
     best, placed, stray = max(models, key=lambda m: m[1], default=(None, 0, []))
     return best, placed, stray, all_masks, photo_masks
+
+
+def learned_cameras(job: Path, work: Path, photos: Path, names: list[str], paired: bool,
+                    sh: Callable[[str, list], None]) -> None:
+    """Кадрите, разположени и с ALIKED + LightGlue (вижте LEARNED_BELOW), в sparse/learned и sparse/merged-learned:
+    оценяват се заедно с моделите от SIFT. Не става ли (няма моделите, грешка) - остават само те."""
+    sparse, db = work / "sparse", work / "learned.db"
+    out = sparse / "learned"
+    out.mkdir(parents=True, exist_ok=True)
+    note(job, "camera solving: placing the frames again with learned features (ALIKED + LightGlue)")
+    try:
+        sh("camera solving", [COLMAP, "feature_extractor", "--database_path", db, "--image_path", photos,
+            "--ImageReader.single_camera", "1", "--FeatureExtraction.use_gpu", "0", "--FeatureExtraction.type",
+            "ALIKED_N16ROT", "--AlikedExtraction.max_num_features", str(LEARNED_FEATURES),
+            "--FeatureExtraction.max_image_size", MAX_IMAGE, "--FeatureExtraction.num_threads", THREADS])  # fmt: skip
+        match = ["--FeatureMatching.use_gpu", "0", "--FeatureMatching.num_threads", THREADS,
+                 "--FeatureMatching.type", "ALIKED_LIGHTGLUE"]  # fmt: skip
+        if paired:
+            pair_list = work / "pairs.txt"
+            pair_list.write_text("".join(f"{a} {b}\n" for a, b in match_pairs(names)))
+            sh("camera solving", [COLMAP, "matches_importer", "--database_path", db, "--match_list_path", pair_list,
+                "--match_type", "pairs", *match])  # fmt: skip
+        else:
+            sh("camera solving", [COLMAP, "exhaustive_matcher", "--database_path", db, *match])
+        sh("camera solving", [COLMAP, "mapper", "--database_path", db, "--image_path", photos, "--output_path", out,
+            "--Mapper.num_threads", THREADS, "--Mapper.init_min_tri_angle", "8",
+            "--Mapper.abs_pose_min_num_inliers", "20"])  # fmt: skip
+    except Failed:
+        note(job, "camera solving: learned features failed; keeping SIFT")
+        return
+    sizes = [len(read_views(d)) for d in sorted(out.iterdir()) if (d / "images.bin").exists()]
+    note(job, f"camera solving: learned features placed {' + '.join(map(str, sizes)) or 'no'} frames")
+    merge_pieces(job, work, sparse, "learned", sh)
 
 
 def refine_cameras(job: Path, work: Path, model: Path, sh: Callable[[str, list], None]) -> Path:
