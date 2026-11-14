@@ -62,3 +62,19 @@ def test_rim_support_marks_where_the_outline_touches_a_ball():
     # Очертанието на кълбо от разстояние 6 е кръгът y = -1/6; далеч от него (към и от камерата) няма опора.
     assert sup[np.abs(y + 1 / 6) < 0.05].mean() > 0.9
     assert not sup[np.abs(y + 1 / 6) > 0.35].any()
+
+
+def test_rim_support_ignores_a_flat_top_seen_along_its_edge():
+    can = trimesh.creation.cylinder(radius=1.0, height=1.0, sections=64)
+    for _ in range(4):
+        can = can.subdivide()
+    K = np.array([[800.0, 0, 400], [0, 800.0, 400], [0, 0, 1]])
+    R = np.array([[1.0, 0, 0], [0, 0, -1], [0, 1, 0]])
+    C = np.array([0.0, -6.0, 0.5])  # на височината на капака: той се вижда като черта
+    sup = F.rim_support(can, [(R, C, K, (0, 0, 800, 800))])
+    x, y, z = can.vertices.T
+    top = (z > 0.499) & (np.hypot(x, y) < 0.8)
+    side = (np.abs(np.abs(x) - 1) < 0.02) & (np.abs(z) < 0.4) & (np.abs(y + 1 / 6) < 0.1)
+    assert top.sum() > 50 and side.sum() > 10
+    assert sup[top].mean() < 0.05  # капакът лежи по целия лъч: очертанието не казва къде е
+    assert sup[side].mean() > 0.9  # заоблената страна се докосва

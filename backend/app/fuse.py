@@ -58,6 +58,12 @@ HULL_RIM = 0.0
 RIM_FULL = 3
 RIM_ACROSS = 0.2  # синус на ъгъла между погледа и повърхността на обвивката, под който кадърът минава по нея
 RIM_PX = 2.0  # пиксели от очертанието на обвивката в кадъра
+# От размера: колко дълбоко по лъча на погледа може да е ивицата на обвивката при един пиксел от очертанието. Заоблена
+# страна се докосва в точка (ивица до 0,2 от размера при RIM_ACROSS); плосък капак, гледан по ръба, или "шатрата" над
+# него (обвивката над плосък връх, гледан само отниско) лежат по целия лъч - очертанието не казва къде е предметът.
+RIM_DEEP = 0.35
+RIM_NEAR = 200  # върхове наоколо, чиято опора се осреднява (малките петна без опора между фасетите на обвивката)
+RIM_ENOUGH = 0.5  # осреднена опора, при която обвивката получава цялото HULL_RIM
 OUTSIDE = 0.02  # от размера: отвъд това извън обвивката нищо не се слива (масата и стаята)
 FLOOR_BAND = 0.06  # от размера: колко високо над масата може да стигне лист от нея (меката възглавница се издува)
 FLAP = 0.0125  # от размера: по-тънките от двойно това листове там са маса, а не предмет (вижте floor_sheet)
@@ -243,8 +249,17 @@ def rim_support(hull_w: trimesh.Trimesh, poses: list) -> np.ndarray:
         inside = ndimage.distance_transform_edt(np.asarray(img))
         ui = np.clip(np.round(u).astype(int), 0, x1 - x0 - 1)
         wi = np.clip(np.round(w).astype(int), 0, y1 - y0 - 1)
-        return (inside[wi, ui] <= RIM_PX) & (np.abs(across) < RIM_ACROSS) & (x[:, 2] > 1e-9)
+        on = np.flatnonzero((inside[wi, ui] <= RIM_PX) & (np.abs(across) < RIM_ACROSS) & (x[:, 2] > 1e-9))
+        # Колко дълбока е ивицата при всяко място от очертанието (клетки от 4 пиксела)
+        cell = (wi[on] // 4) * ((x1 - x0) // 4 + 1) + ui[on] // 4
+        near, far = np.full(cell.max(initial=0) + 1, np.inf), np.zeros(cell.max(initial=0) + 1)
+        np.minimum.at(near, cell, z[on])
+        np.maximum.at(far, cell, z[on])
+        touched = np.zeros(len(v), bool)
+        touched[on[far[cell] - near[cell] <= RIM_DEEP * size]] = True
+        return touched
 
+    size = float(np.ptp(v, axis=0).max())
     return np.sum(PAR.each(one, poses), axis=0)
 
 
@@ -387,7 +402,10 @@ def fuse(dense: Path, inputs: Path, crops_file: Path, out: Path) -> None:
                           [(R, C, K, box) for (R, C, K), box, *_ in frames])  # fmt: skip
         at = np.stack(np.unravel_index(rim_cells, tuple(shape)), 1) * step + lo
         _, near = cKDTree(hull.vertices).query(at, workers=-1)
-        extra = HULL_RIM * np.minimum(sup[near], RIM_FULL) / RIM_FULL
+        full = np.minimum(sup, RIM_FULL) / RIM_FULL
+        _, around = cKDTree(hull.vertices).query(hull.vertices, k=min(RIM_NEAR, len(sup)), workers=-1)
+        full = np.minimum(full[around].mean(1) / RIM_ENOUGH, 1.0)
+        extra = HULL_RIM * full[near]
         weight[rim_cells] += extra.astype(np.float32)
         note(f"outlines touch {np.mean(sup >= RIM_FULL):.0%} of the hull in {RIM_FULL}+ frames, "
              f"{np.mean(sup >= 1):.0%} in at least one")  # fmt: skip
