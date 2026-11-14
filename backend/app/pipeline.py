@@ -70,6 +70,27 @@ class Failed(Exception):
     """Съобщение за неуспех за потребителя."""
 
 
+OOM_WORDS = ("bad allocation", "bad_alloc", "out of memory", "memoryerror", "failed to allocate", "not enough memory")
+
+
+def ran_out_of_memory(job: Path, since: int = 0) -> bool:
+    """В дневника на задачата (от байт `since` нататък) има грешка от недостиг на памет."""
+    try:
+        with open(job / "log.txt", "rb") as f:
+            f.seek(since)
+            text = f.read().decode("utf-8", "replace").lower()
+    except OSError:
+        return False
+    return any(w in text for w in OOM_WORDS)
+
+
+def log_size(job: Path) -> int:
+    try:
+        return (job / "log.txt").stat().st_size
+    except OSError:
+        return 0
+
+
 def note(job: Path, text: str):
     """Ред в log.txt на задачата до изхода на инструментите (GET /jobs/{id}/log)."""
     try:

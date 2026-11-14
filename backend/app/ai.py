@@ -507,15 +507,9 @@ def single(job: Path, work: Path, flat_base: bool, set_state: Callable[[str], No
         P.merge_more_frames(job, photos)
     found = sorted(photos.glob("*.jp*g"))
     if len(found) >= MIN_FRAMES:
-        try:
-            report = from_video(job, work, photos, len(found), flat_base, set_state, sh, tune)
-            if report is not None:
-                return report
-        except Exception as e:  # каквото и да се е объркало, моделът от един кадър пак си заслужава
-            if type(e).__name__ == "Cancelled":  # от app/jobs.py (импортирането му тук би било циклично)
-                raise
-            P.note(job, f"AI model from all the frames: failed ({e!r}); making it from one frame")
-            TX.clear(job)  # текстура, направена за този модел, ако се е стигнало дотам
+        report = all_frames(job, work, photos, len(found), flat_base, set_state, sh, tune)
+        if report is not None:
+            return report
     if not found:
         found = frames(job, sh)
     set_state("reconstructing")
@@ -523,6 +517,32 @@ def single(job: Path, work: Path, flat_base: bool, set_state: Callable[[str], No
     set_state("cleaning")
     out = M.make_printable(model, float(model.bounds[0, 2]), flat_base)
     return P.finish(job, out) | {"photos_used": 1, "photos_total": len(found), "ai": "single"} | info
+
+
+def all_frames(job: Path, work: Path, photos: Path, n_photos: int, flat_base: bool,
+               set_state: Callable[[str], None], sh: Callable[[str, list], None], tune: dict | None) -> dict | None:
+    """Моделът от всички кадри (from_video) или None (тогава от един кадър). Спрял ли е от недостиг на памет (няколко
+    AI модела наведнъж на сървъра), още веднъж с един модел наведнъж: по-бавно, но от всички кадри, а не от един."""
+    for attempt in (0, 1):
+        start = P.log_size(job)
+        try:
+            return from_video(job, work, photos, n_photos, flat_base, set_state, sh, tune)
+        except Exception as e:  # каквото и да се е объркало, моделът от един кадър пак си заслужава
+            if type(e).__name__ == "Cancelled":  # от app/jobs.py (импортирането му тук би било циклично)
+                raise
+            TX.clear(job)  # текстура, направена за този модел, ако се е стигнало дотам
+            if attempt == 0 and P.ran_out_of_memory(job, start) and os.environ.get("PAR_MODELS") != "1":
+                P.note(job, f"AI model from all the frames: out of memory ({e!r}); again with one AI model at a time")
+                os.environ["PAR_MODELS"] = "1"  # за стъпките, които се пускат като отделни процеси
+                shutil.rmtree(work, ignore_errors=True)
+                work.mkdir(parents=True)
+                continue
+            P.note(job, f"AI model from all the frames: failed ({e!r}); making it from one frame")
+            return None
+        finally:
+            if attempt == 1:
+                os.environ.pop("PAR_MODELS", None)
+    return None
 
 
 def from_video(job: Path, work: Path, photos: Path, n_photos: int, flat_base: bool,

@@ -13,7 +13,7 @@ from typing import Callable, Iterable
 import numpy as np
 
 CPUS = os.cpu_count() or 1
-MODELS = max(1, CPUS // 4)  # 12 нишки (6 ядра): 3 кадъра наведнъж
+MODELS = int(os.environ.get("PAR_MODELS") or max(1, CPUS // 4))  # 12 нишки (6 ядра): 3 кадъра наведнъж
 MODEL_THREADS = max(1, CPUS // 2 // MODELS)  # по 2 на модел: по една на ядро
 
 
@@ -26,9 +26,19 @@ def each(work: Callable, items: Iterable, workers: int = CPUS) -> list:
         return list(pool.map(work, items))
 
 
+def out_of_memory(e: BaseException) -> bool:
+    """Грешката е от недостиг на памет (ONNX Runtime на Windows: "bad allocation")."""
+    text = str(e).lower()
+    return isinstance(e, MemoryError) or any(w in text for w in ("bad allocation", "bad_alloc", "out of memory",
+                                                                   "failed to allocate", "not enough memory"))
+
+
 def each_model(make: Callable, work: Callable, items: Iterable) -> list:
     """[work(model, item) for item in items], по MODELS наведнъж, всяка работна нишка със собствен модел от make():
-    едновременните изпълнения на една ONNX сесия делят единствения ѝ набор от нишки."""
+    едновременните изпълнения на една ONNX сесия делят единствения ѝ набор от нишки. Ако паметта не стига за
+    няколко модела наведнъж, всичко още веднъж с един модел, кадър по кадър: по-бавно, но не се губят всички кадри
+    (сканиране с 35 разположени кадъра ставаше модел от един кадър)."""
+    items = list(items)
     local = threading.local()
 
     def one(item):
@@ -36,7 +46,18 @@ def each_model(make: Callable, work: Callable, items: Iterable) -> list:
             local.model = make()
         return work(local.model, item)
 
-    return each(one, items, MODELS)
+    try:
+        return each(one, items, MODELS)
+    except Exception as e:  # noqa: BLE001
+        if MODELS <= 1 or not out_of_memory(e):
+            raise
+        print(f"out of memory with {MODELS} models at once ({e}): again with one", flush=True)
+        import gc
+
+        del local
+        gc.collect()
+        model = make()
+        return [work(model, item) for item in items]
 
 
 def onnx_options():
