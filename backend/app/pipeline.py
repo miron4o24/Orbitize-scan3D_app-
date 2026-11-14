@@ -844,29 +844,54 @@ def bridge_pieces(job: Path, work: Path, photos: Path, learned: Path, sh: Callab
     if len(joined) < 2:
         note(job, "camera solving: the learned features do not join the pieces")
         return
-    start, placed, out = work / "bridge", work / "bridge-points", sparse / "bridged" / "0"
-    for d in (start, placed, out):
-        d.mkdir(parents=True, exist_ok=True)
+    # Първо с научените особености: те имат съвпадения между частите, така че уточняването затяга съединението
+    # (само през няколкото общи кадъра колонката излезе сплескана, 100 x 72 вместо кръгла). Грешните им съвпадения
+    # по повтарящата се шарка не се триангулират при вече верни камери. После със SIFT, по-точен във всяка част.
+    learned_ids = {}
+    for model in models:
+        learned_ids |= dict(zip(read_views(model).names, read_image_ids(model / "images.bin")))
+    sift_ids = {name: image for image, (name, _, _) in poses.items()}
+    out = sparse / "bridged" / "0"
     try:
-        sh("camera solving", [COLMAP, "model_converter", "--input_path", pieces[0], "--output_path", start,
-            "--output_type", "TXT"])  # fmt: skip
-        lines, camera = [], next(iter(read_cameras(pieces[0] / "cameras.bin")))
-        for image, (name, Rc, tc) in sorted(poses.items()):
-            pose = [*np.roll(Rotation.from_matrix(Rc).as_quat(), 1), *tc]  # w x y z, после отместването
-            lines += [f"{image} {' '.join(repr(float(v)) for v in pose)} {camera} {name}", ""]
-        (start / "images.txt").write_text("\n".join(lines) + "\n")
-        (start / "points3D.txt").write_text("")
-        for own in ("rigs.txt", "frames.txt"):  # COLMAP 4: без тях позите се четат от images.txt
-            (start / own).unlink(missing_ok=True)
-        sh("camera solving", [COLMAP, "point_triangulator", "--database_path", db, "--image_path", photos,
-            "--input_path", start, "--output_path", placed])  # fmt: skip
-        sh("camera solving", [COLMAP, "bundle_adjuster", "--input_path", placed, "--output_path", out])
+        if all(name in learned_ids for name in sift_ids):
+            rough = {learned_ids[pose[0]]: pose for pose in poses.values()}
+            try:
+                tight = from_poses(work, "bridge-learned", work / "learned.db", photos, models[0], rough, sh)
+                tight = read_views(tight)
+                poses = {sift_ids[n]: (n, R, t) for n, R, t in zip(tight.names, tight.R, tight.t)}
+            except Failed:
+                note(job, "camera solving: tightening the joint with the learned features failed")
+        shutil.copytree(from_poses(work, "bridge", db, photos, pieces[0], poses, sh), out)
     except Failed:
         shutil.rmtree(out.parent, ignore_errors=True)
         note(job, "camera solving: joining the pieces through the learned features failed; not used")
         return
     note(job, f"camera solving: joined {len(joined)} pieces ({' + '.join(map(str, joined))} frames) through the "
          f"learned features into one of {len(read_views(out))} frames")  # fmt: skip
+
+
+def from_poses(work: Path, name: str, db: Path, photos: Path, cameras: Path, poses: dict,
+               sh: Callable[[str, list], None]) -> Path:  # fmt: skip
+    """Модел на камерите от готови пози {идентификатор на изображение в db: (име, R, t)}: точките от съвпаденията в
+    db, триангулирани при тях (point_triangulator), и всичко уточнено (bundle_adjuster). cameras: модел, от който е
+    камерата (обективът)."""
+    start, placed, out = (work / f"{name}-{step}" for step in ("start", "points", "refined"))
+    for d in (start, placed, out):
+        d.mkdir(parents=True, exist_ok=True)
+    sh("camera solving", [COLMAP, "model_converter", "--input_path", cameras, "--output_path", start,
+        "--output_type", "TXT"])  # fmt: skip
+    lines, camera = [], next(iter(read_cameras(cameras / "cameras.bin")))
+    for image, (image_name, Rc, tc) in sorted(poses.items()):
+        pose = [*np.roll(Rotation.from_matrix(Rc).as_quat(), 1), *tc]  # w x y z, после отместването
+        lines += [f"{image} {' '.join(repr(float(v)) for v in pose)} {camera} {image_name}", ""]
+    (start / "images.txt").write_text("\n".join(lines) + "\n")
+    (start / "points3D.txt").write_text("")
+    for own in ("rigs.txt", "frames.txt"):  # COLMAP 4: без тях позите се четат от images.txt
+        (start / own).unlink(missing_ok=True)
+    sh("camera solving", [COLMAP, "point_triangulator", "--database_path", db, "--image_path", photos,
+        "--input_path", start, "--output_path", placed])  # fmt: skip
+    sh("camera solving", [COLMAP, "bundle_adjuster", "--input_path", placed, "--output_path", out])
+    return out
 
 
 def learned_cameras(job: Path, work: Path, photos: Path, names: list[str], paired: bool,
