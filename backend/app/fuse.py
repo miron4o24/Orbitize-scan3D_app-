@@ -54,7 +54,16 @@ HULL_WEIGHT = 0.3  # думата на обвивката от очертани�
 # наистина я докосва: там думата ѝ е толкова кадъра (при RIM_FULL такива кадъра). AI дълбочината прави печат и
 # боядисани петна релефни (лого по метална колонка, очите на фигурка - вдлъбнатини), а лъскав метал дава шумни карти
 # на OpenMVS; обвивката там е вярна (колонка: страната е докосната от очертанията на 24 кадъра наоколо).
-HULL_RIM = 0.0
+HULL_RIM = 30.0
+# Дълбочината на кадър се брои изцяло само където поне AGREE_VIEWS от съседните кадри виждат повърхността на същото
+# място (до AGREE_NEAR от пресичането; вижте agreeing); другаде гласът ѝ е UNSURE от обичайния. Лъскав метал и
+# гланцова боя дават различна дълбочина от всеки кадър (отраженията се местят): там решава обвивката (HULL_RIM), а
+# където кадрите са съгласни (коса, гънки, ръце) - дълбочината, и детайлът остава.
+AGREE_VIEWS = 2
+AGREE_NEAR = 0.5
+AGREE_ASK = 6  # съседни кадри, които се питат (най-близките по посока, поне AGREE_APART градуса встрани)
+AGREE_APART = 4.0
+UNSURE = 0.15
 RIM_FULL = 3
 RIM_ACROSS = 0.2  # синус на ъгъла между погледа и повърхността на обвивката, под който кадърът минава по нея
 RIM_PX = 2.0  # пиксели от очертанието на обвивката в кадъра
@@ -64,6 +73,10 @@ RIM_PX = 2.0  # пиксели от очертанието на обвивкат
 RIM_DEEP = 0.35
 RIM_NEAR = 200  # върхове наоколо, чиято опора се осреднява (малките петна без опора между фасетите на обвивката)
 RIM_ENOUGH = 0.5  # осреднена опора, при която обвивката получава цялото HULL_RIM
+# Дял на кадрите, видели едно място, чиято дълбочина там е за вярване: над него обвивката не се налага, под
+# половината му - изцяло. Броят не стига: по лъскав метал 30% от пикселите са "съгласни" случайно (колонка), и няколко
+# такива кадъра изключваха обвивката по почти цялата страна; по коса и дрехи на фигурка съгласни са 78%.
+RIM_SHARE = 0.6
 OUTSIDE = 0.02  # от размера: отвъд това извън обвивката нищо не се слива (масата и стаята)
 FLOOR_BAND = 0.06  # от размера: колко високо над масата може да стигне лист от нея (меката възглавница се издува)
 FLAP = 0.0125  # от размера: по-тънките от двойно това листове там са маса, а не предмет (вижте floor_sheet)
@@ -73,7 +86,7 @@ FACES = 200_000
 # Заглаждане, което пази ръбовете (вижте smooth_keeping_edges): стена се усреднява със съседите си само доколкото
 # нормалите им са близки (SMOOTH_TURN, разлика на единичните нормали: 0,35 е около 20 градуса), така че ситните
 # вълни по гладка повърхност изчезват, а ръб или стъпало остават остри. 0 прохода: изключено.
-SMOOTH_PASSES = 0
+SMOOTH_PASSES = 5
 SMOOTH_TURN = 0.35
 SMOOTH_MOVES = 30  # проходи, които местят върховете към новите нормали
 # Думата на кадър за повърхност намалява с това колко косо я вижда (косинусът между лъча му и нормалата на
@@ -233,6 +246,41 @@ def hull_view(points: np.ndarray, spacing: float, dm: DepthMap, box) -> tuple[np
     return shown, ndimage.binary_erosion(shown, iterations=r + edge)
 
 
+def agreeing(frames: list, near: float) -> list[np.ndarray]:
+    """За всеки кадър (поза, кутия, дълбочина, ...): пикселите, чиято точка от повърхността поне AGREE_VIEWS от
+    съседните кадри виждат на същото място (до `near`, световни единици, по техния лъч). Закрита от друга част
+    точка не се брои нито за, нито против. През пиксел, после разширено: дълбочината е гладка."""
+    dirs = np.array([f[0][0][2] for f in frames])
+    turn = np.degrees(np.arccos(np.clip(dirs @ dirs.T, -1, 1)))
+
+    def one(i):
+        (R, C, K), (x0, y0, x1, y1), depth = frames[i][:3]
+        z = depth[::2, ::2]
+        rows, cols = np.nonzero(z > 0)
+        z = z[rows, cols].astype(np.float64)
+        u, v = x0 + 2 * cols, y0 + 2 * rows
+        X = np.stack([(u - K[0, 2]) / K[0, 0] * z, (v - K[1, 2]) / K[1, 1] * z, z], 1) @ R.astype(np.float64) + C
+        seen = np.zeros(len(z), np.int32)
+        others = [j for j in np.argsort(turn[i]) if j != i and turn[i, j] >= AGREE_APART][:AGREE_ASK]
+        for j in others:
+            (Rj, Cj, Kj), (a0, b0, a1, b1), dj = frames[j][:3]
+            x = PAR.turned(X - Cj, Rj.astype(np.float64))
+            ok = x[:, 2] > 1e-9
+            uj = np.full(len(z), -1, np.int64)
+            vj = np.full(len(z), -1, np.int64)
+            uj[ok] = np.round(Kj[0, 0] * x[ok, 0] / x[ok, 2] + Kj[0, 2]).astype(np.int64) - a0
+            vj[ok] = np.round(Kj[1, 1] * x[ok, 1] / x[ok, 2] + Kj[1, 2]).astype(np.int64) - b0
+            ok &= (uj >= 0) & (vj >= 0) & (uj < a1 - a0) & (vj < b1 - b0)
+            there = np.zeros(len(z))
+            there[ok] = dj[vj[ok], uj[ok]]
+            seen += ok & (there > 0) & (np.abs(there - x[:, 2]) <= near)
+        out = np.zeros(depth[::2, ::2].shape, bool)
+        out[rows, cols] = seen >= AGREE_VIEWS
+        return np.kron(out, np.ones((2, 2), bool))[: depth.shape[0], : depth.shape[1]]
+
+    return PAR.each(one, range(len(frames)))
+
+
 def rim_support(hull_w: trimesh.Trimesh, poses: list) -> np.ndarray:
     """За всеки връх на обвивката (световни координати): в колко кадъра лежи на собственото ѝ очертание в кадъра, с
     погледа по повърхността ѝ. Там очертанието на предмета (маските) я докосва. poses: (R, C, K, кутия) на кадрите."""
@@ -336,12 +384,12 @@ def floor_sheet(solid: np.ndarray, top: int, radius: float) -> np.ndarray | None
 
 
 def vote_block(frames: list, world: np.ndarray, cells: np.ndarray, tsdf: np.ndarray, weight: np.ndarray,
-               prev: np.ndarray | None, trunc: float) -> int:  # fmt: skip
+               prev: np.ndarray | None, trunc: float, told: np.ndarray | None = None) -> int:  # fmt: skip
     """Гласовете на всеки кадър за един блок от клетките на обема (world: центровете им; cells: местата им в tsdf и
     weight; два блока нямат обща клетка, затова вървят едновременно, а средното не зависи от реда на гласовете). С
     `prev` (предишния проход) гласовете за повърхност далеч от него отпадат. Връща колко."""
     dropped = 0
-    for (R, C, K), box, depth, wmap, fmap in frames:
+    for (R, C, K), box, depth, wmap, fmap, *rest in frames:
         x0, y0, x1, y1 = box
         x = PAR.turned(world - C, R)
         zc = x[:, 2]
@@ -359,12 +407,17 @@ def vote_block(frames: list, world: np.ndarray, cells: np.ndarray, tsdf: np.ndar
         # само за второто.
         ok = (dep > 0) & (sd >= np.where(surface, -trunc, trunc))
         idx, sd, surface, w = idx[ok], sd[ok], surface[ok], wmap[v[ok], u[ok]]
+        sure = rest[0][v[ok], u[ok]] if rest and told is not None else None
         val = np.minimum(1.0, sd / trunc).astype(np.float32)
         cell = cells[idx]
         if prev is not None:
             keep = ~surface | (val >= 1.0) | (np.abs(val - prev[cell]) <= OUTLIER)
             dropped += int((~keep).sum())
             cell, val, surface, w = cell[keep], val[keep], surface[keep], w[keep]
+            sure = sure[keep] if sure is not None else None
+        if sure is not None:  # колко кадъра са казали нещо за клетката и колко от тях с дълбочина за вярване
+            told[1, cell] = np.minimum(told[1, cell], 254) + 1
+            told[0, cell[sure]] = np.minimum(told[0, cell[sure]], 254) + 1
         free = val >= 1.0
         w = np.where(surface, w, 1.0)
         w = np.where(free, w * FREE_WEIGHT * np.where(w < 1.0, AI_FREE, 1.0), w).astype(np.float32)
@@ -435,7 +488,36 @@ def fuse(dense: Path, inputs: Path, crops_file: Path, out: Path) -> None:
     note(f"{used} of {len(names)} frames have depth to fuse")
     if used < 3:
         raise SystemExit(f"only {used} frames' depth could be used")
+    # Към всеки кадър: къде на дълбочината му може да се вярва (съгласна със съседите, или измерен фон извън предмета).
+    if UNSURE < 1 and AGREE_VIEWS > 0:
+        sure = agreeing(frames, AGREE_NEAR * trunc)
+        share = np.mean([a[f[2] > 0].mean() for a, f in zip(sure, frames)])
+        note(f"frames agree on {share:.0%} of the surface they see")
+        frames = [(*f[:3], f[3] * np.where(a, 1.0, UNSURE).astype(np.float32), f[4], a | (f[2] <= 0))
+                  for a, f in zip(sure, frames)]  # fmt: skip
+        del sure
+    else:
+        frames = [(*f, np.ones(f[2].shape, bool)) for f in frames]
+    told = np.zeros((2, len(tsdf)), np.uint8) if rim_cells is not None else None  # за вярване, всички
+
+    def vote(tsdf: np.ndarray, weight: np.ndarray, prev: np.ndarray | None) -> int:
+        starts = range(0, len(active), BLOCK)
+        return sum(PAR.each(lambda s: vote_block(frames, world[s : s + BLOCK], active[s : s + BLOCK], tsdf, weight, prev,
+                                                 trunc, told), starts))  # fmt: skip
+
+    passes = (int(z["passes"]) if "passes" in z.files else PASSES) if OUTLIER > 0 else 1
+    empty_tsdf, empty_weight, prev = tsdf, weight, None
+    for k in range(passes):
+        tsdf, weight = empty_tsdf.copy(), empty_weight.copy()
+        if told is not None:
+            told[:] = 0
+        dropped = vote(tsdf, weight, prev)
+        prev = tsdf
+        note(f"pass {k + 1}: {dropped / 1e6:.1f} million votes left out as far from the others")
     if rim_cells is not None:
+        # Обвивката там, където очертанията я докосват, но само доколкото никой кадър с дълбочина за вярване не
+        # казва друго за това място (told: колко такива кадъра): фигурка - косата и ръцете остават от дълбочината,
+        # гланцовите очи и лъскавият метал - от обвивката.
         sup = rim_support(trimesh.Trimesh(hull.vertices @ to_up, hull.faces, process=False),
                           [(R, C, K, box) for (R, C, K), box, *_ in frames])  # fmt: skip
         at = np.stack(np.unravel_index(rim_cells, tuple(shape)), 1) * step + lo
@@ -443,24 +525,16 @@ def fuse(dense: Path, inputs: Path, crops_file: Path, out: Path) -> None:
         full = np.minimum(sup, RIM_FULL) / RIM_FULL
         _, around = cKDTree(hull.vertices).query(hull.vertices, k=min(RIM_NEAR, len(sup)), workers=-1)
         full = np.minimum(full[around].mean(1) / RIM_ENOUGH, 1.0)
-        extra = HULL_RIM * full[near]
-        weight[rim_cells] += extra.astype(np.float32)
-        note(f"outlines touch {np.mean(sup >= RIM_FULL):.0%} of the hull in {RIM_FULL}+ frames, "
-             f"{np.mean(sup >= 1):.0%} in at least one")  # fmt: skip
-        del at, near, extra
-
-    def vote(tsdf: np.ndarray, weight: np.ndarray, prev: np.ndarray | None) -> int:
-        starts = range(0, len(active), BLOCK)
-        return sum(PAR.each(lambda s: vote_block(frames, world[s : s + BLOCK], active[s : s + BLOCK], tsdf, weight, prev,
-                                                 trunc), starts))  # fmt: skip
-
-    passes = (int(z["passes"]) if "passes" in z.files else PASSES) if OUTLIER > 0 else 1
-    empty_tsdf, empty_weight, prev = tsdf, weight, None
-    for k in range(passes):
-        tsdf, weight = empty_tsdf.copy(), empty_weight.copy()
-        dropped = vote(tsdf, weight, prev)
-        prev = tsdf
-        note(f"pass {k + 1}: {dropped / 1e6:.1f} million votes left out as far from the others")
+        share = told[0, rim_cells] / np.maximum(told[1, rim_cells], 1)
+        doubt = np.clip((RIM_SHARE - share) / (RIM_SHARE / 2), 0, 1)
+        extra = (HULL_RIM * full[near] * doubt).astype(np.float32)
+        tsdf[rim_cells] = (tsdf[rim_cells] * weight[rim_cells] + empty_tsdf[rim_cells] * extra) / (
+            weight[rim_cells] + extra
+        )
+        weight[rim_cells] += extra
+        note(f"outlines touch {np.mean(sup >= RIM_FULL):.0%} of the hull in {RIM_FULL}+ frames; the hull holds "
+             f"{np.mean(extra > 0.5 * HULL_RIM):.0%} of the cells at its surface")  # fmt: skip
+        del at, near, extra, doubt, told
     del empty_tsdf, empty_weight, prev
     note(f"{used} of {len(names)} frames fused")
 
