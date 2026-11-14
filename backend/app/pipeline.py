@@ -1,9 +1,12 @@
 """Снимки (или видео кадри) -> положения на камерите (COLMAP) -> гъсти точки (OpenMVS) -> мрежа за печат (app.mesh)."""
 
+import contextlib
 import functools
 import json
 import os
+import re
 import shutil
+import sqlite3
 import struct
 import subprocess
 import sys
@@ -64,6 +67,9 @@ LEARNED_FEATURES = 2048  # на кадър: при 4096 съпоставянет
 BRIDGE_CENTER = 0.03
 BRIDGE_TURN = 5.0
 BRIDGE_MIN = 4
+PATH_TURN = 30.0  # градуса между посоките на съседни кадри, над които пътят на камерата е прекъснат
+PATH_GAP = 5  # липсващи кадри между два разположени, над които не се знае дали пътят е непрекъснат
+PATH_TRUSTED = 2  # потвърдени от SIFT кадъра, с които откъс от пътя на научения модел е за вярване
 # От размера на предмета: колко пред измерена точка от повърхността кадър трябва да вижда през обвивката, за да я
 # издълбае (гъстите точки имат шум от няколко десети от процента).
 FREE_MARGIN = 0.02
@@ -808,66 +814,111 @@ def same_place(a: M.Views, b: M.Views):
     return best[0], best[1], best[2], [n for n, k in zip(shared, best[3]) if k]
 
 
+def frame_numbers(names: list[str]) -> list[int]:
+    """Поредният номер на всеки кадър във видеото (img_0012.jpg: 12); без номера - мястото му по азбучен ред."""
+    found = [re.findall(r"\d+", Path(n).stem) for n in names]
+    if all(found):
+        return [int(f[-1]) for f in found]
+    order = {n: k for k, n in enumerate(sorted(names))}
+    return [order[n] for n in names]
+
+
+def path_runs(views: M.Views) -> list[list[int]]:
+    """Кадрите на модел (индекси), наредени както са заснети и разделени там, където пътят на камерата се къса:
+    съседни кадри от видео гледат в близки посоки, така че скок над PATH_TURN градуса (или липсващи над PATH_GAP
+    кадъра помежду им) значи, че едната страна е на грешно място."""
+    numbers = frame_numbers(views.names)
+    order = sorted(range(len(views)), key=lambda k: numbers[k])
+    runs = [order[:1]] if order else []
+    for before, k in zip(order, order[1:]):
+        turn = np.degrees(np.arccos(np.clip(views.dirs[before] @ views.dirs[k], -1, 1)))
+        if turn > PATH_TURN or numbers[k] - numbers[before] > PATH_GAP:
+            runs.append([])
+        runs[-1].append(k)
+    return runs
+
+
+def database_ids(db: Path) -> dict[str, int]:
+    """Идентификаторът на всяко изображение в база на COLMAP по името му."""
+    with contextlib.closing(sqlite3.connect(db)) as con:
+        return {name: image for image, name in con.execute("SELECT image_id, name FROM images")}
+
+
+def moved(views: M.Views, s: float, R: np.ndarray, t: np.ndarray) -> dict:
+    """{име: (R, t)} на камерите, пренесени с подобието X' = s R X + t."""
+    turned = np.einsum("nij,kj->nik", views.R, R)
+    centers = s * views.centers @ R.T + t
+    return {n: (Rc, -Rc @ C) for n, Rc, C in zip(views.names, turned, centers)}
+
+
 def bridge_pieces(job: Path, work: Path, photos: Path, learned: Path, sh: Callable[[str, list], None]) -> None:
     """Частите на инкременталния алгоритъм (SIFT), съединени през модел с научени особености, в sparse/bridged/0.
-    Частите на SIFT са точни, но без общи кадри; моделът от ALIKED + LightGlue ги съдържа всичките, но с някои на
-    грешно място. Най-голямата част е основата; всяка друга се пренася при нея през кадрите, които са на едно и също
-    място и в нея, и в научения модел (same_place), както и основата. След това точките на SIFT се триангулират
-    наново при тези камери и всичко се уточнява (bundle_adjuster). Оценява се по очертанията като другите модели."""
+    Частите на SIFT са точни, но без общи кадри; моделът от ALIKED + LightGlue съдържа почти всички кадри, но някои
+    на грешно място. Най-голямата част е основата; всяка друга се пренася при нея през кадрите, които са на едно и
+    също място и в нея, и в научения модел (same_place). Кадър само от научения модел (или разположен другаде от
+    SIFT) се взима от него, когато е в непрекъснат откъс от пътя на камерата (path_runs) с поне PATH_TRUSTED кадъра,
+    потвърдени от SIFT; откъсите без потвърдени кадри са грешните. След това точките се триангулират наново при тези
+    камери и всичко се уточнява (bundle_adjuster). Оценява се по очертанията като другите модели."""
     sparse, db = work / "sparse", work / "db.db"
     pieces = sorted((d for d in (sparse / "incremental").iterdir() if (d / "images.bin").exists()),
                     key=lambda d: -len(read_views(d)))  # fmt: skip
     models = sorted((d for d in learned.iterdir() if (d / "images.bin").exists()), key=lambda d: -len(read_views(d)))
-    if len(pieces) < 2 or not models:
+    if not pieces or not models:
         return
     base = read_views(pieces[0])
-    poses = dict(zip(read_image_ids(pieces[0] / "images.bin"), zip(base.names, base.R, base.t)))
-    joined = [len(base)]
+    for model in models:
+        mid = read_views(model)
+        down = same_place(mid, base)
+        if down is not None:
+            break
+    else:
+        note(job, "camera solving: the learned features place the frames differently; not used")
+        return
+    poses = {n: (R, t) for n, R, t in zip(base.names, base.R, base.t)}  # от SIFT, при основата
+    trusted, joined = set(down[3]), [len(base)]
     for other in pieces[1:]:
         views = read_views(other)
-        for model in models:
-            mid = read_views(model)
-            down, up = same_place(mid, base), same_place(views, mid)
-            if down is None or up is None:
-                continue
-            s = down[0] * up[0]
-            R = down[1] @ up[1]
-            t = down[0] * down[1] @ up[2] + down[2]
-            for image, name, Rc, C in zip(read_image_ids(other / "images.bin"), views.names, views.R, views.centers):
-                if all(name != known[0] for known in poses.values()):
-                    turned = Rc @ R.T
-                    poses[image] = (name, turned, -turned @ (s * R @ C + t))
-            joined.append(len(views))
-            note(job, f"camera solving: a piece of {len(views)} frames joined through {len(up[3])} frames the learned "
-                 f"features place the same way ({len(down[3])} for the biggest piece)")  # fmt: skip
-            break
-    if len(joined) < 2:
-        note(job, "camera solving: the learned features do not join the pieces")
+        up = same_place(views, mid)
+        if up is None:
+            continue
+        there = moved(views, down[0] * up[0], down[1] @ up[1], down[0] * down[1] @ up[2] + down[2])
+        poses |= {n: pose for n, pose in there.items() if n not in poses}
+        trusted |= set(up[3])
+        joined.append(len(views))
+    from_learned = moved(mid, *down[:3])
+    added = 0
+    for run in path_runs(mid):
+        names = [mid.names[k] for k in run]
+        if sum(n in trusted for n in names) >= PATH_TRUSTED:
+            for n in names:
+                if n not in trusted:  # няма го в SIFT или SIFT го слага другаде, а пътят тук е непрекъснат
+                    poses[n] = from_learned[n]
+                    added += 1
+    if len(poses) <= len(base):
+        note(job, "camera solving: the learned features add no frames to the biggest piece")
         return
+    note(job, f"camera solving: {' + '.join(map(str, joined))} frames of the pieces and {added} placed by the learned "
+         f"features where the camera path is unbroken ({len(trusted)} frames placed the same way by both)")  # fmt: skip
     # Първо с научените особености: те имат съвпадения между частите, така че уточняването затяга съединението
     # (само през няколкото общи кадъра колонката излезе сплескана, 100 x 72 вместо кръгла). Грешните им съвпадения
     # по повтарящата се шарка не се триангулират при вече верни камери. После със SIFT, по-точен във всяка част.
-    learned_ids = {}
-    for model in models:
-        learned_ids |= dict(zip(read_views(model).names, read_image_ids(model / "images.bin")))
-    sift_ids = {name: image for image, (name, _, _) in poses.items()}
     out = sparse / "bridged" / "0"
     try:
-        if all(name in learned_ids for name in sift_ids):
-            rough = {learned_ids[pose[0]]: pose for pose in poses.values()}
-            try:
-                tight = from_poses(work, "bridge-learned", work / "learned.db", photos, models[0], rough, sh)
-                tight = read_views(tight)
-                poses = {sift_ids[n]: (n, R, t) for n, R, t in zip(tight.names, tight.R, tight.t)}
-            except Failed:
-                note(job, "camera solving: tightening the joint with the learned features failed")
-        shutil.copytree(from_poses(work, "bridge", db, photos, pieces[0], poses, sh), out)
-    except Failed:
+        ids = database_ids(work / "learned.db")
+        try:
+            rough = {ids[n]: (n, *pose) for n, pose in poses.items()}
+            tight = read_views(from_poses(work, "bridge-learned", work / "learned.db", photos, model, rough, sh))
+            poses = {n: (R, t) for n, R, t in zip(tight.names, tight.R, tight.t)}
+        except (Failed, KeyError):
+            note(job, "camera solving: tightening the joint with the learned features failed")
+        ids = database_ids(db)
+        final = from_poses(work, "bridge", db, photos, pieces[0], {ids[n]: (n, *pose) for n, pose in poses.items()}, sh)
+        shutil.copytree(final, out)
+    except (Failed, KeyError):
         shutil.rmtree(out.parent, ignore_errors=True)
         note(job, "camera solving: joining the pieces through the learned features failed; not used")
         return
-    note(job, f"camera solving: joined {len(joined)} pieces ({' + '.join(map(str, joined))} frames) through the "
-         f"learned features into one of {len(read_views(out))} frames")  # fmt: skip
+    note(job, f"camera solving: joined through the learned features into one model of {len(read_views(out))} frames")
 
 
 def from_poses(work: Path, name: str, db: Path, photos: Path, cameras: Path, poses: dict,

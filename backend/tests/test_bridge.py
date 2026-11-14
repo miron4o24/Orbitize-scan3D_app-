@@ -78,3 +78,21 @@ def test_rim_support_ignores_a_flat_top_seen_along_its_edge():
     assert top.sum() > 50 and side.sum() > 10
     assert sup[top].mean() < 0.05  # капакът лежи по целия лъч: очертанието не казва къде е
     assert sup[side].mean() > 0.9  # заоблената страна се докосва
+
+
+def test_path_runs_break_where_the_camera_jumps():
+    views = ring(12, np.eye(3), 1.0, np.zeros(3))  # 15 градуса между съседните кадри
+    assert P.path_runs(views) == [list(range(12))]
+    # Кадри 6-8 са на грешно място (гледат обратно): пътят се къса преди и след тях.
+    flip = Rotation.from_euler("z", 180, degrees=True).as_matrix()
+    for k in (6, 7, 8):
+        views.R[k] = views.R[k] @ flip
+    assert P.path_runs(views) == [[0, 1, 2, 3, 4, 5], [6, 7, 8], [9, 10, 11]]
+    # Липсващи кадри: след повече от PATH_GAP не се знае дали пътят е непрекъснат.
+    far = M.Views(views.R[:3], views.t[:3], views.K[:3], ["img_0001.jpg", "img_0002.jpg", "img_0020.jpg"])
+    assert P.path_runs(far) == [[0, 1], [2]]
+
+
+def test_frame_numbers_come_from_the_names():
+    assert P.frame_numbers(["img_0012.jpg", "img_0003.jpg"]) == [12, 3]
+    assert P.frame_numbers(["b.jpg", "a.jpg"]) == [1, 0]
