@@ -11,6 +11,7 @@ import struct
 import subprocess
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Callable
 
@@ -536,7 +537,41 @@ def fused_surface(work: Path, dense: Path, views: M.Views, cloud: M.Cloud, hull:
     use = info["frames"] >= len(views) / 2 and off <= FUSED_OFF
     note(work.parent, f"depth fusion: {info['frames']} of {info['total']} frames, dense points {off:.2%} of the size "
          "off its surface: " + ("using it" if use else "not used"))  # fmt: skip
+    mesh.metadata["shapes"] = info.get("shapes", [])
     return mesh if use else None
+
+
+LEVEL_MIN, LEVEL_MAX = 1.0, 10.0  # градуси между "нагоре" и оста на формата, между които моделът се изправя по нея
+
+
+def levelled(job: Path, mesh: trimesh.Trimesh, cloud: M.Cloud) -> tuple[trimesh.Trimesh, M.Cloud]:
+    """Моделът и облакът, завъртени така, че оста на най-голямата точна форма (цилиндър, или нормалата на равнина:
+    fuse.snap_shapes), която е почти нагоре, да е точно нагоре. Масата се намира от малкото точки на решаващия
+    алгоритъм и излиза килната с няколко градуса: колонката стоеше наклонена на 6 градуса и дъното ѝ беше отрязано
+    косо. Предмет с цилиндрична страна или плосък капак почти нагоре стои на масата по тях."""
+    near = []
+    for shape in mesh.metadata.get("shapes", []):
+        up = np.array(shape["up"]) * np.sign(shape["up"][2] or 1.0)
+        lean = float(np.degrees(np.arccos(np.clip(up[2], -1, 1))))
+        if lean <= LEVEL_MAX:
+            near.append((shape["share"], lean, up))
+    if not near:
+        return mesh, cloud
+    _, lean, up = max(near, key=lambda s: s[0])
+    if lean < LEVEL_MIN:
+        return mesh, cloud
+    about = np.cross(up, [0, 0, 1.0])
+    # Q @ up = нагоре; координатите се въртят около началото, а to_up поема същото завъртане
+    Q = Rotation.from_rotvec(about / np.linalg.norm(about) * np.radians(lean)).as_matrix()
+    floor = cloud.ground_z
+    if floor is not None:  # точката от масата под предмета остава на масата
+        under = np.r_[(mesh.bounds[0, :2] + mesh.bounds[1, :2]) / 2, floor]
+        floor = float((Q @ under)[2])
+    note(job, f"AI model: stood upright along its exact shape, {lean:.1f}° from the table's up")
+    out = trimesh.Trimesh(mesh.vertices @ Q.T, mesh.faces, process=False)
+    out.metadata.update(mesh.metadata)
+    return out, replace(cloud, points=cloud.points @ Q.T, normals=cloud.normals @ Q.T, to_up=Q @ cloud.to_up,
+                        ground_z=floor)  # fmt: skip
 
 
 def run(

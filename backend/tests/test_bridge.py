@@ -2,6 +2,7 @@
 обвивката от очертанията (app/fuse.py rim_support)."""
 
 import numpy as np
+import pytest
 import trimesh
 from scipy.spatial.transform import Rotation
 
@@ -96,3 +97,23 @@ def test_path_runs_break_where_the_camera_jumps():
 def test_frame_numbers_come_from_the_names():
     assert P.frame_numbers(["img_0012.jpg", "img_0003.jpg"]) == [12, 3]
     assert P.frame_numbers(["b.jpg", "a.jpg"]) == [1, 0]
+
+
+def test_levelled_stands_a_leaning_can_upright_without_moving_it_in_the_world(tmp_path):
+    lean = Rotation.from_euler("x", 6, degrees=True).as_matrix()
+    can = trimesh.creation.cylinder(radius=1.0, height=1.6, sections=48)
+    mesh = trimesh.Trimesh(can.vertices @ lean.T + [0.3, 0.2, 1.0], can.faces, process=False)
+    mesh.metadata["shapes"] = [{"kind": "round", "up": list(lean @ [0, 0, 1.0]), "share": 0.5},
+                               {"kind": "flat", "up": [1.0, 0, 0], "share": 0.9}]  # встрани: не е "нагоре"
+    to_up = Rotation.from_euler("zyx", [20, 30, 40], degrees=True).as_matrix()
+    cloud = M.Cloud(mesh.vertices[::7].copy(), mesh.vertex_normals[::7].copy(), np.ones((len(mesh.vertices[::7]), 4)),
+                    ground_z=0.2, to_up=to_up)
+    out, turned = P.levelled(tmp_path, mesh, cloud)
+    assert np.ptp(mesh.vertices[:, 2]) > 1.79  # наклонена: по-висока от височината си
+    assert np.ptp(out.vertices[:, 2]) == pytest.approx(1.6, abs=1e-6)  # изправена: оста е точно нагоре
+    assert np.allclose(out.vertices @ turned.to_up, mesh.vertices @ to_up, atol=1e-9)  # същото място в света
+    assert np.allclose(turned.points @ turned.to_up, cloud.points @ to_up, atol=1e-9)
+    # Без форма почти нагоре нищо не се върти.
+    mesh.metadata["shapes"] = mesh.metadata["shapes"][1:]
+    same, kept = P.levelled(tmp_path, mesh, cloud)
+    assert same is mesh and kept is cloud

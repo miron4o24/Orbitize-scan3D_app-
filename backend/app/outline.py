@@ -216,4 +216,5 @@ def measured(job: Path, work: Path, dense: Path, views: M.Views, masks: list, cl
     if fused is None:
         P.note(job, "AI model: the outlines' shape (no fused depth)")
         return outline, cloud
+    fused, cloud = P.levelled(job, fused, cloud)
     return M.clip_to_outline(fused, views, masks, S.MASK_SCALE, cloud), cloud
