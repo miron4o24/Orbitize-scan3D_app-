@@ -41,3 +41,42 @@ def test_smoothing_flattens_ripples_and_keeps_the_edges():
     # Ръбовете не са закръглени: върховете при тях остават на куба.
     edge = np.sort(np.abs(box.vertices), axis=1)[:, 1] > 0.97
     assert off(smooth)[edge].max() < 0.02
+
+
+def bumpy(mesh, scale, seed=0):
+    import trimesh
+
+    rng = np.random.default_rng(seed)
+    moved = mesh.vertices + mesh.vertex_normals * rng.normal(scale=scale, size=(len(mesh.vertices), 1))
+    return trimesh.Trimesh(moved, mesh.faces, process=False)
+
+
+def test_snapping_makes_a_bumpy_can_an_exact_cylinder_with_a_flat_top():
+    import trimesh
+
+    can = trimesh.creation.cylinder(radius=1.0, height=1.6, sections=96)
+    for _ in range(3):
+        can = can.subdivide()
+    noisy = bumpy(can, 0.008)
+    out, shapes = F.snap_shapes(noisy, np.ones(len(noisy.vertices), bool))
+    assert sorted(s[0] for s, _ in shapes) == ["flat", "flat", "round"]
+    x, y, z = out.vertices.T
+    side = np.abs(can.vertices[:, 2]) < 0.7
+    assert np.abs(np.hypot(x, y)[side] - 1.0).max() < 0.004  # страната е на цилиндъра (шумът беше 0,008)
+    top = (can.vertices[:, 2] > 0.79) & (np.hypot(*can.vertices[:, :2].T) < 0.9)
+    assert np.ptp(z[top]) < 0.004  # капакът е плосък и напречен на оста
+
+
+def test_snapping_leaves_a_ball_and_the_trusted_part_alone():
+    import trimesh
+
+    ball = bumpy(trimesh.creation.icosphere(subdivisions=5), 0.008)
+    out, shapes = F.snap_shapes(ball, np.ones(len(ball.vertices), bool))
+    assert shapes == [] and np.array_equal(out.vertices, ball.vertices)
+    # Само върховете, където държи обвивката, се търсят: без такива нищо не се мести.
+    can = trimesh.creation.cylinder(radius=1.0, height=1.6, sections=96)
+    for _ in range(3):
+        can = can.subdivide()
+    noisy = bumpy(can, 0.008)
+    out, shapes = F.snap_shapes(noisy, np.zeros(len(noisy.vertices), bool))
+    assert shapes == [] and np.array_equal(out.vertices, noisy.vertices)

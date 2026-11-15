@@ -59,7 +59,7 @@ HULL_RIM = 30.0
 # място (до AGREE_NEAR от пресичането; вижте agreeing); другаде гласът ѝ е UNSURE от обичайния. Лъскав метал и
 # гланцова боя дават различна дълбочина от всеки кадър (отраженията се местят): там решава обвивката (HULL_RIM), а
 # където кадрите са съгласни (коса, гънки, ръце) - дълбочината, и детайлът остава.
-AGREE_VIEWS = 2
+AGREE_VIEWS = 3
 AGREE_NEAR = 0.5
 AGREE_ASK = 6  # съседни кадри, които се питат (най-близките по посока, поне AGREE_APART градуса встрани)
 AGREE_APART = 4.0
@@ -72,7 +72,7 @@ RIM_PX = 2.0  # пиксели от очертанието на обвивкат
 # него (обвивката над плосък връх, гледан само отниско) лежат по целия лъч - очертанието не казва къде е предметът.
 RIM_DEEP = 0.35
 RIM_NEAR = 200  # върхове наоколо, чиято опора се осреднява (малките петна без опора между фасетите на обвивката)
-RIM_ENOUGH = 0.5  # осреднена опора, при която обвивката получава цялото HULL_RIM
+RIM_ENOUGH = 0.05  # осреднена опора, при която обвивката получава цялото HULL_RIM
 # Дял на кадрите, видели едно място, чиято дълбочина там е за вярване: над него обвивката не се налага, под
 # половината му - изцяло. Броят не стига: по лъскав метал 30% от пикселите са "съгласни" случайно (колонка), и няколко
 # такива кадъра изключваха обвивката по почти цялата страна; по коса и дрехи на фигурка съгласни са 78%.
@@ -89,6 +89,24 @@ FACES = 200_000
 SMOOTH_PASSES = 5
 SMOOTH_TURN = 0.35
 SMOOTH_MOVES = 30  # проходи, които местят върховете към новите нормали
+# Равнини и цилиндри (вижте snap_shapes) там, където държи обвивката (дълбочината не е за вярване: лъскав метал):
+# обвивката от очертанията е на фасети и леко крива, а предметът е точна форма. SNAP_TOL: от размера, колко далеч от
+# формата са върховете, по които тя се намира (с нормала до SNAP_TURN от нейната); намерена, тя прибира и върховете
+# до SNAP_WIDE от нея (неравностите вътре в нея и заобления ръб). Форма се приема само ако покрива толкова от цялата
+# повърхност: равнина SNAP_FLAT, цилиндър SNAP_ROUND (тиква: два "цилиндъра" по 10-13% - не се приемат).
+SNAP_TOL = 0.012
+SNAP_WIDE = 0.03
+SNAP_TURN = 25.0
+SNAP_FLAT = 0.08
+SNAP_ROUND = 0.2
+SNAP_TRIES = 400
+SNAP_HELD = 0.5  # връх е "където държи обвивката" при поне толкова от HULL_RIM там
+SNAP_SPREAD = 40
+SNAP_LEAN = 0.3  # наклон на нормалите по оста (по радиуса на единица път), над който не е цилиндър
+SNAP_SQUARE = 8.0  # градуса между равнина и напречната на ос на цилиндър, под които става точно напречна
+SNAP_FENCED = 0.8
+SNAP_PATCH = 0.15
+SNAP_FILL = 0.1
 # Думата на кадър за повърхност намалява с това колко косо я вижда (косинусът между лъча му и нормалата на
 # повърхността, никога под FACING_MIN): при плъзгащ ъгъл пиксел покрива дълга ивица повърхност и грешката на
 # дълбочината му лежи по повърхността. 0: изключено.
@@ -349,6 +367,161 @@ def smooth_keeping_edges(mesh: trimesh.Trimesh, passes: int, turn: float = SMOOT
     return trimesh.Trimesh(v, f, process=False)
 
 
+def round_from(p1, n1, p2, n2):
+    """Цилиндърът (ос, точка от оста, радиус) през две точки с нормалите им: оста е напречна и на двете нормали, а
+    центърът е там, където те се пресичат, гледани по оста. None, ако нормалите са почти успоредни."""
+    axis = np.cross(n1, n2)
+    if np.linalg.norm(axis) < 0.2:
+        return None
+    axis /= np.linalg.norm(axis)
+    e1 = n1 - (n1 @ axis) * axis
+    e1 /= np.linalg.norm(e1)
+    e2 = np.cross(axis, e1)
+    q1, q2 = np.array([p1 @ e1, p1 @ e2]), np.array([p2 @ e1, p2 @ e2])
+    m1, m2 = np.array([n1 @ e1, n1 @ e2]), np.array([n2 @ e1, n2 @ e2])
+    A = np.stack([m1, -m2], 1)
+    if abs(np.linalg.det(A)) < 1e-6:
+        return None
+    c = q1 + np.linalg.solve(A, q2 - q1)[0] * m1
+    return axis, c[0] * e1 + c[1] * e2, float(np.linalg.norm(q1 - c) + np.linalg.norm(q2 - c)) / 2
+
+
+def on_shape(shape, P: np.ndarray):
+    """За равнина ("flat", точка, нормала) или цилиндър ("round", ос, точка, радиус): върховете P, преместени върху
+    формата, и нормалата на формата при всеки."""
+    if shape[0] == "flat":
+        _, c, n = shape
+        return P - np.outer((P - c) @ n, n), np.broadcast_to(n, P.shape)
+    _, axis, c, r = shape
+    rel = P - c
+    along = np.outer(rel @ axis, axis)
+    out = (rel - along) / np.maximum(np.linalg.norm(rel - along, axis=1, keepdims=True), 1e-12)
+    return c + along + out * r, out
+
+
+def refit(kind: str, P: np.ndarray, N: np.ndarray):
+    """Формата от вида, напасната по своите върхове (и нормалите им)."""
+    if kind == "flat":
+        c = P.mean(0)
+        n = np.linalg.svd(P - c, full_matrices=False)[2][2]
+        return "flat", c, n if n @ N.mean(0) > 0 else -n
+    rows = np.linalg.svd(N, full_matrices=False)[2]
+    axis = rows[2]
+    e1 = rows[0] - (rows[0] @ axis) * axis
+    e1 /= np.linalg.norm(e1)
+    e2 = np.cross(axis, e1)
+    x, y = P @ e1, P @ e2
+    cx, cy, k = np.linalg.lstsq(np.stack([2 * x, 2 * y, np.ones(len(x))], 1), x * x + y * y, rcond=None)[0]
+    return "round", axis, cx * e1 + cy * e2, float(np.sqrt(max(k + cx * cx + cy * cy, 1e-12)))
+
+
+def snap_shapes(mesh: trimesh.Trimesh, pool: np.ndarray, rng=None) -> tuple[trimesh.Trimesh, list]:
+    """Мрежата с върховете от `pool` (булева маска), преместени върху равнините и цилиндрите, намерени сред тях
+    (RANSAC: всяка двойка случайни върхове предлага равнина и цилиндър; печели формата с най-много площ), и
+    намерените форми с дяла им от повърхността."""
+    P, N = np.asarray(mesh.vertices, float), np.asarray(mesh.vertex_normals, float)
+    size = float(mesh.extents.max())
+    tol, wide, turn = SNAP_TOL * size, SNAP_WIDE * size, np.cos(np.radians(SNAP_TURN))
+    area = np.zeros(len(P))
+    for corner in range(3):
+        np.add.at(area, mesh.faces[:, corner], mesh.area_faces / 3)
+    total = area.sum()
+    rng = rng or np.random.default_rng(0)
+
+    def fits(shape, idx):
+        at, n = on_shape(shape, P[idx])
+        return (np.linalg.norm(at - P[idx], axis=1) < tol) & (np.einsum("ij,ij->i", n, N[idx]) > turn)
+
+    free, shapes = pool.copy(), []
+    for _ in range(6):
+        idx = np.flatnonzero(free)
+        if area[idx].sum() < SNAP_FLAT * total or len(idx) < 50:
+            break
+        need = {"flat": SNAP_FLAT * total, "round": SNAP_ROUND * total}
+        bests = {"flat": (0.0, None, None), "round": (0.0, None, None)}  # най-добрата от всеки вид поотделно
+        for _ in range(SNAP_TRIES):
+            i, j = rng.choice(idx, 2, replace=False)
+            found = round_from(P[i], N[i], P[j], N[j])
+            for shape in [("flat", P[i], N[i])] + ([("round", *found)] if found and found[2] < 2 * size else []):
+                ok = fits(shape, idx)
+                covers = area[idx[ok]].sum()
+                if covers > bests[shape[0]][0]:
+                    bests[shape[0]] = (covers, shape, ok)
+        enough = [b for kind, b in bests.items() if b[0] >= need[kind]]
+        if not enough:
+            break
+        best = max(enough, key=lambda b: b[0])
+        shape, ok = best[1], best[2]
+        for _ in range(3):  # уточняване по своите върхове, докато покрива повече
+            again = refit(shape[0], P[idx[ok]], N[idx[ok]])
+            more = fits(again, idx)
+            if area[idx[more]].sum() <= area[idx[ok]].sum():
+                break
+            shape, ok = again, more
+        free[idx[best[2]]] = False  # и да не се приеме: тези върхове не се опитват пак
+        share = area[idx[ok]].sum() / total
+        if shape[0] == "round":
+            # Пояс от кълбо или бъчва също е "близо до цилиндър", но нормалите му се накланят по оста: на кълбо с
+            # радиус r наклонът расте с 1/r на единица път по оста, на цилиндър - с 0.
+            along = (P[idx[ok]] - shape[2]) @ shape[1]
+            lean = np.polyfit(along, N[idx[ok]] @ shape[1], 1)[0] * shape[3] if np.ptp(along) > 0 else 1.0
+            if abs(lean) > SNAP_LEAN:
+                continue
+        if share >= (SNAP_FLAT if shape[0] == "flat" else SNAP_ROUND):
+            shapes.append((shape, share))
+            free[idx[ok]] = False
+    if not shapes:
+        return mesh, []
+    # Равнина почти напречна на оста на цилиндър (капак, дъно) става точно напречна: поотделно напаснати, те се
+    # разминават с няколко градуса и капакът излиза килнат.
+    axes = [shape[1] for shape, _ in shapes if shape[0] == "round"]
+    for k, (shape, share) in enumerate(shapes):
+        if shape[0] == "flat":
+            for axis in axes:
+                if abs(shape[2] @ axis) > np.cos(np.radians(SNAP_SQUARE)):
+                    shapes[k] = (("flat", shape[1], axis * np.sign(shape[2] @ axis)), share)
+    # Всеки връх от pool отива върху формата, до която е близо (SNAP_WIDE) и чиято нормала му е най-близка.
+    idx = np.flatnonzero(pool)
+    best_fit, target = np.full(len(idx), 0.5), P[idx].copy()  # нормала поне на 60 градуса от тази на формата
+    for shape, _ in shapes:
+        at, n = on_shape(shape, P[idx])
+        like = np.einsum("ij,ij->i", n, N[idx])
+        take = (np.linalg.norm(at - P[idx], axis=1) < wide) & (like > best_fit)
+        best_fit[take], target[take] = like[take], at[take]
+    # Преместването се разнася и към съседните върхове, затихвайки (SNAP_SPREAD осреднявания по ръбовете на мрежата):
+    # иначе между преместените и останалите остава назъбено стъпало (при колонката - под ръба на капака).
+    move = np.zeros_like(P)
+    move[idx] = target - P[idx]
+    moved = np.zeros(len(P), bool)
+    moved[idx] = np.any(move[idx] != 0, axis=1)
+    e = mesh.edges_unique
+    ones = np.ones(len(e) * 2, np.float32)
+    link = sparse.csr_matrix((ones, (np.r_[e[:, 0], e[:, 1]], np.r_[e[:, 1], e[:, 0]])), shape=(len(P), len(P)))
+    # Петно от останалите върхове, оградено почти изцяло от преместени (SNAP_FENCED) и не голямо (SNAP_PATCH от
+    # повърхността), е част от формите около него: върховете му отиват върху най-близката, ако е до SNAP_FILL (където
+    # държи обвивката) или до SNAP_WIDE (където дълбочината е за вярване: шумът по печата върху метала е до
+    # толкова, а каквото стърчи повече - копче, дръжка - остава).
+    rest = np.flatnonzero(~moved)
+    if len(rest):
+        _, label = sparse.csgraph.connected_components(link[rest][:, rest], directed=False)
+        for k in np.flatnonzero(np.bincount(label, weights=area[rest]) <= SNAP_PATCH * total):
+            patch = rest[label == k]
+            around = np.setdiff1d(link[patch].indices, patch)
+            if len(around) == 0 or moved[around].mean() < SNAP_FENCED:
+                continue
+            near, goal = np.where(pool[patch], SNAP_FILL, SNAP_WIDE) * size, P[patch].copy()
+            for shape, _ in shapes:
+                at, _ = on_shape(shape, P[patch])
+                off = np.linalg.norm(at - P[patch], axis=1)
+                goal[off < near], near = at[off < near], np.minimum(near, off)
+            move[patch] = goal - P[patch]
+        moved[rest] = np.any(move[rest] != 0, axis=1)
+    count = np.maximum(np.asarray(link.sum(1)).ravel(), 1)[:, None]
+    for _ in range(SNAP_SPREAD):
+        move[~moved] = ((link @ move) / count)[~moved]
+    return trimesh.Trimesh(P + move, mesh.faces, process=False), shapes
+
+
 def hull_distance(hull: trimesh.Trimesh, lo: np.ndarray, shape, step: float) -> np.ndarray:
     """Разстояние със знак (световни единици) от клетките на мрежата до обвивката: отрицателно вътре."""
     vg = hull.voxelized(step).fill()
@@ -448,6 +621,7 @@ def fuse(dense: Path, inputs: Path, crops_file: Path, out: Path) -> None:
     tsdf = np.clip(sdf / trunc, -1, 1)
     weight = np.full(tsdf.shape, HULL_WEIGHT, np.float32)
     rim_cells = np.flatnonzero(np.abs(sdf) <= trunc) if HULL_RIM > 0 else None
+    held = None
     active = np.flatnonzero(sdf <= OUTSIDE * size)
     inside = np.flatnonzero(sdf < 0)
     del sdf
@@ -532,6 +706,8 @@ def fuse(dense: Path, inputs: Path, crops_file: Path, out: Path) -> None:
             weight[rim_cells] + extra
         )
         weight[rim_cells] += extra
+        held = np.zeros(len(tsdf), bool)  # където обвивката държи (за snap_shapes)
+        held[rim_cells] = extra >= SNAP_HELD * HULL_RIM
         note(f"outlines touch {np.mean(sup >= RIM_FULL):.0%} of the hull in {RIM_FULL}+ frames; the hull holds "
              f"{np.mean(extra > 0.5 * HULL_RIM):.0%} of the cells at its surface")  # fmt: skip
         del at, near, extra, doubt, told
@@ -565,6 +741,12 @@ def fuse(dense: Path, inputs: Path, crops_file: Path, out: Path) -> None:
     mesh = trimesh.Trimesh(m.vertex_matrix(), m.face_matrix())
     if SMOOTH_PASSES > 0:
         mesh = smooth_keeping_edges(mesh, SMOOTH_PASSES)
+    if held is not None and SNAP_TOL > 0:
+        at = np.clip(np.round((mesh.vertices - lo) / step).astype(int), 0, shape - 1)
+        pool = ndimage.binary_dilation(held.reshape(tuple(shape)))[at[:, 0], at[:, 1], at[:, 2]]
+        mesh, shapes = snap_shapes(mesh, pool)
+        note(f"the hull holds {pool.mean():.0%} of the surface; exact shapes there: "
+             + (", ".join(f"{s[0]} {share:.0%}" for s, share in shapes) or "none"))  # fmt: skip
     mesh.export(out)
     out.with_suffix(".json").write_text(json.dumps({"frames": used, "total": len(names)}))
 
