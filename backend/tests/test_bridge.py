@@ -117,3 +117,44 @@ def test_levelled_stands_a_leaning_can_upright_without_moving_it_in_the_world(tm
     mesh.metadata["shapes"] = mesh.metadata["shapes"][1:]
     same, kept = P.levelled(tmp_path, mesh, cloud)
     assert same is mesh and kept is cloud
+
+
+def outline_scene():
+    """24 камери в кръг около дълъг Г-образен предмет (не е симетричен: очертанията му издават грешно сложена
+    камера), с маските му при размера на маските в приложението."""
+    from app import segment as SG
+
+    views = ring(24, np.eye(3), 1.0, np.zeros(3))
+    rng = np.random.default_rng(0)
+    box = rng.uniform([-0.7, -0.2, -0.35], [0.7, 0.2, 0.35], (60000, 3))
+    X = box[~((box[:, 0] > 0) & (box[:, 2] > 0))]  # без единия горен квадрант
+    masks = {}
+    for n, R, t, K in zip(views.names, views.R, views.t, views.K):
+        x = X @ R.T + t
+        u = np.round((K[0] * x[:, 0] / x[:, 2] + K[2]) / SG.MASK_SCALE).astype(int)
+        v = np.round((K[1] * x[:, 1] / x[:, 2] + K[3]) / SG.MASK_SCALE).astype(int)
+        m = np.zeros((480 // SG.MASK_SCALE, 640 // SG.MASK_SCALE), bool)
+        m[v, u] = True
+        masks[n] = m
+    return views, masks
+
+
+def test_outline_join_fits_a_misplaced_piece_and_leaves_out_a_wrong_one():
+    views, masks = outline_scene()
+    true = {n: (R, t) for n, R, t in zip(views.names, views.R, views.t)}
+    join = P.OutlineJoin({n: true[n] for n in views.names[:12]}, masks, views.K[0])
+    assert join.alone > 0.8
+    # Частта от другата страна, пренесена с грешка в завъртането, мястото и мащаба (като през няколко общи кадъра).
+    rest = {n: true[n] for n in views.names[12:20]}
+    off = P.nudged(rest, np.array([4.0, -5.0, 8.0, 10.0, -8.0, 6.0, 10.0]), join.fine.center, join.fine.size)
+    ok, before, after = join.add(off, wide=True)
+    assert ok and after > before + 0.05 and after > join.alone - P.JOIN_WORSE
+    far = max(np.linalg.norm(-R.T @ t - (-true[n][0].T @ true[n][1])) for n, (R, t) in off.items())
+    near = max(np.linalg.norm(-join.poses[n][0].T @ join.poses[n][1] - (-true[n][0].T @ true[n][1])) for n in off)
+    assert near < far  # и камерите са по-близо до верните си места (само по очертания - не съвсем на тях)
+    # Кадри, сложени на местата на други, на четвърт кръг от тях (грешна част): там предметът се вижда тесен, а в
+    # техните очертания е широк. Толкова не се поправя с нагласяне, и не остават.
+    wrong = {a: true[b] for a, b in zip(views.names[20:], views.names[14:18])}
+    agreed = join.agreement()
+    ok, _, _ = join.add(wrong, wide=True)
+    assert not ok and set(wrong).isdisjoint(join.poses) and join.agreement() == agreed
