@@ -82,10 +82,12 @@ PATH_SOLID = 3  # кадъра в непрекъснат откъс от час�
 # (колонка: съгласие 81%, след нагласяне 87%, при 89% за най-голямата част сама). Уточняването на COLMAP след това
 # го разваляше (64%): между частите почти няма общи точки. JOIN_TURN, JOIN_SHIFT, JOIN_SCALE: докъде се търси
 # (градуси, проценти от размера на предмета, проценти). JOIN_WORSE: колко по-несъгласни от най-голямата част сама
-# може да са очертанията на съединения модел, за да се използва.
+# може да са очертанията с още една част или група кадри, за да остане тя.
 JOIN_AGREE = 0.9
 JOIN_TURN, JOIN_SHIFT, JOIN_SCALE = 12.0, 30.0, 20.0
-JOIN_WORSE = 0.05
+JOIN_WORSE = 0.07
+JOIN_OWN = 0.12  # колко по-несъгласни от основата може да са очертанията само на добавяните кадри
+JOIN_STRAY = 0.5  # кадър на основата с под толкова от обичайното съгласие на очертанието си не участва
 JOIN_TRIES = 300  # най-много толкова оценки при грубото търсене (и една трета от тях при уточняването)
 JOIN_GROUP = 0.02  # с толкова по-несъгласни очертания най-много се приема група кадри само от научения модел
 JOINED = "joined"  # файл в папката на модел, съединен така
@@ -954,6 +956,10 @@ class OutlineScore:
         self.still += self.seen(frames)
 
     def __call__(self, frames: dict | None = None) -> float:
+        return float(np.mean(self.fits(frames)))
+
+    def fits(self, frames: dict | None = None) -> list[float]:
+        """Припокриването на формата с маската на всеки кадър: първо на тези, които не се местят, после на `frames`."""
         both = self.still + self.seen(frames or {})
         shape = np.mean([f[3] for f in both], axis=0) >= JOIN_AGREE
         fit = []
@@ -966,7 +972,7 @@ class OutlineScore:
             drawn = ndimage.maximum_filter(drawn, size=2 * self.grow + 1 + close - 1)
             drawn = ndimage.minimum_filter(drawn, size=close) > 0
             fit.append((drawn & m).sum() / max(1, (drawn | m).sum()))
-        return float(np.mean(fit))
+        return fit
 
 
 def nudged(frames: dict, x: np.ndarray, center: np.ndarray, size: float) -> dict:
@@ -981,6 +987,62 @@ def nudged(frames: dict, x: np.ndarray, center: np.ndarray, size: float) -> dict
     return out
 
 
+class OutlineJoin:
+    """Камери, събирани една по една около основа (най-голямата част на SIFT) по съгласието на очертанията. Всяка
+    група камери (част на SIFT, пренесена при основата, или няколко съседни кадъра от научения модел) се нагласява
+    като едно цяло (nudged) за най-голямо съгласие (OutlineScore) и остава само ако с нея очертанията са най-много
+    JOIN_WORSE по-несъгласни от тези в основата сама. Така една лоша част не проваля останалите: при колонката,
+    разделена на три (20 + 15 + 11 кадъра), третата сваляше съгласието от 84% на 80% и целият съединен модел
+    отпадаше, а сканирането оставаше с 30 кадъра. masks: булеви, по име; K: камерата (fx, fy, cx, cy)."""
+
+    def __init__(self, base: dict, masks: dict, K: np.ndarray):
+        # Кадър на основата, чието очертание не се съгласува с останалите (под JOIN_STRAY от обичайното: един кадър
+        # под масата при колонката), не участва: иначе и той определя формата, по която се нагласяват другите.
+        fits = OutlineScore(base, masks, K, 56, 1).fits()
+        seen = [n for n in base if n in masks]
+        self.stray = {n for n, fit in zip(seen, fits) if fit < JOIN_STRAY * np.median(fits)}
+        self.poses = {n: pose for n, pose in base.items() if n not in self.stray}
+        self.coarse, self.fine = (OutlineScore(self.poses, masks, K, cells, grow) for cells, grow in ((32, 2), (56, 1)))
+        self.alone = self.fine()
+        self.reach = [(-JOIN_TURN, JOIN_TURN)] * 3 + [(-JOIN_SHIFT, JOIN_SHIFT)] * 3 + [(-JOIN_SCALE, JOIN_SCALE)]
+
+    def agreement(self) -> float:
+        return self.fine()
+
+    def fitted(self, there: dict, wide: bool) -> tuple[dict, float, float]:
+        """Камерите `there`, нагласени заедно по очертанията спрямо вече сложените; съгласието преди и след. wide:
+        първо грубо търсене в целия обхват (за част, пренесена през няколко кадъра); без него само уточняване."""
+        coarse, fine = self.coarse, self.fine
+        before = fine(there)
+        start = np.zeros(7)
+        if wide:
+            rough = {"xtol": 0.5, "ftol": 5e-4, "maxfev": JOIN_TRIES}
+            start = minimize(lambda x: -coarse(nudged(there, x, coarse.center, coarse.size)), start, method="Powell",
+                             bounds=self.reach, options=rough).x  # fmt: skip
+        exact = {"xtol": 0.2, "ftol": 5e-4, "maxfev": JOIN_TRIES // 3}
+        best = minimize(lambda x: -fine(nudged(there, x, fine.center, fine.size)), start, method="Powell",
+                        bounds=self.reach, options=exact)  # fmt: skip
+        if -best.fun <= before:
+            return there, before, before
+        return nudged(there, best.x, fine.center, fine.size), before, -best.fun
+
+    def add(self, there: dict, wide: bool, worse: float = JOIN_WORSE) -> tuple[bool, float, float]:
+        """Нагласява камерите `there` и ги приема, ако с тях съгласието е поне това на основата сама минус JOIN_WORSE
+        и поне сегашното минус `worse`, а съгласието само на техните очертания - поне това на основата минус
+        JOIN_OWN (средното по всички кадри скрива няколко грешни сред много верни: при разменени места на 13 кадъра
+        на колонката то пада от 88% на 76%, а тяхното собствено - на 54%; на верните е 85-91%). Връща (приети ли
+        са, съгласието с тях преди нагласянето, след него)."""
+        without = self.fine()
+        there, before, after = self.fitted(there, wide)
+        own = float(np.mean(self.fine.fits(there)[len(self.fine.still):]))
+        ok = after >= self.alone - JOIN_WORSE and after >= without - worse and own >= self.alone - JOIN_OWN
+        if ok:
+            self.poses |= there
+            for scorer in (self.coarse, self.fine):
+                scorer.keep(there)
+        return ok, before, after
+
+
 def bridge_pieces(job: Path, work: Path, photos: Path, learned: Path, masks: dict,
                   sh: Callable[[str, list], None]) -> None:  # fmt: skip
     """Частите на инкременталния алгоритъм (SIFT), съединени през модел с научени особености, в sparse/bridged/0.
@@ -992,7 +1054,8 @@ def bridge_pieces(job: Path, work: Path, photos: Path, learned: Path, masks: dic
     SIFT се заменя с този от научения модел само ако в своята част е сам (откъс под PATH_SOLID кадъра: един кадър
     под масата при колонката); в непрекъснат откъс от своята част остава (десет кадъра от високия кръг, които
     наученият модел струпа до последния верен, без скок в пътя). Камерите остават така: точките на SIFT само се
-    триангулират при тях. Използва се, ако очертанията са почти толкова съгласни, колкото в основата сама."""
+    триангулират при тях. Всяка част и група остава само ако очертанията са почти толкова съгласни, колкото в
+    основата сама (OutlineJoin)."""
     sparse, db = work / "sparse", work / "db.db"
     pieces = sorted((d for d in (sparse / "incremental").iterdir() if (d / "images.bin").exists()),
                     key=lambda d: -len(read_views(d)))  # fmt: skip
@@ -1008,50 +1071,31 @@ def bridge_pieces(job: Path, work: Path, photos: Path, learned: Path, masks: dic
     else:
         note(job, "camera solving: the learned features place the frames differently; not used")
         return
-    masks = {n: m > 127 for n, m in masks.items()}
-    poses = {n: (R, t) for n, R, t in zip(base.names, base.R, base.t)}  # от SIFT, при основата
-    coarse, fine = (OutlineScore(poses, masks, base.K[0], cells, grow) for cells, grow in ((32, 2), (56, 1)))
-    alone = fine()
+    join = OutlineJoin({n: (R, t) for n, R, t in zip(base.names, base.R, base.t)},  # от SIFT, при основата
+                       {n: m > 127 for n, m in masks.items()}, base.K[0])  # fmt: skip
     trusted, joined = set(down[3]), [len(base)]
 
     def solid_frames(views: M.Views) -> set[str]:
         return {views.names[k] for run in path_runs(views) if len(run) >= PATH_SOLID for k in run}
 
     solid = solid_frames(base)  # кадри в непрекъснат откъс от пътя на своята част: SIFT не се поправя там
-    reach = [(-JOIN_TURN, JOIN_TURN)] * 3 + [(-JOIN_SHIFT, JOIN_SHIFT)] * 3 + [(-JOIN_SCALE, JOIN_SCALE)]
-
-    def fitted(there: dict, wide: bool = True) -> tuple[dict, float, float]:
-        """Камерите `there`, нагласени заедно по очертанията спрямо вече сложените; съгласието преди и след. wide:
-        първо грубо търсене в целия обхват (за част, пренесена през няколко кадъра); без него само уточняване."""
-        before = fine(there)
-        start = np.zeros(7)
-        if wide:
-            start = minimize(lambda x: -coarse(nudged(there, x, coarse.center, coarse.size)), start, method="Powell",
-                             bounds=reach, options={"xtol": 0.5, "ftol": 5e-4, "maxfev": JOIN_TRIES}).x  # fmt: skip
-        best = minimize(lambda x: -fine(nudged(there, x, fine.center, fine.size)), start, method="Powell",
-                        bounds=reach, options={"xtol": 0.2, "ftol": 5e-4, "maxfev": JOIN_TRIES // 3})  # fmt: skip
-        if -best.fun <= before:
-            return there, before, before
-        return nudged(there, best.x, fine.center, fine.size), before, -best.fun
-
     for other in pieces[1:]:
         views = read_views(other)
         up = same_place(views, mid)
         if up is None:
             continue
         there = moved(views, down[0] * up[0], down[1] @ up[1], down[0] * down[1] @ up[2] + down[2])
-        there = {n: pose for n, pose in there.items() if n not in poses}
+        there = {n: pose for n, pose in there.items() if n not in join.poses}
         if not there:
             continue
-        there, before, after = fitted(there)
+        ok, before, after = join.add(there, wide=True)
         note(job, f"camera solving: a piece of {len(views)} frames joined through {len(up[3])} frames; the frames' "
-             f"outlines agree {before:.1%}, after fitting it to them {after:.1%}")  # fmt: skip
-        poses |= there
-        for scorer in (coarse, fine):
-            scorer.keep(there)
-        trusted |= set(up[3])
-        solid |= solid_frames(views)
-        joined.append(len(views))
+             f"outlines agree {before:.1%}, after fitting it to them {after:.1%} ({join.alone:.1%} in the biggest "
+             "piece alone): " + ("kept" if ok else "left out"))  # fmt: skip
+        if ok:  # кадрите на оставена част се опитват и от научения модел, по-долу
+            trusted |= set(up[3])
+            solid |= solid_frames(views)
+            joined.append(len(views))
     from_learned = moved(mid, *down[:3])
     added = 0
     for run in path_runs(mid):
@@ -1070,27 +1114,20 @@ def bridge_pieces(job: Path, work: Path, photos: Path, learned: Path, masks: dic
             else:
                 groups.append([(n, number)])
         for group in groups:
-            there = {n: from_learned[n] for n, _ in group}
-            without = fine()
-            there, _, after = fitted(there, wide=False)
-            if after >= without - JOIN_GROUP:
-                poses |= there
-                for scorer in (coarse, fine):
-                    scorer.keep(there)
-                added += len(there)
+            without = join.agreement()
+            ok, _, after = join.add({n: from_learned[n] for n, _ in group}, wide=False, worse=JOIN_GROUP)
+            if ok:
+                added += len(group)
             else:
-                note(job, f"camera solving: {len(there)} frames placed only by the learned features left out: with "
+                note(job, f"camera solving: {len(group)} frames placed only by the learned features left out: with "
                      f"them the outlines agree {after:.1%}, without {without:.1%}")  # fmt: skip
+    poses = join.poses
     if len(poses) <= len(base):
         note(job, "camera solving: the learned features add no frames to the biggest piece")
         return
-    together = OutlineScore(poses, masks, base.K[0], 64, 1)()
-    use = together >= alone - JOIN_WORSE
     note(job, f"camera solving: {' + '.join(map(str, joined))} frames of the pieces and {added} placed by the learned "
-         f"features where the camera path is unbroken; the outlines agree {together:.1%} ({alone:.1%} in the "
-         f"biggest piece alone): " + ("using it" if use else "not used"))  # fmt: skip
-    if not use:
-        return
+         f"features where the camera path is unbroken; the outlines agree {join.agreement():.1%} ({join.alone:.1%} "
+         "in the biggest piece alone)")  # fmt: skip
     out = sparse / "bridged" / "0"
     try:
         ids = database_ids(db)
