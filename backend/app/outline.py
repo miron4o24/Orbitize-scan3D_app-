@@ -216,5 +216,8 @@ def measured(job: Path, work: Path, dense: Path, views: M.Views, masks: list, cl
     if fused is None:
         P.note(job, "AI model: the outlines' shape (no fused depth)")
         return outline, cloud
-    fused, cloud = P.levelled(job, fused, cloud)
+    try:
+        fused, cloud = P.levelled(job, fused, cloud)
+    except Exception as e:  # тогава моделът остава както е слят
+        P.note(job, f"AI model: standing it upright failed ({e!r})")
     return M.clip_to_outline(fused, views, masks, S.MASK_SCALE, cloud), cloud

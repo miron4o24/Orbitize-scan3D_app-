@@ -810,7 +810,11 @@ def solve_cameras(job: Path, work: Path, photos: Path, n_photos: int, sh: Callab
         biggest = max((len(read_views(d)) for d in sparse.rglob("*") if (d / "images.bin").exists()
                        and "global" not in d.parent.name), default=0)  # fmt: skip
         if biggest < LEARNED_BELOW * n_photos and has_learned_features():
-            learned_cameras(job, work, photos, names, paired, all_masks, sh)
+            try:
+                learned_cameras(job, work, photos, names, paired, all_masks, sh)
+            except Exception as e:  # каквото и да се обърка там, частите на SIFT остават и сканирането продължава
+                shutil.rmtree(sparse / "bridged", ignore_errors=True)
+                note(job, f"camera solving: joining the pieces failed ({e!r}); keeping the pieces")
     models = []
     for d in sorted(p for p in sparse.rglob("*") if (p / "images.bin").exists()):
         views = read_views(d)
