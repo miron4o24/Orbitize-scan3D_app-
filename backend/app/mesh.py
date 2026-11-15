@@ -291,6 +291,9 @@ def clean_cloud(
     return Cloud(pts, nrm, colors, ground_z, R)
 
 
+HULL_GROWS = 5  # най-много толкова пъти кутията на обвивката расте, докато обвивката опира в нея
+
+
 def _hull_fraction(views: Views, masks, scale: int, to_up: np.ndarray, axes: list[np.ndarray]) -> np.ndarray:
     """За всеки център на воксел (мрежа в системата с посока нагоре): дял от кадрите, които го показват, с него в
     очертанието."""
@@ -336,12 +339,24 @@ def hull_volume(
     lo, hi = lo - pad, hi + pad
     lo[2] = floor
     for n in (48, cells):
-        step = float((hi - lo).max()) / n
-        axes = [lo[k] + step * (np.arange(int(np.ceil((hi[k] - lo[k]) / step))) + 0.5) for k in range(3)]
-        frac = _hull_fraction(views, masks, scale, cloud.to_up, axes)
-        inside = np.argwhere(frac >= agree)
-        if len(inside) == 0:
-            return None
+        for _ in range(HULL_GROWS if n == 48 else 1):
+            step = float((hi - lo).max()) / n
+            axes = [lo[k] + step * (np.arange(int(np.ceil((hi[k] - lo[k]) / step))) + 0.5) for k in range(3)]
+            frac = _hull_fraction(views, masks, scale, cloud.to_up, axes)
+            inside = np.argwhere(frac >= agree)
+            if len(inside) == 0:
+                return None
+            # Обвивка, опряла в стена на кутията, е отрязана от нея: кутията расте натам и грубият проход се
+            # повтаря. Точките по лъскав метал са малко и от едната му страна (колонка: 324, всички при надписа), и
+            # кутията от тях режеше предмета наполовина с плоска стена; после и маските се изостряха по това парче.
+            low = inside.min(0) == 0
+            high = inside.max(0) == np.array([len(a) for a in axes]) - 1
+            low[2] &= lo[2] > floor  # дъното на кутията е масата
+            if n != 48 or not (low.any() or high.any()):
+                break
+            side = hi - lo
+            lo, hi = lo - 0.5 * side * low, hi + 0.5 * side * high
+            lo[2] = max(lo[2], floor)
         # Следващ проход: заетата кутия плюс две груби клетки; нищо под масата.
         lo = np.array([axes[k][inside[:, k].min()] for k in range(3)]) - 2 * step
         hi = np.array([axes[k][inside[:, k].max()] for k in range(3)]) + 2 * step
