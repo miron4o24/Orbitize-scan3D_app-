@@ -65,6 +65,9 @@ ONE_PIECE = 0.95
 # е няколко пъти по-бавно на процесор.
 LEARNED_BELOW = 0.95
 LEARNED_FEATURES = 2048  # на кадър: при 4096 съпоставянето е 3 пъти по-бавно, а кадрите - същите
+# Двойките за него (вижте match_pairs): по-малко от тези за SIFT, защото LightGlue е около 1 с на двойка на процесор, а
+# моделът му само съединява частите.
+LEARNED_NEAR, LEARNED_EVERY = 3, 3
 # Кадър е на едно и също място в два модела, когато след напасването им центърът му е до толкова от размаха на
 # камерите, а посоката му - до толкова градуса; за съединяване трябват поне толкова такива кадъра.
 BRIDGE_CENTER = 0.03
@@ -83,6 +86,7 @@ PATH_SOLID = 3  # кадъра в непрекъснат откъс от час�
 JOIN_AGREE = 0.9
 JOIN_TURN, JOIN_SHIFT, JOIN_SCALE = 12.0, 30.0, 20.0
 JOIN_WORSE = 0.05
+JOIN_TRIES = 300  # най-много толкова оценки при грубото търсене (и една трета от тях при уточняването)
 JOIN_GROUP = 0.02  # с толкова по-несъгласни очертания най-много се приема група кадри само от научения модел
 JOINED = "joined"  # файл в папката на модел, съединен така
 # От размера на предмета: колко пред измерена точка от повърхността кадър трябва да вижда през обвивката, за да я
@@ -950,10 +954,13 @@ class OutlineScore:
         shape = np.mean([f[3] for f in both], axis=0) >= JOIN_AGREE
         fit = []
         for u, v, ok, _, m in both:
-            drawn = np.zeros(m.shape, bool)
-            drawn[v[shape & ok], u[shape & ok]] = True
-            drawn = ndimage.binary_dilation(drawn, iterations=self.grow)
-            drawn = ndimage.binary_closing(drawn, iterations=self.grow + 1)
+            drawn = np.zeros(m.shape, np.uint8)
+            drawn[v[shape & ok], u[shape & ok]] = 1
+            # Удебеляване и затваряне на дупките между вокселите (филтри за максимум и минимум: по-бързи от
+            # морфологичните на scipy, а това се смята стотици пъти).
+            close = 2 * self.grow + 3
+            drawn = ndimage.maximum_filter(drawn, size=2 * self.grow + 1 + close - 1)
+            drawn = ndimage.minimum_filter(drawn, size=close) > 0
             fit.append((drawn & m).sum() / max(1, (drawn | m).sum()))
         return float(np.mean(fit))
 
@@ -999,7 +1006,7 @@ def bridge_pieces(job: Path, work: Path, photos: Path, learned: Path, masks: dic
         return
     masks = {n: m > 127 for n, m in masks.items()}
     poses = {n: (R, t) for n, R, t in zip(base.names, base.R, base.t)}  # от SIFT, при основата
-    coarse, fine = (OutlineScore(poses, masks, base.K[0], cells, grow) for cells, grow in ((40, 2), (64, 1)))
+    coarse, fine = (OutlineScore(poses, masks, base.K[0], cells, grow) for cells, grow in ((32, 2), (56, 1)))
     alone = fine()
     trusted, joined = set(down[3]), [len(base)]
 
@@ -1009,13 +1016,16 @@ def bridge_pieces(job: Path, work: Path, photos: Path, learned: Path, masks: dic
     solid = solid_frames(base)  # кадри в непрекъснат откъс от пътя на своята част: SIFT не се поправя там
     reach = [(-JOIN_TURN, JOIN_TURN)] * 3 + [(-JOIN_SHIFT, JOIN_SHIFT)] * 3 + [(-JOIN_SCALE, JOIN_SCALE)]
 
-    def fitted(there: dict) -> tuple[dict, float, float]:
-        """Камерите `there`, нагласени заедно по очертанията спрямо вече сложените; съгласието преди и след."""
+    def fitted(there: dict, wide: bool = True) -> tuple[dict, float, float]:
+        """Камерите `there`, нагласени заедно по очертанията спрямо вече сложените; съгласието преди и след. wide:
+        първо грубо търсене в целия обхват (за част, пренесена през няколко кадъра); без него само уточняване."""
         before = fine(there)
-        rough = minimize(lambda x: -coarse(nudged(there, x, coarse.center, coarse.size)), np.zeros(7), method="Powell",
-                         bounds=reach, options={"xtol": 0.3, "ftol": 1e-4, "maxfev": 500})  # fmt: skip
-        best = minimize(lambda x: -fine(nudged(there, x, fine.center, fine.size)), rough.x, method="Powell",
-                        bounds=reach, options={"xtol": 0.1, "ftol": 1e-4, "maxfev": 200})  # fmt: skip
+        start = np.zeros(7)
+        if wide:
+            start = minimize(lambda x: -coarse(nudged(there, x, coarse.center, coarse.size)), start, method="Powell",
+                             bounds=reach, options={"xtol": 0.5, "ftol": 5e-4, "maxfev": JOIN_TRIES}).x  # fmt: skip
+        best = minimize(lambda x: -fine(nudged(there, x, fine.center, fine.size)), start, method="Powell",
+                        bounds=reach, options={"xtol": 0.2, "ftol": 5e-4, "maxfev": JOIN_TRIES // 3})  # fmt: skip
         if -best.fun <= before:
             return there, before, before
         return nudged(there, best.x, fine.center, fine.size), before, -best.fun
@@ -1058,7 +1068,7 @@ def bridge_pieces(job: Path, work: Path, photos: Path, learned: Path, masks: dic
         for group in groups:
             there = {n: from_learned[n] for n, _ in group}
             without = fine()
-            there, _, after = fitted(there)
+            there, _, after = fitted(there, wide=False)
             if after >= without - JOIN_GROUP:
                 poses |= there
                 for scorer in (coarse, fine):
@@ -1132,8 +1142,9 @@ def learned_cameras(job: Path, work: Path, photos: Path, names: list[str], paire
         match = ["--FeatureMatching.use_gpu", "0", "--FeatureMatching.num_threads", THREADS,
                  "--FeatureMatching.type", "ALIKED_LIGHTGLUE"]  # fmt: skip
         if paired:
-            pair_list = work / "pairs.txt"
-            pair_list.write_text("".join(f"{a} {b}\n" for a, b in match_pairs(names)))
+            pair_list = work / "learned_pairs.txt"
+            pairs = match_pairs(names, LEARNED_NEAR, LEARNED_EVERY)
+            pair_list.write_text("".join(f"{a} {b}\n" for a, b in pairs))
             sh("camera solving", [COLMAP, "matches_importer", "--database_path", db, "--match_list_path", pair_list,
                 "--match_type", "pairs", *match])  # fmt: skip
         else:
