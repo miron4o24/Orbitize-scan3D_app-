@@ -759,15 +759,21 @@ def fuse(dense: Path, inputs: Path, crops_file: Path, out: Path) -> None:
         ms.meshing_decimation_quadric_edge_collapse(targetfacenum=FACES, preservenormal=True, preservetopology=True)
     m = ms.current_mesh()
     mesh = trimesh.Trimesh(m.vertex_matrix(), m.face_matrix())
-    if SMOOTH_PASSES > 0:
-        mesh = smooth_keeping_edges(mesh, SMOOTH_PASSES)
-    shapes = []
-    if held is not None and SNAP_TOL > 0:
-        at = np.clip(np.round((mesh.vertices - lo) / step).astype(int), 0, shape - 1)
-        pool = ndimage.binary_dilation(held.reshape(tuple(shape)))[at[:, 0], at[:, 1], at[:, 2]]
-        mesh, shapes = snap_shapes(mesh, pool)
-        note(f"the hull holds {pool.mean():.0%} of the surface; exact shapes there: "
-             + (", ".join(f"{s[0]} {share:.0%}" for s, share in shapes) or "none"))  # fmt: skip
+    fused, shapes = mesh, []
+    try:
+        if SMOOTH_PASSES > 0:
+            mesh = smooth_keeping_edges(mesh, SMOOTH_PASSES)
+        if held is not None and SNAP_TOL > 0:
+            at = np.clip(np.round((mesh.vertices - lo) / step).astype(int), 0, shape - 1)
+            pool = ndimage.binary_dilation(held.reshape(tuple(shape)))[at[:, 0], at[:, 1], at[:, 2]]
+            mesh, shapes = snap_shapes(mesh, pool)
+            note(f"the hull holds {pool.mean():.0%} of the surface; exact shapes there: "
+                 + (", ".join(f"{s[0]} {share:.0%}" for s, share in shapes) or "none"))  # fmt: skip
+        if not np.isfinite(mesh.vertices).all():
+            raise ValueError("vertices are not finite")
+    except Exception as e:  # тогава повърхността остава както е слята: и без това е добра
+        note(f"smoothing or exact shapes failed ({e!r}); the surface as fused")
+        mesh, shapes = fused, []
     mesh.export(out)
     # Посоките на намерените форми (оста на цилиндър, нормалата на равнина), за изправяне на модела по тях.
     ups = [{"kind": s[0], "up": [float(v) for v in (s[1] if s[0] == "round" else s[2])], "share": float(share)}
