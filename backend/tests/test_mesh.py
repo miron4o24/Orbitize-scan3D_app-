@@ -144,6 +144,16 @@ def test_hull_fills_parts_without_points():
     assert x == pytest.approx(y, rel=0.1)  # кръгло, не половин кълбо или петно
 
 
+def test_hull_is_whole_when_the_points_are_on_one_small_patch():
+    # Лъскав метал: точките са малко и всички при надписа от едната страна. Кутията от тях не бива да реже формата.
+    s = scene()
+    c = M.clean_cloud(**s)
+    patch = c.points[:, 0] > np.percentile(c.points[:, 0], 92)
+    c.points, c.normals, c.colors = c.points[patch], c.normals[patch], c.colors[patch]
+    hull = M.visual_hull(s["views"], s["masks"], 1, c, cells=64)
+    assert 1.9 < hull.extents[0] < 2.4 and 1.9 < hull.extents[1] < 2.4
+
+
 def test_object_not_found_is_a_clear_error():
     s = scene()
     s["masks"] = [m * 0 for m in s["masks"]]
