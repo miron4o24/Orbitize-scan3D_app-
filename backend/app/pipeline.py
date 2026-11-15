@@ -70,6 +70,7 @@ BRIDGE_MIN = 4
 PATH_TURN = 30.0  # градуса между посоките на съседни кадри, над които пътят на камерата е прекъснат
 PATH_GAP = 5  # липсващи кадри между два разположени, над които не се знае дали пътят е непрекъснат
 PATH_TRUSTED = 2  # потвърдени от SIFT кадъра, с които откъс от пътя на научения модел е за вярване
+PATH_SOLID = 3  # кадъра в непрекъснат откъс от част на SIFT, от които мястото им там не се поправя
 # От размера на предмета: колко пред измерена точка от повърхността кадър трябва да вижда през обвивката, за да я
 # издълбае (гъстите точки имат шум от няколко десети от процента).
 FREE_MARGIN = 0.02
@@ -855,10 +856,13 @@ def bridge_pieces(job: Path, work: Path, photos: Path, learned: Path, sh: Callab
     """Частите на инкременталния алгоритъм (SIFT), съединени през модел с научени особености, в sparse/bridged/0.
     Частите на SIFT са точни, но без общи кадри; моделът от ALIKED + LightGlue съдържа почти всички кадри, но някои
     на грешно място. Най-голямата част е основата; всяка друга се пренася при нея през кадрите, които са на едно и
-    също място и в нея, и в научения модел (same_place). Кадър само от научения модел (или разположен другаде от
-    SIFT) се взима от него, когато е в непрекъснат откъс от пътя на камерата (path_runs) с поне PATH_TRUSTED кадъра,
-    потвърдени от SIFT; откъсите без потвърдени кадри са грешните. След това точките се триангулират наново при тези
-    камери и всичко се уточнява (bundle_adjuster). Оценява се по очертанията като другите модели."""
+    също място и в нея, и в научения модел (same_place). Кадър само от научения модел се взима от него, когато е в
+    непрекъснат откъс от пътя на камерата (path_runs) с поне PATH_TRUSTED кадъра, потвърдени от SIFT; откъсите без
+    потвърдени кадри са грешните. Кадър на SIFT се заменя с този от научения модел само ако в своята част е сам
+    (откъс под PATH_SOLID кадъра: един кадър под масата при колонката); в непрекъснат откъс от своята част остава
+    (десет кадъра от високия кръг, които наученият модел струпа до последния верен, без скок в пътя). След това
+    точките се триангулират наново при тези камери и всичко се уточнява (bundle_adjuster). Оценява се по очертанията
+    като другите модели."""
     sparse, db = work / "sparse", work / "db.db"
     pieces = sorted((d for d in (sparse / "incremental").iterdir() if (d / "images.bin").exists()),
                     key=lambda d: -len(read_views(d)))  # fmt: skip
@@ -876,6 +880,11 @@ def bridge_pieces(job: Path, work: Path, photos: Path, learned: Path, sh: Callab
         return
     poses = {n: (R, t) for n, R, t in zip(base.names, base.R, base.t)}  # от SIFT, при основата
     trusted, joined = set(down[3]), [len(base)]
+
+    def solid_frames(views: M.Views) -> set[str]:
+        return {views.names[k] for run in path_runs(views) if len(run) >= PATH_SOLID for k in run}
+
+    solid = solid_frames(base)  # кадри в непрекъснат откъс от пътя на своята част: SIFT не се поправя там
     for other in pieces[1:]:
         views = read_views(other)
         up = same_place(views, mid)
@@ -884,6 +893,7 @@ def bridge_pieces(job: Path, work: Path, photos: Path, learned: Path, sh: Callab
         there = moved(views, down[0] * up[0], down[1] @ up[1], down[0] * down[1] @ up[2] + down[2])
         poses |= {n: pose for n, pose in there.items() if n not in poses}
         trusted |= set(up[3])
+        solid |= solid_frames(views)
         joined.append(len(views))
     from_learned = moved(mid, *down[:3])
     added = 0
@@ -891,7 +901,7 @@ def bridge_pieces(job: Path, work: Path, photos: Path, learned: Path, sh: Callab
         names = [mid.names[k] for k in run]
         if sum(n in trusted for n in names) >= PATH_TRUSTED:
             for n in names:
-                if n not in trusted:  # няма го в SIFT или SIFT го слага другаде, а пътят тук е непрекъснат
+                if n not in trusted and n not in solid:  # няма го в SIFT, или е сам там и на друго място
                     poses[n] = from_learned[n]
                     added += 1
     if len(poses) <= len(base):
