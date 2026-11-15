@@ -20,6 +20,7 @@ import pymeshlab
 import trimesh
 from PIL import Image
 from scipy import ndimage
+from scipy.optimize import minimize
 from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation
 
@@ -27,6 +28,7 @@ from . import depth as D
 from . import fuse as F
 from . import mesh as M
 from . import motion as MO
+from . import parallel as PAR
 from . import refine as RF
 from . import segment as S
 from . import texture as TX
@@ -71,6 +73,17 @@ PATH_TURN = 30.0  # градуса между посоките на съседн
 PATH_GAP = 5  # липсващи кадри между два разположени, над които не се знае дали пътят е непрекъснат
 PATH_TRUSTED = 2  # потвърдени от SIFT кадъра, с които откъс от пътя на научения модел е за вярване
 PATH_SOLID = 3  # кадъра в непрекъснат откъс от част на SIFT, от които мястото им там не се поправя
+# Пренесена част се нагласява (завъртане, отместване, мащаб около предмета) така, че очертанията на всички кадри да са
+# най-съгласни (OutlineScore): през няколкото общи кадъра мащабът и наклонът ѝ излизат грешни с до 9% и 9 градуса
+# (колонка: съгласие 81%, след нагласяне 87%, при 89% за най-голямата част сама). Уточняването на COLMAP след това
+# го разваляше (64%): между частите почти няма общи точки. JOIN_TURN, JOIN_SHIFT, JOIN_SCALE: докъде се търси
+# (градуси, проценти от размера на предмета, проценти). JOIN_WORSE: колко по-несъгласни от най-голямата част сама
+# може да са очертанията на съединения модел, за да се използва.
+JOIN_AGREE = 0.9
+JOIN_TURN, JOIN_SHIFT, JOIN_SCALE = 12.0, 30.0, 20.0
+JOIN_WORSE = 0.05
+JOIN_GROUP = 0.02  # с толкова по-несъгласни очертания най-много се приема група кадри само от научения модел
+JOINED = "joined"  # файл в папката на модел, съединен така
 # От размера на предмета: колко пред измерена точка от повърхността кадър трябва да вижда през обвивката, за да я
 # издълбае (гъстите точки имат шум от няколко десети от процента).
 FREE_MARGIN = 0.02
@@ -741,10 +754,6 @@ def solve_cameras(job: Path, work: Path, photos: Path, n_photos: int, sh: Callab
     if not one_piece:
         for family in ("incremental", "global"):
             merge_pieces(job, work, sparse, family, sh)
-        biggest = max((len(read_views(d)) for d in sparse.rglob("*") if (d / "images.bin").exists()
-                       and "global" not in d.parent.name), default=0)  # fmt: skip
-        if biggest < LEARNED_BELOW * n_photos and has_learned_features():
-            learned_cameras(job, work, photos, names, paired, sh)
 
     # Всяко решение се оценява по AI маските: при верни положения формата от очертанията от всички кадри съвпада с
     # маската на всеки кадър; несъвпадащите са грешно разположени и отпадат.
@@ -758,6 +767,11 @@ def solve_cameras(job: Path, work: Path, photos: Path, n_photos: int, sh: Callab
     sh("finding the object", [sys.executable, S.__file__, masked, photo_masks])
     with np.load(photo_masks) as npz:
         all_masks = {name: npz[name] for name in npz.files}
+    if not one_piece:
+        biggest = max((len(read_views(d)) for d in sparse.rglob("*") if (d / "images.bin").exists()
+                       and "global" not in d.parent.name), default=0)  # fmt: skip
+        if biggest < LEARNED_BELOW * n_photos and has_learned_features():
+            learned_cameras(job, work, photos, names, paired, all_masks, sh)
     models = []
     for d in sorted(p for p in sparse.rglob("*") if (p / "images.bin").exists()):
         views = read_views(d)
@@ -852,17 +866,87 @@ def moved(views: M.Views, s: float, R: np.ndarray, t: np.ndarray) -> dict:
     return {n: (Rc, -Rc @ C) for n, Rc, C in zip(views.names, turned, centers)}
 
 
-def bridge_pieces(job: Path, work: Path, photos: Path, learned: Path, sh: Callable[[str, list], None]) -> None:
+class OutlineScore:
+    """Колко съгласни са очертанията на кадрите при дадени камери: формата, която поне JOIN_AGREE от кадрите виждат в
+    маската си (воксели в куб около предмета), нарисувана във всеки кадър, и средното ѝ припокриване (IoU) с
+    маските. `frames`: {име: (R, t)} на кадрите, които не се местят (от тях са центърът и размерът на предмета);
+    K: камерата (fx, fy, cx, cy) на всички. cells: воксели по страна; grow: с колко пиксела се дебелее рисунката."""
+
+    def __init__(self, frames: dict, masks: dict, K: np.ndarray, cells: int, grow: int):
+        self.masks, self.K, self.grow = masks, K, grow
+        R = np.array([R for R, _ in frames.values()])
+        C = np.array([-R.T @ t for R, t in frames.values()])
+        across = np.eye(3) - np.einsum("ni,nj->nij", R[:, 2], R[:, 2])  # напречно на лъча на погледа
+        self.center = np.linalg.solve(across.sum(0), np.einsum("nij,nj->i", across, C))
+        self.size = 0.0
+        for n, c in zip(frames, C):
+            if n in masks and masks[n].any():
+                ys, xs = np.nonzero(masks[n])
+                wide = max(np.ptp(xs), np.ptp(ys)) * S.MASK_SCALE / K[0]
+                self.size = max(self.size, float(wide * np.linalg.norm(c - self.center)))
+        side = 1.5 * self.size
+        axis = (np.arange(cells) + 0.5) / cells * side - side / 2
+        self.X = np.stack(np.meshgrid(axis, axis, axis, indexing="ij"), -1).reshape(-1, 3) + self.center
+        self.still = self.seen(frames)
+
+    def seen(self, frames: dict) -> list:
+        """За всеки кадър с маска: къде в маската му попада всеки воксел и дали е в нея."""
+        out = []
+        for n, (R, t) in frames.items():
+            if n not in self.masks:
+                continue
+            m = self.masks[n]
+            x = PAR.turned(self.X, R) + t
+            z = np.maximum(x[:, 2], 1e-9)
+            u = np.round((self.K[0] * x[:, 0] / z + self.K[2]) / S.MASK_SCALE).astype(np.int64)
+            v = np.round((self.K[1] * x[:, 1] / z + self.K[3]) / S.MASK_SCALE).astype(np.int64)
+            ok = (x[:, 2] > 1e-9) & (u >= 0) & (v >= 0) & (u < m.shape[1]) & (v < m.shape[0])
+            inside = np.zeros(len(self.X), bool)
+            inside[ok] = m[v[ok], u[ok]]
+            out.append((u, v, ok, inside, m))
+        return out
+
+    def keep(self, frames: dict) -> None:
+        """И тези кадри вече не се местят."""
+        self.still += self.seen(frames)
+
+    def __call__(self, frames: dict | None = None) -> float:
+        both = self.still + self.seen(frames or {})
+        shape = np.mean([f[3] for f in both], axis=0) >= JOIN_AGREE
+        fit = []
+        for u, v, ok, _, m in both:
+            drawn = np.zeros(m.shape, bool)
+            drawn[v[shape & ok], u[shape & ok]] = True
+            drawn = ndimage.binary_dilation(drawn, iterations=self.grow)
+            drawn = ndimage.binary_closing(drawn, iterations=self.grow + 1)
+            fit.append((drawn & m).sum() / max(1, (drawn | m).sum()))
+        return float(np.mean(fit))
+
+
+def nudged(frames: dict, x: np.ndarray, center: np.ndarray, size: float) -> dict:
+    """Камерите {име: (R, t)}, завъртени (x[:3], градуси като вектор на завъртане), отместени (x[3:6], проценти от
+    size) и с мащаб (x[6], проценти) около center - заедно, като едно цяло."""
+    turn = Rotation.from_rotvec(np.radians(x[:3])).as_matrix()
+    scale = np.exp(x[6] / 100)
+    out = {}
+    for n, (R, t) in frames.items():
+        C = center + scale * turn @ (-R.T @ t - center) + x[3:6] / 100 * size
+        out[n] = (R @ turn.T, -(R @ turn.T) @ C)
+    return out
+
+
+def bridge_pieces(job: Path, work: Path, photos: Path, learned: Path, masks: dict,
+                  sh: Callable[[str, list], None]) -> None:  # fmt: skip
     """Частите на инкременталния алгоритъм (SIFT), съединени през модел с научени особености, в sparse/bridged/0.
     Частите на SIFT са точни, но без общи кадри; моделът от ALIKED + LightGlue съдържа почти всички кадри, но някои
     на грешно място. Най-голямата част е основата; всяка друга се пренася при нея през кадрите, които са на едно и
-    също място и в нея, и в научения модел (same_place). Кадър само от научения модел се взима от него, когато е в
-    непрекъснат откъс от пътя на камерата (path_runs) с поне PATH_TRUSTED кадъра, потвърдени от SIFT; откъсите без
-    потвърдени кадри са грешните. Кадър на SIFT се заменя с този от научения модел само ако в своята част е сам
-    (откъс под PATH_SOLID кадъра: един кадър под масата при колонката); в непрекъснат откъс от своята част остава
-    (десет кадъра от високия кръг, които наученият модел струпа до последния верен, без скок в пътя). След това
-    точките се триангулират наново при тези камери и всичко се уточнява (bundle_adjuster). Оценява се по очертанията
-    като другите модели."""
+    също място и в нея, и в научения модел (same_place), и се нагласява по съгласието на очертанията (вижте
+    JOIN_AGREE). Кадър само от научения модел се взима от него, когато е в непрекъснат откъс от пътя на камерата
+    (path_runs) с поне PATH_TRUSTED кадъра, потвърдени от SIFT; откъсите без потвърдени кадри са грешните. Кадър на
+    SIFT се заменя с този от научения модел само ако в своята част е сам (откъс под PATH_SOLID кадъра: един кадър
+    под масата при колонката); в непрекъснат откъс от своята част остава (десет кадъра от високия кръг, които
+    наученият модел струпа до последния верен, без скок в пътя). Камерите остават така: точките на SIFT само се
+    триангулират при тях. Използва се, ако очертанията са почти толкова съгласни, колкото в основата сама."""
     sparse, db = work / "sparse", work / "db.db"
     pieces = sorted((d for d in (sparse / "incremental").iterdir() if (d / "images.bin").exists()),
                     key=lambda d: -len(read_views(d)))  # fmt: skip
@@ -878,20 +962,44 @@ def bridge_pieces(job: Path, work: Path, photos: Path, learned: Path, sh: Callab
     else:
         note(job, "camera solving: the learned features place the frames differently; not used")
         return
+    masks = {n: m > 127 for n, m in masks.items()}
     poses = {n: (R, t) for n, R, t in zip(base.names, base.R, base.t)}  # от SIFT, при основата
+    coarse, fine = (OutlineScore(poses, masks, base.K[0], cells, grow) for cells, grow in ((40, 2), (64, 1)))
+    alone = fine()
     trusted, joined = set(down[3]), [len(base)]
 
     def solid_frames(views: M.Views) -> set[str]:
         return {views.names[k] for run in path_runs(views) if len(run) >= PATH_SOLID for k in run}
 
     solid = solid_frames(base)  # кадри в непрекъснат откъс от пътя на своята част: SIFT не се поправя там
+    reach = [(-JOIN_TURN, JOIN_TURN)] * 3 + [(-JOIN_SHIFT, JOIN_SHIFT)] * 3 + [(-JOIN_SCALE, JOIN_SCALE)]
+
+    def fitted(there: dict) -> tuple[dict, float, float]:
+        """Камерите `there`, нагласени заедно по очертанията спрямо вече сложените; съгласието преди и след."""
+        before = fine(there)
+        rough = minimize(lambda x: -coarse(nudged(there, x, coarse.center, coarse.size)), np.zeros(7), method="Powell",
+                         bounds=reach, options={"xtol": 0.3, "ftol": 1e-4, "maxfev": 500})  # fmt: skip
+        best = minimize(lambda x: -fine(nudged(there, x, fine.center, fine.size)), rough.x, method="Powell",
+                        bounds=reach, options={"xtol": 0.1, "ftol": 1e-4, "maxfev": 200})  # fmt: skip
+        if -best.fun <= before:
+            return there, before, before
+        return nudged(there, best.x, fine.center, fine.size), before, -best.fun
+
     for other in pieces[1:]:
         views = read_views(other)
         up = same_place(views, mid)
         if up is None:
             continue
         there = moved(views, down[0] * up[0], down[1] @ up[1], down[0] * down[1] @ up[2] + down[2])
-        poses |= {n: pose for n, pose in there.items() if n not in poses}
+        there = {n: pose for n, pose in there.items() if n not in poses}
+        if not there:
+            continue
+        there, before, after = fitted(there)
+        note(job, f"camera solving: a piece of {len(views)} frames joined through {len(up[3])} frames; the frames' "
+             f"outlines agree {before:.1%}, after fitting it to them {after:.1%}")  # fmt: skip
+        poses |= there
+        for scorer in (coarse, fine):
+            scorer.keep(there)
         trusted |= set(up[3])
         solid |= solid_frames(views)
         joined.append(len(views))
@@ -899,40 +1007,55 @@ def bridge_pieces(job: Path, work: Path, photos: Path, learned: Path, sh: Callab
     added = 0
     for run in path_runs(mid):
         names = [mid.names[k] for k in run]
-        if sum(n in trusted for n in names) >= PATH_TRUSTED:
-            for n in names:
-                if n not in trusted and n not in solid:  # няма го в SIFT, или е сам там и на друго място
-                    poses[n] = from_learned[n]
-                    added += 1
+        if sum(n in trusted for n in names) < PATH_TRUSTED:
+            continue
+        # Кадрите от откъса, които ги няма в SIFT (или са сами там и на друго място), на групи от съседни кадри:
+        # всяка се нагласява по очертанията като част и остава само ако не ги прави по-несъгласни (JOIN_GROUP).
+        groups, numbers = [], frame_numbers(names)
+        for n, number in sorted(zip(names, numbers), key=lambda pair: pair[1]):
+            if n in trusted or n in solid:
+                continue
+            if groups and number - groups[-1][-1][1] <= PATH_GAP and not any(
+                    m in trusted or m in solid for m, k in zip(names, numbers) if groups[-1][-1][1] < k < number):
+                groups[-1].append((n, number))
+            else:
+                groups.append([(n, number)])
+        for group in groups:
+            there = {n: from_learned[n] for n, _ in group}
+            without = fine()
+            there, _, after = fitted(there)
+            if after >= without - JOIN_GROUP:
+                poses |= there
+                for scorer in (coarse, fine):
+                    scorer.keep(there)
+                added += len(there)
+            else:
+                note(job, f"camera solving: {len(there)} frames placed only by the learned features left out: with "
+                     f"them the outlines agree {after:.1%}, without {without:.1%}")  # fmt: skip
     if len(poses) <= len(base):
         note(job, "camera solving: the learned features add no frames to the biggest piece")
         return
+    together = OutlineScore(poses, masks, base.K[0], 64, 1)()
+    use = together >= alone - JOIN_WORSE
     note(job, f"camera solving: {' + '.join(map(str, joined))} frames of the pieces and {added} placed by the learned "
-         f"features where the camera path is unbroken ({len(trusted)} frames placed the same way by both)")  # fmt: skip
-    # Първо с научените особености: те имат съвпадения между частите, така че уточняването затяга съединението
-    # (само през няколкото общи кадъра колонката излезе сплескана, 100 x 72 вместо кръгла). Грешните им съвпадения
-    # по повтарящата се шарка не се триангулират при вече верни камери. После със SIFT, по-точен във всяка част.
+         f"features where the camera path is unbroken; the outlines agree {together:.1%} ({alone:.1%} in the "
+         f"biggest piece alone): " + ("using it" if use else "not used"))  # fmt: skip
+    if not use:
+        return
     out = sparse / "bridged" / "0"
     try:
-        ids = database_ids(work / "learned.db")
-        try:
-            rough = {ids[n]: (n, *pose) for n, pose in poses.items()}
-            tight = read_views(from_poses(work, "bridge-learned", work / "learned.db", photos, model, rough, sh))
-            poses = {n: (R, t) for n, R, t in zip(tight.names, tight.R, tight.t)}
-        except (Failed, KeyError):
-            note(job, "camera solving: tightening the joint with the learned features failed")
         ids = database_ids(db)
-        final = from_poses(work, "bridge", db, photos, pieces[0], {ids[n]: (n, *pose) for n, pose in poses.items()}, sh)
+        final = from_poses(work, "bridge", db, photos, pieces[0], {ids[n]: (n, *pose) for n, pose in poses.items()}, sh,
+                           refine=False)  # fmt: skip
         shutil.copytree(final, out)
+        (out / JOINED).write_text("")
     except (Failed, KeyError):
         shutil.rmtree(out.parent, ignore_errors=True)
         note(job, "camera solving: joining the pieces through the learned features failed; not used")
-        return
-    note(job, f"camera solving: joined through the learned features into one model of {len(read_views(out))} frames")
 
 
 def from_poses(work: Path, name: str, db: Path, photos: Path, cameras: Path, poses: dict,
-               sh: Callable[[str, list], None]) -> Path:  # fmt: skip
+               sh: Callable[[str, list], None], refine: bool = True) -> Path:  # fmt: skip
     """Модел на камерите от готови пози {идентификатор на изображение в db: (име, R, t)}: точките от съвпаденията в
     db, триангулирани при тях (point_triangulator), и всичко уточнено (bundle_adjuster). cameras: модел, от който е
     камерата (обективът)."""
@@ -951,11 +1074,13 @@ def from_poses(work: Path, name: str, db: Path, photos: Path, cameras: Path, pos
         (start / own).unlink(missing_ok=True)
     sh("camera solving", [COLMAP, "point_triangulator", "--database_path", db, "--image_path", photos,
         "--input_path", start, "--output_path", placed])  # fmt: skip
+    if not refine:
+        return placed
     sh("camera solving", [COLMAP, "bundle_adjuster", "--input_path", placed, "--output_path", out])
     return out
 
 
-def learned_cameras(job: Path, work: Path, photos: Path, names: list[str], paired: bool,
+def learned_cameras(job: Path, work: Path, photos: Path, names: list[str], paired: bool, masks: dict,
                     sh: Callable[[str, list], None]) -> None:
     """Кадрите, разположени и с ALIKED + LightGlue (вижте LEARNED_BELOW), в work/learned (не в sparse/: този модел
     не се оценява и не се използва сам), и частите на SIFT, съединени през него (bridge_pieces). Не става ли (няма
@@ -986,12 +1111,14 @@ def learned_cameras(job: Path, work: Path, photos: Path, names: list[str], paire
         return
     sizes = [len(read_views(d)) for d in sorted(out.iterdir()) if (d / "images.bin").exists()]
     note(job, f"camera solving: learned features placed {' + '.join(map(str, sizes)) or 'no'} frames")
-    bridge_pieces(job, work, photos, out, sh)
+    bridge_pieces(job, work, photos, out, masks, sh)
 
 
 def refine_cameras(job: Path, work: Path, model: Path, sh: Callable[[str, list], None]) -> Path:
     """Моделът на камерите, уточнен още веднъж (bundle_adjuster на COLMAP); моделът какъвто е бил, ако това се
     провали."""
+    if (model / JOINED).exists():  # нагласен по очертанията (bridge_pieces): уточняването го разваля
+        return model
     out = work / "sparse" / "refined"
     out.mkdir(parents=True, exist_ok=True)
     try:
