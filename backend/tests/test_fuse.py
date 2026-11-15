@@ -80,3 +80,10 @@ def test_snapping_leaves_a_ball_and_the_trusted_part_alone():
     noisy = bumpy(can, 0.008)
     out, shapes = F.snap_shapes(noisy, np.zeros(len(noisy.vertices), bool))
     assert shapes == [] and np.array_equal(out.vertices, noisy.vertices)
+
+
+def test_only_an_object_whose_depth_disagrees_is_held_to_its_outlines():
+    assert F.untrusted(0.15) == 1.0  # метална колонка: кадрите са съгласни за 14-18% от повърхността
+    assert F.untrusted(0.67) == 0.0  # фигурка от матова пластмаса
+    assert F.untrusted(0.91) == 0.0  # плетена тиква
+    assert 0 < F.untrusted(0.4) < 1

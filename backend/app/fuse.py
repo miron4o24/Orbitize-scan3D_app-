@@ -64,6 +64,12 @@ AGREE_NEAR = 0.5
 AGREE_ASK = 6  # съседни кадри, които се питат (най-близките по посока, поне AGREE_APART градуса встрани)
 AGREE_APART = 4.0
 UNSURE = 0.15
+# Всичко това е само за предмет, на чиято дълбочина като цяло не може да се вярва: кадрите са съгласни за под
+# AGREE_SHINY от повърхността му (изцяло при AGREE_RAMP по-малко). Метална колонка: 14-18%; фигурка от матова
+# пластмаса: 67%; плетена тиква: 91%. При фигурката съгласието пада и там, където малко кадри виждат (между краката,
+# под брадичката), а там обвивката не е предметът: наложена, тя сливаше краката и заобляше тялото.
+AGREE_SHINY = 0.5
+AGREE_RAMP = 0.2
 RIM_FULL = 3
 RIM_ACROSS = 0.2  # синус на ъгъла между погледа и повърхността на обвивката, под който кадърът минава по нея
 RIM_PX = 2.0  # пиксели от очертанието на обвивката в кадъра
@@ -118,10 +124,7 @@ FACING_MIN = 0.15
 # толкова близо до повърхността (медиана 0,23% от размера). По-голямото заглаждане на корекцията (FIELD 0,03-0,05)
 # също успокояваше дръжката, но изкривяваше тялото (точките на 0,36-0,47%): не е направено.
 OUTLIER = 0.3
-# Проходи за гласуване, всеки пропуска несъгласуваното с предишния (1: нищо не се пропуска). Един, откакто гласът на
-# дълбочина, с която съседните кадри не са съгласни, е намален (UNSURE): вторият проход вече не променя формата
-# (фигурка, колонка), а струва четвърт от времето на сливането.
-PASSES = 1
+PASSES = 2  # проходи за гласуване, всеки пропуска несъгласуваното с предишния (1: нищо не се пропуска)
 BLOCK = 500_000  # клетки, върху които една нишка работи наведнъж (вижте vote_block)
 
 
@@ -265,6 +268,12 @@ def hull_view(points: np.ndarray, spacing: float, dm: DepthMap, box) -> tuple[np
     # Изрязването е кутията на предмета, разширена с 20% от всяка страна (app/depth.py predict).
     edge = max(2, int(0.02 * max(out.shape) / 1.4))
     return shown, ndimage.binary_erosion(shown, iterations=r + edge)
+
+
+def untrusted(share: float) -> float:
+    """Доколко на дълбочината на предмета не може да се вярва (0: може; 1: не), по дела от повърхността му, за която
+    кадрите са съгласни (вижте AGREE_SHINY)."""
+    return float(np.clip((AGREE_SHINY - share) / AGREE_RAMP, 0, 1))
 
 
 def agreeing(frames: list, near: float) -> list[np.ndarray]:
@@ -666,15 +675,23 @@ def fuse(dense: Path, inputs: Path, crops_file: Path, out: Path) -> None:
     if used < 3:
         raise SystemExit(f"only {used} frames' depth could be used")
     # Към всеки кадър: къде на дълбочината му може да се вярва (съгласна със съседите, или измерен фон извън предмета).
-    if UNSURE < 1 and AGREE_VIEWS > 0:
+    # shiny: доколко на дълбочината на целия предмет не може да се вярва (0: може; 1: не), по дела от повърхността,
+    # за която кадрите са съгласни. Само тогава несъгласната дълбочина губи глас и обвивката се налага.
+    shiny = 0.0
+    if AGREE_VIEWS > 0 and HULL_RIM > 0:
         sure = agreeing(frames, AGREE_NEAR * trunc)
         share = np.mean([a[f[2] > 0].mean() for a, f in zip(sure, frames)])
-        note(f"frames agree on {share:.0%} of the surface they see")
-        frames = [(*f[:3], f[3] * np.where(a, 1.0, UNSURE).astype(np.float32), f[4], a | (f[2] <= 0))
+        shiny = untrusted(float(share))
+        note(f"frames agree on {share:.0%} of the surface they see: "
+             + ("the depth is trusted" if shiny == 0 else f"the outlines' shape holds where they do not ({shiny:.0%})"))
+        unsure = np.float32(1 - shiny * (1 - UNSURE))
+        frames = [(*f[:3], f[3] * np.where(a, np.float32(1), unsure), f[4], a | (f[2] <= 0))
                   for a, f in zip(sure, frames)]  # fmt: skip
         del sure
     else:
         frames = [(*f, np.ones(f[2].shape, bool)) for f in frames]
+    if shiny == 0:
+        rim_cells = None
     told = np.zeros((2, len(tsdf)), np.uint8) if rim_cells is not None else None  # за вярване, всички
 
     def vote(tsdf: np.ndarray, weight: np.ndarray, prev: np.ndarray | None) -> int:
@@ -704,13 +721,13 @@ def fuse(dense: Path, inputs: Path, crops_file: Path, out: Path) -> None:
         full = np.minimum(full[around].mean(1) / RIM_ENOUGH, 1.0)
         share = told[0, rim_cells] / np.maximum(told[1, rim_cells], 1)
         doubt = np.clip((RIM_SHARE - share) / (RIM_SHARE / 2), 0, 1)
-        extra = (HULL_RIM * full[near] * doubt).astype(np.float32)
+        extra = (shiny * HULL_RIM * full[near] * doubt).astype(np.float32)
         tsdf[rim_cells] = (tsdf[rim_cells] * weight[rim_cells] + empty_tsdf[rim_cells] * extra) / (
             weight[rim_cells] + extra
         )
         weight[rim_cells] += extra
         held = np.zeros(len(tsdf), bool)  # където обвивката държи (за snap_shapes)
-        held[rim_cells] = extra >= SNAP_HELD * HULL_RIM
+        held[rim_cells] = extra >= SNAP_HELD * shiny * HULL_RIM
         note(f"outlines touch {np.mean(sup >= RIM_FULL):.0%} of the hull in {RIM_FULL}+ frames; the hull holds "
              f"{np.mean(extra > 0.5 * HULL_RIM):.0%} of the cells at its surface")  # fmt: skip
         del at, near, extra, doubt, told
