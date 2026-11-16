@@ -3,7 +3,7 @@ import { Directory, File, Paths } from 'expo-file-system';
 import { useKeepAwake } from 'expo-keep-awake';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Measure, mmText } from '@/components/cad/Measure';
@@ -24,6 +24,7 @@ import {
   retrying,
   uploadPhoto,
   type CadOp,
+  type CadOverall,
   type CadOverallId,
   type CadPhoto,
   type CadPlan,
@@ -48,6 +49,7 @@ type Phase = 'intro' | 'shoot' | 'photos' | 'reading' | 'outlines' | 'overall' |
 // Плосък детайл (кука, пластина, шайба): отстрани няма какво да се види (и не стои изправен), затова само отгоре и
 // отдолу; сървърът го прави с една дебелина навсякъде и пита за заобляне на ръбовете.
 const ALL_SHOTS: CadPhoto[] = SHOTS.map((x) => x.photo);
+const GUESS_ASK = 1.25; // мярка, различна от снимката повече от толкова пъти: "сигурни ли сте?"
 const FLAT_SHOTS: CadPhoto[] = ['top', 'bottom'];
 
 export default function Engineer() {
@@ -187,6 +189,9 @@ export default function Engineer() {
       setPhase('review');
     } catch (e) {
       setError(errorText(e));
+      // Мярка, която не пасва на снимката (сървърът казва коя): обратно на нея, не на последната.
+      const w = plan?.overall.findIndex((q) => q.id === 'W') ?? -1;
+      if (errorText(e).startsWith('Ширината') && w >= 0) setOi(w);
       setPhase('overall');
     } finally {
       setBusy(false);
@@ -272,10 +277,34 @@ export default function Engineer() {
     build(next);
   }
 
+  // Колко е общият размер по снимката, от вече измерения (ширината от дължината): ключ 54 x 24 мм, въведен като
+  // 54 x 54, ставаше квадратна плоча. Сега се вижда под въпроса, а голямо разминаване се потвърждава.
+  function photoGuess(q: CadOverall): number | null {
+    const known = q.guess ? sizes[q.guess.of] : undefined;
+    return q.guess && known ? Math.round(q.guess.k * known * 10) / 10 : null;
+  }
+
   function answerOverall(value: number | null) {
     if (!plan || value == null) return;
     const q = plan.overall[oi];
-    const next = { ...sizes, [q.id]: value };
+    const guess = photoGuess(q);
+    if (guess && Math.abs(Math.log(value / guess)) > Math.log(GUESS_ASK)) {
+      Alert.alert(
+        'Проверете мярката',
+        `По снимката ${q.name.toLowerCase()} е около ${mmText(guess)} мм, а въведохте ${mmText(value)} мм. Ако сте измерили друга страна, моделът няма да прилича на предмета.`,
+        [
+          { text: 'Ще измеря отново', style: 'cancel' },
+          { text: `Вярно е: ${mmText(value)} мм`, onPress: () => takeOverall(q.id, value) },
+        ],
+      );
+      return;
+    }
+    takeOverall(q.id, value);
+  }
+
+  function takeOverall(id: CadOverallId, value: number) {
+    if (!plan) return;
+    const next = { ...sizes, [id]: value };
     setSizes(next);
     if (oi < plan.overall.length - 1) {
       setOi(oi + 1);
@@ -390,7 +419,15 @@ export default function Engineer() {
           stamp={plan.stamp}
           kicker="Общите размери ·"
           zero={false}
-          question={{ ...q, est: null, value: sizes[q.id] ?? null, src: 'photo', optional: false, kind: q.id === 'D' ? 'diameter' : 'length' }}
+          question={{
+            ...q,
+            hint: photoGuess(q) ? `${q.hint} По снимката: около ${mmText(photoGuess(q)!)} мм.` : q.hint,
+            est: null,
+            value: sizes[q.id] ?? null,
+            src: 'photo',
+            optional: false,
+            kind: q.id === 'D' ? 'diameter' : 'length',
+          }}
           index={oi}
           count={plan.overall.length}
           answer={sizes[q.id]}

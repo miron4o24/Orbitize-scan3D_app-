@@ -756,7 +756,13 @@ def combine(shots: dict, lay: dict, L: float, W: float, H: float, solid, fuse_pa
                 fused = fuse(p, q, U, V)
                 if fused is not None:
                     extra = lay.get("sure", {}).get(others[0], False)
-                    holes = hole_union(p["holes"], q["holes"], extra, p["outer"], q["outer"])
+                    own = p["holes"]
+                    if view == "top" and H <= THIN_PART * min(L, W) and not shots[primary].get("points"):
+                        flips = lay.get("alts", {}).get(others[0], [[1, 1]]) if not extra else [[1, 1]]
+                        own = [h for h in own if seen_on(h, q, flips, U, V)]
+                        if not shots[others[0]].get("points"):
+                            q = q | {"holes": [g for g in q["holes"] if seen_on(g, p, flips, U, V)]}
+                    holes = hole_union(own, q["holes"], extra, p["outer"], q["outer"])
                     alts = [[1, 1]] if extra else lay.get("alts", {}).get(others[0], [[1, 1]])
                     if not extra:
                         holes += confirmed(p, q, alts, U, V)
@@ -776,6 +782,26 @@ def combine(shots: dict, lay: dict, L: float, W: float, H: float, solid, fuse_pa
         out[view] = {"outer": p["outer"], "holes": p_holes, "U": U, "V": V, "from": used, "each": each,
                      "blind": blind}  # fmt: skip
     return out, warnings
+
+
+THIN_PART = 0.2  # детайл, тънък до толкова от размерите отгоре (ключ, пластина): отворът се вижда от двете страни
+
+
+def seen_on(h, q: dict, flips: list, U: float, V: float) -> bool:
+    """Отворът `h` от основната снимка на тънък детайл е и на другата (отвор или тъмно петно на същото място, при
+    някое от възможните обръщания). През отвор в тънък детайл масата се вижда от двете страни, а лъскав жлеб
+    (хромиран ключ) отразява масата и изглежда като отвор само на едната: моделът имаше три лъжливи процепа по
+    острието. Снимка, поправена на ръка (с докосване), не минава през тази проверка."""
+    hp = largest(Polygon(h).buffer(0))
+    if hp.area <= 0:
+        return False
+    for su, sv in flips:
+        for g in list(q.get("holes", [])) + list(q.get("marks", [])):
+            g = np.asarray(g, float)
+            c = np.c_[g[:, 0] if su > 0 else U - g[:, 0], g[:, 1] if sv > 0 else V - g[:, 1]]
+            if same_hole(hp, largest(Polygon(c).buffer(0)), 0.3):
+                return True
+    return False
 
 
 def hole_union(a: list, b: list, extra: bool = True, outer_a=None, outer_b=None) -> list:

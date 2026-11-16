@@ -388,6 +388,7 @@ class CadRead(BaseModel):
     D: float | None = Field(default=None, gt=0, le=CD.LIMIT)
     flips: dict | None = None
     flat: bool = False  # плосък детайл (кука, пластина): само снимки отгоре и отдолу
+    cylinder: bool = False  # цилиндър: снимки отгоре, отдолу и отстрани (app/cad/cylinder.py), мерки D и H
 
 
 class CadEdit(BaseModel):
@@ -421,8 +422,8 @@ def cad_read(job_id: str, body: CadRead | None = None, p: Principal = Depends(pr
     body = body or CadRead()
     values = {k: v for k, v in (("L", body.L), ("W", body.W), ("H", body.H), ("D", body.D)) if v}
     if values:
-        return cad_call(CAD.assemble, job, values, CAD.sanitize_flips(body.flips), body.flat)
-    return cad_call(CAD.read, job, None, None, None, None, body.flat)
+        return cad_call(CAD.assemble, job, values, CAD.sanitize_flips(body.flips), body.flat, body.cylinder)
+    return cad_call(CAD.read, job, None, None, None, None, body.flat, body.cylinder)
 
 
 @app.post("/jobs/{job_id}/cad/prepare")

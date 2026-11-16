@@ -164,6 +164,37 @@ def test_flat_part_pointing_away(sess, tmp_path):
     assert solid_iou(truth, measured(d)) > 0.95
 
 
+def test_key_with_the_length_entered_as_width_is_stopped(sess, tmp_path):
+    """Като ключа от 16.11 18:16 (плосък, 54 x 24 x 2): ширината, въведена като 54 (дължината втори път), правеше
+    снимката отгоре "неподходяща" и детайлът ставаше квадратна плоча 54 x 54. Сега въпросът за ширината казва колко
+    е по снимката, а сглобяването спира с ясна грешка вместо модел, който не прилича на предмета."""
+    from app.cad import service as CAD
+
+    truth = D.new("block", 54, 24, 2)
+    r = D.add_dim(truth, "r", 8, "R", "R")
+    truth["views"]["top"]["pts"] = [[u, v, r] for u, v, _ in truth["views"]["top"]["pts"]]
+    truth = D.add_feature(truth, {"t": "hole", "face": "top", "through": True, "centered": [False, True]})
+    hole = truth["features"][0]
+    truth = measured(D.set_values(truth, {hole["d"]: 6, truth["levels"][hole["u"]["lvl"]]["dim"]: 8}))
+    B.build(truth, tmp_path / "truth")
+    mesh = trimesh.load(tmp_path / "truth" / "part.stl", force="mesh")
+    sh = {}
+    for k, n in enumerate(("top", "bottom")):
+        CP.shot(mesh, n, yaw=5.0, seed=k + 50).save(tmp_path / f"{n}.jpg", quality=92, exif=CP.exif())
+        sh[n] = V.segment(sess, tmp_path / f"{n}.jpg")
+    lay = P.layout(sh)
+    plan = CAD.guesses(sh, lay, P.overall(lay, True))
+    width = next(q for q in plan if q["id"] == "W")
+    assert width["guess"]["of"] == "L" and 54 * width["guess"]["k"] == pytest.approx(24, abs=2.5)
+    with pytest.raises(D.DesignError, match="Ширината 54 мм не пасва"):
+        CAD.check_sizes(sh, P.layout(sh, (54, 54, 2)), 54, 54)
+    CAD.check_sizes(sh, P.layout(sh, (54, 24, 2)), 54, 24)
+    views, warnings = P.views_mm(sh, P.layout(sh, (54, 24, 2)), 54, 24, 2)
+    d = A.assemble(views, 54, 24, 2, flat=True)
+    assert not warnings and len([f for f in d["features"] if f["t"] == "hole"]) == 1  # отворът е от двете страни
+    assert solid_iou(truth, measured(d)) > 0.93
+
+
 def test_side_photo_with_the_part_turned_around(sess, tmp_path):
     """Като сканирането от 22:51: за снимките отпред и отзад флашката е и завъртяна наобратно на масата. Тесният край
     е отдясно отгоре и трябва да е отдясно и отпред (не при капачката), по формата и вида на двата края."""

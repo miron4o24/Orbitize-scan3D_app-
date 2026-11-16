@@ -43,6 +43,21 @@ FACE_NAME = {"top": "горната страна", "bottom": "долната с�
 EDGE_SETS = {"vertical": "вертикалните ръбове", "top": "ръбовете отгоре", "bottom": "ръбовете отдолу",
              "all": "всички ръбове", "ends": "краищата", "flat": "ръбовете отгоре и отдолу"}  # fmt: skip
 OVERALL = ("L", "W", "H", "D")  # общите размери: само те не могат да са 0
+# Изправен цилиндър (cylinder.py, d["upright"]): оста X е височината - x0 е дъното, xL е горният край; страните по Y и Z
+# са страничната стена.
+UPRIGHT_FROM = ("долния край", "горния край")
+UPRIGHT_FACE = {"left": "долния край", "right": "горния край"}
+
+
+def from_text(d: dict, axis: str) -> tuple[str, str]:
+    """От кой край се мери по оста: (началото, краят) с думите на детайла."""
+    return UPRIGHT_FROM if d.get("upright") and axis == "x" else FROM_TEXT[axis]
+
+
+def face_name(d: dict, face: str) -> str:
+    if d.get("upright"):
+        return UPRIGHT_FACE.get(face, "страничната стена")
+    return FACE_NAME[face]
 
 
 class DesignError(ValueError):
@@ -139,7 +154,7 @@ def level_for(d: dict, axis: str, at: float, name: str, what: str, allow_center:
             if (spec["axis"] == axis and spec.get("tag") == "edge" and spec["from"] in ("start", "end")
                     and abs(coord(d, lid) - at) <= tol):  # fmt: skip
                 return lid
-    start, end = FROM_TEXT[axis]
+    start, end = from_text(d, axis)
     from_end = at > size / 2
     dist = size - at if from_end else at
     ref = end if from_end else start
@@ -243,6 +258,11 @@ def feature_place(d: dict, f: dict) -> dict:
             half = value(d, size) / 2 if size else 0.0
             c = c + half if p["anchor"] == "min" else c - half
         out[key] = c
+    if f.get("polar"):  # встрани от оста на края на цилиндъра: на окръжност с диаметър pcd, под ъгъл a
+        r = value(d, f["polar"]["pcd"]) / 2
+        a = math.radians(float(f["polar"]["a"]))
+        out["u"] += r * math.cos(a)
+        out["v"] += r * math.sin(a)
     return out
 
 
@@ -624,8 +644,9 @@ def describe(d: dict) -> list[dict]:
     if d["kind"] == "turned":
         pts = d["views"]["profile"]["pts"]
         diam = len({p[1] for p in pts if p[1] not in ("r0",)})
-        out.append({"id": "body", "view": "profile", "kind": "body",
-                    "text": f"Тяло от струг: {diam} диаметър{'а' if diam > 1 else ''} по дължината"})  # fmt: skip
+        text = (f"Цилиндър (тяло от струг): {diam} диаметър{'а' if diam > 1 else ''} по височината" if d.get("upright")
+                else f"Тяло от струг: {diam} диаметър{'а' if diam > 1 else ''} по дължината")  # fmt: skip
+        out.append({"id": "body", "view": "profile", "kind": "body", "text": text})
     if d.get("flat"):
         out.append({"id": "body", "view": "top", "kind": "body",
                     "text": "Плосък детайл: очертанието отгоре с една дебелина навсякъде"})  # fmt: skip
@@ -652,7 +673,9 @@ def describe(d: dict) -> list[dict]:
         out.append({"id": f"view:{view}", "view": view, "kind": "view", "text": f"Отгоре: {text}" if view == "top"
                     else f"{VIEW_NAME[view].capitalize()}: {text}"})  # fmt: skip
     for f in d["features"]:
-        where = f" в {FACE_NAME[f['face']]}" if f.get("face") else ""
+        where = f" в {face_name(d, f['face'])}" if f.get("face") else ""
+        if f.get("polar"):
+            where += " (встрани от оста)"
         through = f["t"] in ("hole", "rect", "slot") and f.get("depth") is None and not f.get("open")
         out.append({"id": f["id"], "view": f.get("view"), "kind": f["t"],
                     "text": label(d, f) + where + (" (проходен)" if through else "")})  # fmt: skip
@@ -690,6 +713,8 @@ def used_dims(d: dict) -> list[str]:
             p = f.get(key)
             if p and p["lvl"] in d["levels"]:
                 take(d["levels"][p["lvl"]]["dim"])
+        if f.get("polar"):
+            take(f["polar"]["pcd"])
         for key in ("at", "at2"):
             if f.get(key) in d["levels"]:
                 take(d["levels"][f[key]]["dim"])
@@ -803,11 +828,18 @@ def add_feature(d: dict, spec: dict) -> dict:
                            show={"feature": fid})  # fmt: skip
         f["w"] = add_dim(d, "s", None, "Ширина на канала", "Измерете ширината на канала", show={"feature": fid})
         f["angle"] = 0 if spec.get("along", a) == a else 90
+    if d["kind"] == "turned" and axis == "x" and t == "hole" and spec.get("polar"):
+        # отвор в края на цилиндъра встрани от оста: на окръжност (ъгълът е само за картинката, по нея не се мери)
+        centered = [True, True]
+        f["polar"] = {"pcd": add_dim(d, "p", None, "Окръжност на отвора (два пъти от оста до центъра)",
+                                     "Измерете два пъти разстоянието от оста до центъра на отвора",
+                                     "Или от левия ръб на този отвор до левия ръб на срещуположния.", "diameter",
+                                     show={"feature": fid, "pcd": True}), "a": 0.0}  # fmt: skip
     for key, ax, c in (("u", a, centered[0]), ("v", b, centered[1])):
         if c:
             f[key] = {"lvl": f"{ax}c", "anchor": "center"}
         else:
-            start = FROM_TEXT[ax][0]
+            start = from_text(d, ax)[0]
             dim = add_dim(d, ax, None, f"Положение ({start})", f"Разстояние от {start} до {what}",
                           show={"feature": fid, "axis": ax, "from": "start"})  # fmt: skip
             lid = f"L{dim}"
@@ -815,7 +847,7 @@ def add_feature(d: dict, spec: dict) -> dict:
             d["dims"][dim]["show"]["level"] = lid
             f[key] = {"lvl": lid, "anchor": "min" if t == "rect" else "center"}
     if not through:
-        f["depth"] = add_dim(d, "t", None, "Дълбочина", f"Измерете дълбочината от {FACE_NAME[face]}",
+        f["depth"] = add_dim(d, "t", None, "Дълбочина", f"Измерете дълбочината от {face_name(d, face)}",
                              "С дълбокомера на шублера.", show={"feature": fid})  # fmt: skip
     d["features"].append(f)
     return d

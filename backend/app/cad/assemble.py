@@ -345,9 +345,9 @@ def add_notch(d: dict, c: dict, axis: str, view: str) -> None:
     f = {"id": fid, "t": "rect", "axis": axis, "side": "+", "view": view, "face": face, "open": {key: sign}}
     width = (c["v1"] - c["v0"]) if key == "u" else (c["u1"] - c["u0"])
     depth = (c["u1"] - c["u0"]) if key == "u" else (c["v1"] - c["v0"])
-    w = D.add_dim(d, "w", width, "Ширина на канала", f"Измерете ширината на канала в {D.FACE_NAME[face]}",
+    w = D.add_dim(d, "w", width, "Ширина на канала", f"Измерете ширината на канала в {D.face_name(d, face)}",
                   "С вътрешните челюсти на шублера.", show={"feature": fid, "along": across})  # fmt: skip
-    t = D.add_dim(d, "h", depth, "Дълбочина на канала", f"Измерете дълбочината на канала от {D.FACE_NAME[face]}",
+    t = D.add_dim(d, "h", depth, "Дълбочина на канала", f"Измерете дълбочината на канала от {D.face_name(d, face)}",
                   "С дълбокомера на шублера.", show={"feature": fid, "along": deep})  # fmt: skip
     f["w"], f["h"] = (t, w) if key == "u" else (w, t)
     f[key] = {"lvl": f"{deep}0", "anchor": "min"} if sign == "-" else {"lvl": D.end_level(deep), "anchor": "max"}
@@ -429,7 +429,7 @@ def add_hole(d: dict, pts: np.ndarray, axis: str, view: str, size: float, blind:
     if blind:
         small = shape["d"] if shape["t"] == "hole" else min(shape.get("w", 0.0), shape.get("h") or shape["w"])
         f["depth"] = D.add_dim(d, "t", min(BLIND_DEPTH * small, D.total(d, axis) / 2), "Дълбочина на отвора",
-                               f"Измерете дълбочината на отвора от {D.FACE_NAME[face]}", "С дълбокомера на шублера.",
+                               f"Измерете дълбочината на отвора от {D.face_name(d, face)}", "С дълбокомера на шублера.",
                                show={"feature": fid})  # fmt: skip
     if shape["t"] == "hole":
         f["d"] = D.add_dim(d, "d", shape["d"], "Диаметър на отвора", "Измерете диаметъра на отвора",
@@ -501,8 +501,14 @@ def group_holes(d: dict) -> None:
 # --- Детайл от струг ------------------------------------------------------------------------------------------------
 
 
-def turned(views: dict, L: float, W: float, H: float) -> dict:
+def turned(views: dict, L: float, W: float, H: float, upright: bool = False) -> dict:
+    """Детайл от струг: профилът от изгледа отгоре (легнал) и отворите. upright: изправен цилиндър (cylinder.py) -
+    оста е височината, от дъното (x0) до горния край (xL)."""
     d = D.new("turned", L, W, H)
+    if upright:
+        d["upright"] = True
+        d["dims"]["L"] |= {"name": "Височина", "ask": "Измерете: височина",
+                           "hint": "От дъното до горния край, по оста."}
     top = views["top"]
     cs = fit.corners(top["outer"], top["U"], top["V"])
     if cs is not None:  # по-тесен край (върхът на химикалка): късо стъпало, което разпознаването на прави пропуска
@@ -549,7 +555,8 @@ def turned(views: dict, L: float, W: float, H: float) -> dict:
 
     upper = []
     for x, r, rad in prof:
-        lx = D.level_for(d, "x", clamp(x, L), "Рамо по дължината", "рамото", view="profile")
+        lx = D.level_for(d, "x", clamp(x, L), "Стъпало по височината" if upright else "Рамо по дължината",
+                         "стъпалото" if upright else "рамото", view="profile")  # fmt: skip
         lr = r_level(r)
         rid = round_dim(rad, D.coord(d, lr))
         if upper and upper[-1][:2] == [lx, lr]:
