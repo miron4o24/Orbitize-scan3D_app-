@@ -147,7 +147,98 @@ def test_measured_depth_far_from_the_fitted_ai_depth_asks_to_vote_on_its_own():
     every = np.ones((200, 200), bool)
     inner = every.copy()
     inner[:, :20] = False  # ивицата покрай очертанието
-    _, _, free, own = F.completed(dm, disp, (0, 0, 200, 200), inner, every, ~every, None, every, 0.1)
+    _, _, free, own, near = F.completed(dm, disp, (0, 0, 200, 200), inner, every, ~every, None, every, 0.1)
     assert (own[:, 100:106] == depth[:, 100:106]).all() and (own[:, 30:95] == 0).all()
     # ивицата: иска да гласува сама, а ако съседните кадри не я потвърдят, остава само глас за празно пред нея
     assert (own[:, :20] == depth[:, :20]).all() and (free[:, :20] == depth[:, :20]).all()
+    # най-близкото измерено в прозореца около всеки пиксел
+    k = F.THROUGH_PX // 2
+    assert all(near[50, x] == depth[50, x - k : x + k + 1].min() for x in (60, 99, 103))
+
+
+def arc_camera(angle: float):
+    """Камера на дъга около точката (0, 0, 2), гледаща към нея: (R, C, K) с R свят -> камера."""
+    a = np.radians(angle)
+    R = np.array([[np.cos(a), 0, np.sin(a)], [0, 1, 0], [-np.sin(a), 0, np.cos(a)]])
+    C = np.array([2 * np.sin(a), 0, 2 - 2 * np.cos(a)])
+    return R, C, np.array([[300.0, 0, 50], [0, 300.0, 50], [0, 0, 1]])
+
+
+def wall_depth(R, C, K) -> np.ndarray:
+    """Дълбочината на стената z = 2 (световни координати) във всеки пиксел на камерата."""
+    v, u = np.mgrid[:100, :100]
+    ray = np.stack([(u - K[0, 2]) / K[0, 0], (v - K[1, 2]) / K[1, 1], np.ones((100, 100))], -1) @ R
+    return ((2 - C[2]) / ray[..., 2]).astype(np.float32)
+
+
+def test_a_web_the_neighbouring_frames_see_through_is_found():
+    frames, measured = [], []
+    for angle in (0, -12, -6, 6, 12):
+        pose = arc_camera(angle)
+        depth = wall_depth(*pose)
+        frames.append((pose, (0, 0, 100, 100), depth))
+        measured.append(depth)
+    web = frames[0][2].copy()
+    web[40:60, 40:60] = 1.7  # ципа пред стената, която никой друг кадър не вижда
+    frames[0] = (*frames[0][:2], web)
+    agree, through = F.agreeing(frames, 0.02, measured, 0.1)[0]
+    assert through[42:58, 42:58].all() and not agree[42:58, 42:58].any()
+    assert agree[10:36, 10:90].all() and not through[10:36, 10:90].any()
+    # Без измереното: само съгласието, както преди.
+    assert np.array_equal(F.agreeing(frames, 0.02)[0], agree)
+
+
+def turned_body(bite: float = 0.0):
+    """Бъчва върху масата (z от 0 до 1, радиус 1 до 1,1), на бучки; с `bite`: и нагризана отстрани."""
+    import trimesh
+
+    z = np.linspace(0, 1, 150)
+    profile = np.r_[[[0, 0]], np.stack([1 + 0.1 * np.sin(np.pi * z), z], 1), [[0, 1]]]
+    body = trimesh.creation.revolve(profile, sections=144)
+    v = bumpy(body, 0.005).vertices.copy()
+    side = (body.vertices[:, 2] > 0.01) & (body.vertices[:, 2] < 0.99)
+    angle = np.arctan2(v[:, 1], v[:, 0])
+    bitten = side & (np.abs(angle) < 0.15) & (np.abs(v[:, 2] - 0.5) < 0.2)
+    v[bitten, :2] *= 1 - bite
+    return trimesh.Trimesh(v, body.faces, process=False), side
+
+
+def test_a_bumpy_bitten_body_of_revolution_gets_its_exact_profile():
+    mesh, side = turned_body(bite=0.08)
+    shape = F.turned_shape(mesh, 0.0)
+    assert shape is not None and shape[0] == "turned" and np.linalg.norm(shape[1]) < 0.01
+    out = F.snap_turned(mesh, shape)
+    x, y, z = out.vertices[side].T
+    assert np.abs(np.hypot(x, y) - (1 + 0.1 * np.sin(np.pi * z))).max() < 0.012  # и нагризаното е запълнено
+    assert np.allclose(out.vertices[~side, 2], mesh.vertices[~side, 2], atol=0.01)  # капаците остават
+
+
+def test_a_box_and_a_ribbed_body_are_not_turned():
+    import trimesh
+
+    box = trimesh.creation.box(extents=(2.0, 2.0, 1.0))
+    for _ in range(5):
+        box = box.subdivide()
+    box.apply_translation((0, 0, 0.5))
+    assert F.turned_shape(box, 0.0) is None
+    # Ребра като на тиква (5% от радиуса): никой пояс не е кръгъл.
+    mesh, _ = turned_body()
+    v = mesh.vertices.copy()
+    v[:, :2] *= (1 + 0.05 * np.cos(8 * np.arctan2(v[:, 1], v[:, 0])))[:, None]
+    assert F.turned_shape(trimesh.Trimesh(v, mesh.faces, process=False), 0.0) is None
+
+
+def test_calm_smoothing_flattens_shallow_waves_and_keeps_ridges():
+    import trimesh
+
+    n = 120
+    y, x = np.mgrid[:n, :n].astype(float)
+    waves = 0.15 * np.sin(2 * np.pi * x / 12) * np.sin(2 * np.pi * y / 12)  # плитки вълни: наклон до 4,5 градуса
+    ridges = 0.577 * np.abs((x % 8) - 4)  # гънки със стени на 30 градуса
+    z = np.where(y < n / 2, waves, ridges)
+    i = (np.arange(n - 1)[:, None] * n + np.arange(n - 1)[None, :]).ravel()
+    faces = np.concatenate([np.stack([i, i + 1, i + n], 1), np.stack([i + 1, i + n + 1, i + n], 1)])
+    out = F.calm_smoothed(trimesh.Trimesh(np.stack([x, y, z], -1).reshape(-1, 3), faces, process=False))
+    got = out.vertices[:, 2].reshape(n, n)
+    assert np.ptp(got[15:45, 15:105]) < 0.25 * np.ptp(waves[15:45, 15:105])
+    assert np.ptp(got[75:105, 15:105]) > 0.85 * np.ptp(ridges[75:105, 15:105])

@@ -78,6 +78,14 @@ FIELD_FENCED = 0.8
 # грешат различно във всеки кадър и оставяха пъпки. RAW_WEIGHT: гласът ѝ там. RAW_OFF 0: изключено.
 RAW_OFF = 0.5
 RAW_WEIGHT = 0.5
+# Точка от повърхността на кадър, през която поне THROUGH_VIEWS от съседните кадри виждат нещо по-далечно (всичко
+# измерено от тях в прозорец от THROUGH_PX пиксела около нея е с над THROUGH от пресичането зад нея), а под AGREE_VIEWS
+# я потвърждават, не е повърхност: AI дълбочината затваря процепите между тънки части с ципа (между краката на
+# фигурка, между меча и крака), която никой друг кадър не вижда. Такава точка не гласува. Измерена дълбочина, която
+# се разминава с AI (RAW_OFF), без съседите да потвърдят нито едната, гласува с UNSURE. THROUGH_VIEWS 0: изключено.
+THROUGH_VIEWS = 2
+THROUGH = 0.5
+THROUGH_PX = 5
 AI_WEIGHT = 0.5  # глас, където само AI е видял повърхността (измерени пиксели: 1)
 FREE_WEIGHT = 0.3  # глас за празно пространство пред повърхността: издълбава, но един грешен кадър не може да пробие дупка
 AI_FREE = 0.3  # и от него, където само AI е видял повърхността (без това дръжката на дрелка се разкъсваше)
@@ -127,6 +135,28 @@ FACES = 200_000
 SMOOTH_PASSES = 5
 SMOOTH_TURN = 0.35
 SMOOTH_MOVES = 30  # проходи, които местят върховете към новите нормали
+# Спокойна повърхност (гладка кожа на лице, стена на кутия) получава много по-силно заглаждане (CALM_PASSES прохода с
+# тесен допуск CALM_TURN): слетите кадри оставят по нея плитки вълни (0,2-0,3 мм на 5 мм при фигурка: "възглавнички"
+# около очите и между тях), които се виждат само защото всичко наоколо е гладко. Спокойна = силното заглаждане върти
+# нормалите ѝ средно с под CALM_LOW градуса (нищо над CALM_HIGH; осреднено през CALM_AROUND съседства): коса, гънки и
+# плетка се въртят с повече и остават както са. CALM_PASSES 0: изключено.
+CALM_PASSES = 25
+CALM_TURN = 0.18
+CALM_MOVES = 40
+CALM_LOW = 5.0
+CALM_HIGH = 9.0
+CALM_AROUND = 6
+# Тяло на въртене около отвесна ос, стъпило на масата (кръгла основа на фигурка, чаша, ваза; вижте turned_shape):
+# страничната стена на пояси, високи TURN_BAND от размера, всеки на TURN_SECTORS сектора. Пояс е кръгъл, ако
+# най-външната стена на поне TURN_SHARE от секторите му е до SNAP_TOL от една окръжност; поне TURN_TALL от размера
+# такива пояси един над друг с обща ос са тяло на въртене и стената им отива точно върху профила му (до SNAP_WIDE).
+# Гланцова основа излизаше на бучки, а където маските я бяха отрязали (сянката под ръба ѝ) - нагризана: оградена
+# от профила вдлъбнатина до TURN_DENT от размера се запълва до него. TURN_TALL 0: изключено.
+TURN_BAND = 0.01
+TURN_SECTORS = 36
+TURN_SHARE = 0.6
+TURN_TALL = 0.06
+TURN_DENT = 0.05
 # Равнини и цилиндри (вижте snap_shapes) там, където държи обвивката (дълбочината не е за вярване: лъскав метал):
 # обвивката от очертанията е на фасети и леко крива, а предметът е точна форма. SNAP_TOL: от размера, колко далеч от
 # формата са върховете, по които тя се намира (с нормала до SNAP_TURN от нейната); намерена, тя прибира и върховете
@@ -353,11 +383,13 @@ def completed(dm: DepthMap, disp: np.ndarray, box, inner: np.ndarray, allowed: n
               tone: np.ndarray | None = None, tight: np.ndarray | None = None, off: float = 0.0):  # fmt: skip
     """Дълбочината на кадъра върху изрязването му: AI дълбочината, напасната към измерената, върху пикселите на
     предмета: вътрешността на маската и на обвивката (`core`: където маската е пропуснала тъмна част, черен спусък
-    на дрелка), но само където обвивката се вижда (`allowed`). Връща (depth, weight, free, own), 0 където няма нищо, или
-    None, ако двете не пасват. tone: сивото на изрязването (0-255), ако е запазено (вижте FIELD_TONES). tight, off:
+    на дрелка), но само където обвивката се вижда (`allowed`). Връща (depth, weight, free, own, near), 0 където няма
+    нищо, или None, ако двете не пасват. tone: сивото на изрязването (0-255), ако е запазено (вижте FIELD_TONES).
+    tight, off:
     очертанието на обвивката в кадъра и разстоянието (световни единици), над което измерената дълбочина гласува сама
     (вижте RAW_OFF). free: измерената дълбочина на другите пиксели, която показва само празно пространство (пред
-    пропуснат пиксел от предмета пак е празно). own: измерената дълбочина там, където би гласувала сама (или None)."""
+    пропуснат пиксел от предмета пак е празно). own: измерената дълбочина там, където би гласувала сама (или None).
+    near: най-близкото измерено в прозорец от THROUGH_PX пиксела около всеки пиксел (или None; вижте THROUGH_VIEWS)."""
     x0, y0, x1, y1 = box
     dep = dm.depth[y0:y1, x0:x1]
     if dep.shape != disp.shape:
@@ -389,13 +421,16 @@ def completed(dm: DepthMap, disp: np.ndarray, box, inner: np.ndarray, allowed: n
     ok = inner & (full > 0)
     depth = np.where(ok, 1 / np.maximum(full, 1e-12), 0).astype(np.float32)
     weight = np.where(on, 1.0, AI_WEIGHT).astype(np.float32) * ok
-    own = None
+    own = near = None
     if off > 0 and tight is not None:
         own = np.where(measured & np.where(ok, np.abs(dep - depth) > off, tight), dep, 0).astype(np.float32)
+        if THROUGH_VIEWS > 0:
+            near = ndimage.minimum_filter(np.where(measured, dep, np.inf).astype(np.float32), size=THROUGH_PX)
+            near[~np.isfinite(near)] = 0
     if FACING_MIN > 0:
         weight *= np.clip(facing(depth, dm.K, box), FACING_MIN, 1.0)
     free = np.where(measured & ~ok, dep, 0).astype(np.float32)
-    return depth, weight, free, own
+    return depth, weight, free, own, near
 
 
 def facing(depth: np.ndarray, K: np.ndarray, box) -> np.ndarray:
@@ -444,10 +479,12 @@ def untrusted(share: float) -> float:
     return float(np.clip((AGREE_SHINY - share) / AGREE_RAMP, 0, 1))
 
 
-def agreeing(frames: list, near: float) -> list[np.ndarray]:
+def agreeing(frames: list, near: float, measured: list | None = None, margin: float = 0.0) -> list:
     """За всеки кадър (поза, кутия, дълбочина, ...): пикселите, чиято точка от повърхността поне AGREE_VIEWS от
     съседните кадри виждат на същото място (до `near`, световни единици, по техния лъч). Закрита от друга част
-    точка не се брои нито за, нито против. През пиксел, после разширено: дълбочината е гладка."""
+    точка не се брои нито за, нито против. През пиксел, после разширено: дълбочината е гладка. С `measured`
+    (най-близкото измерено около всеки пиксел на всеки кадър; вижте completed): двойки (тези пиксели, пикселите,
+    през чиято точка поне THROUGH_VIEWS съседи виждат нещо с над `margin` по-далечно, без да са потвърдени)."""
     dirs = np.array([f[0][0][2] for f in frames])
     turn = np.degrees(np.arccos(np.clip(dirs @ dirs.T, -1, 1)))
 
@@ -458,7 +495,7 @@ def agreeing(frames: list, near: float) -> list[np.ndarray]:
         z = z[rows, cols].astype(np.float64)
         u, v = x0 + 2 * cols, y0 + 2 * rows
         X = np.stack([(u - K[0, 2]) / K[0, 0] * z, (v - K[1, 2]) / K[1, 1] * z, z], 1) @ R.astype(np.float64) + C
-        seen = np.zeros(len(z), np.int32)
+        seen, through = np.zeros(len(z), np.int32), np.zeros(len(z), np.int32)
         others = [j for j in np.argsort(turn[i]) if j != i and turn[i, j] >= AGREE_APART][:AGREE_ASK]
         for j in others:
             (Rj, Cj, Kj), (a0, b0, a1, b1), dj = frames[j][:3]
@@ -472,9 +509,18 @@ def agreeing(frames: list, near: float) -> list[np.ndarray]:
             there = np.zeros(len(z))
             there[ok] = dj[vj[ok], uj[ok]]
             seen += ok & (there > 0) & (np.abs(there - x[:, 2]) <= near)
-        out = np.zeros(depth[::2, ::2].shape, bool)
-        out[rows, cols] = seen >= AGREE_VIEWS
-        return np.kron(out, np.ones((2, 2), bool))[: depth.shape[0], : depth.shape[1]]
+            if measured is not None:
+                there[ok] = measured[j][vj[ok], uj[ok]]
+                through += ok & (there - x[:, 2] > margin)
+        outs = []
+        masks = [seen >= AGREE_VIEWS]
+        if measured is not None:
+            masks.append((through >= THROUGH_VIEWS) & (seen < AGREE_VIEWS))
+        for mask in masks:
+            out = np.zeros(depth[::2, ::2].shape, bool)
+            out[rows, cols] = mask
+            outs.append(np.kron(out, np.ones((2, 2), bool))[: depth.shape[0], : depth.shape[1]])
+        return tuple(outs) if measured is not None else outs[0]
 
     return PAR.each(one, range(len(frames)))
 
@@ -515,7 +561,8 @@ def rim_support(hull_w: trimesh.Trimesh, poses: list) -> np.ndarray:
     return np.sum(PAR.each(one, poses), axis=0)
 
 
-def smooth_keeping_edges(mesh: trimesh.Trimesh, passes: int, turn: float = SMOOTH_TURN) -> trimesh.Trimesh:
+def smooth_keeping_edges(mesh: trimesh.Trimesh, passes: int, turn: float = SMOOTH_TURN,
+                         moves: int = SMOOTH_MOVES) -> trimesh.Trimesh:  # fmt: skip
     """Мрежата със загладени нормали на стените (двустранен филтър, Zheng и др. 2011: всяка нормала става средното
     на съседните по връх, претеглени по близост на центровете, по площ и по близост на нормалите) и върхове,
     преместени към тях (Sun и др. 2007)."""
@@ -536,7 +583,7 @@ def smooth_keeping_edges(mesh: trimesh.Trimesh, passes: int, turn: float = SMOOT
         n = total / np.maximum(np.linalg.norm(total, axis=1, keepdims=True), 1e-12)
     v = mesh.vertices.copy()
     count = np.maximum(np.bincount(f.ravel(), minlength=len(v)), 1)[:, None]
-    for _ in range(SMOOTH_MOVES):
+    for _ in range(moves):
         centre = v[f].mean(1)
         move = np.zeros_like(v)
         for corner in range(3):
@@ -545,6 +592,135 @@ def smooth_keeping_edges(mesh: trimesh.Trimesh, passes: int, turn: float = SMOOT
                 move[:, k] += np.bincount(f[:, corner], weights=step[:, k], minlength=len(v))
         v += move / count
     return trimesh.Trimesh(v, f, process=False)
+
+
+def calm_smoothed(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
+    """Мрежата със силно загладени спокойни места (вижте CALM_PASSES); останалото както е."""
+    heavy = smooth_keeping_edges(mesh, CALM_PASSES, CALM_TURN, CALM_MOVES)
+    f = mesh.faces
+    rows = np.repeat(np.arange(len(f)), 3)
+    shape = (len(f), len(mesh.vertices))
+    by_vertex = sparse.csr_matrix((np.ones(len(rows), np.float32), (rows, f.ravel())), shape=shape)
+    count = np.maximum(np.asarray(by_vertex.sum(0)).ravel(), 1)
+    turned = np.sum((mesh.face_normals - heavy.face_normals) ** 2, axis=1)
+    for _ in range(CALM_AROUND):  # осреднено през съседните стени
+        turned = (by_vertex @ ((by_vertex.T @ turned) / count)) / 3
+    # разлика на единични нормали -> градуси (малки ъгли)
+    calm = np.clip((CALM_HIGH - np.degrees(np.sqrt(turned))) / (CALM_HIGH - CALM_LOW), 0, 1)
+    share = ((by_vertex.T @ calm) / count)[:, None]
+    return trimesh.Trimesh(mesh.vertices + share * (heavy.vertices - mesh.vertices), f, process=False)
+
+
+def vertex_areas(mesh: trimesh.Trimesh) -> np.ndarray:
+    area = np.zeros(len(mesh.vertices))
+    for corner in range(3):
+        np.add.at(area, mesh.faces[:, corner], mesh.area_faces / 3)
+    return area
+
+
+def vertex_links(mesh: trimesh.Trimesh) -> sparse.csr_matrix:
+    e, n = mesh.edges_unique, len(mesh.vertices)
+    ones = np.ones(len(e) * 2, np.float32)
+    return sparse.csr_matrix((ones, (np.r_[e[:, 0], e[:, 1]], np.r_[e[:, 1], e[:, 0]])), shape=(n, n))
+
+
+def turned_shape(mesh: trimesh.Trimesh, ground_z: float):
+    """Тялото на въртене около отвесна ос сред страничните стени на мрежата (вижте TURN_BAND): ("turned", център
+    (x, y), височините на поясите, радиусите им) или None."""
+    P, N = np.asarray(mesh.vertices, float), np.asarray(mesh.vertex_normals, float)
+    size = float(mesh.extents.max())
+    tol, band = SNAP_TOL * size, TURN_BAND * size
+    level = np.floor((P[:, 2] - ground_z) / band).astype(int)
+    mid = (np.arange(TURN_SECTORS) + 0.5) / TURN_SECTORS * 2 * np.pi - np.pi
+
+    def shell(idx, c):
+        """Най-външната стена, обърната навън от c, във всеки сектор (nan: няма)."""
+        d = P[idx, :2] - c
+        r = np.linalg.norm(d, axis=1)
+        out = np.einsum("ij,ij->i", N[idx, :2], d) > 0.5 * r
+        sector = np.minimum(((np.arctan2(d[:, 1], d[:, 0]) + np.pi) / (2 * np.pi) * TURN_SECTORS).astype(int),
+                            TURN_SECTORS - 1)  # fmt: skip
+        far = np.full(TURN_SECTORS, np.nan)
+        for k in np.unique(sector[out]):
+            rs = r[out & (sector == k)]
+            if len(rs) >= 3:
+                far[k] = np.percentile(rs, 90)
+        return far
+
+    def ring(idx, c, tries=4):
+        """Окръжността на пояса: (център, радиус) или None, ако стената му не е кръгла."""
+        r0 = 0.0
+        for k in range(tries):
+            far = shell(idx, c)
+            ok = np.isfinite(far)
+            if k > 0:
+                r0 = float(np.median(far[ok])) if ok.any() else 0.0
+                ok &= np.abs(np.nan_to_num(far, nan=np.inf) - r0) < tol
+            if ok.sum() < TURN_SHARE * TURN_SECTORS:
+                return None
+            x, y = c[0] + far[ok] * np.cos(mid[ok]), c[1] + far[ok] * np.sin(mid[ok])
+            cx, cy, _ = np.linalg.lstsq(np.stack([2 * x, 2 * y, np.ones(len(x))], 1), x * x + y * y, rcond=None)[0]
+            c = np.array([cx, cy])
+        return c, r0
+
+    rings = {}
+    for b in range(0, int(level.max()) + 1):
+        idx = np.flatnonzero(level == b)
+        if len(idx) >= 3 * TURN_SECTORS:
+            got = ring(idx, P[idx, :2].mean(0))
+            if got is not None:
+                rings[b] = got
+    # Най-дългата поредица от пояси един над друг с обща ос.
+    best = []
+    for b in sorted(rings):
+        run = [b]
+        while run[-1] + 1 in rings:
+            run.append(run[-1] + 1)
+        c = np.median([rings[k][0] for k in run], axis=0)
+        part = []
+        for k in run + [None]:
+            if k is not None and np.linalg.norm(rings[k][0] - c) < tol:
+                part.append(k)
+                continue
+            best, part = (part if len(part) > len(best) else best), []
+    if not best or len(best) * band < TURN_TALL * size:
+        return None
+    c = np.median([rings[k][0] for k in best], axis=0)
+    radii = []
+    for k in best:
+        far = shell(np.flatnonzero(level == k), c)
+        radii.append(np.nanmedian(far))
+    radii = ndimage.gaussian_filter1d(np.array(radii), 1.0, mode="nearest")
+    return "turned", c, ground_z + (np.array(best) + 0.5) * band, radii
+
+
+def snap_turned(mesh: trimesh.Trimesh, shape) -> trimesh.Trimesh:
+    """Мрежата със страничната стена върху профила на тялото на въртене (вижте turned_shape, TURN_DENT)."""
+    P, N = np.asarray(mesh.vertices, float), np.asarray(mesh.vertex_normals, float)
+    size = float(mesh.extents.max())
+    at, n = on_shape(shape, P)
+    with np.errstate(invalid="ignore"):
+        off = np.linalg.norm(at - P, axis=1)
+    moved = (off < SNAP_WIDE * size) & (np.einsum("ij,ij->i", n, N) > 0.5)
+    link, area = vertex_links(mesh), vertex_areas(mesh)
+    # Вдлъбнатина, оградена от стената (нагризаното от маските), се запълва до профила.
+    rest = np.flatnonzero(~moved)
+    dent = np.zeros(len(P), bool)
+    if len(rest) and moved.any():
+        inside = np.linalg.norm(P[:, :2] - shape[1], axis=1) < np.linalg.norm(at[:, :2] - shape[1], axis=1)
+        _, label = sparse.csgraph.connected_components(link[rest][:, rest], directed=False)
+        for k in np.flatnonzero(np.bincount(label, weights=area[rest]) <= SNAP_PATCH * area.sum()):
+            patch = rest[label == k]
+            around = np.setdiff1d(link[patch].indices, patch)
+            if len(around) and moved[around].mean() >= SNAP_FENCED:
+                dent[patch] = inside[patch] & (off[patch] < TURN_DENT * size)
+    moved |= dent
+    move = np.zeros_like(P)
+    move[moved] = (at - P)[moved]
+    count = np.maximum(np.asarray(link.sum(1)).ravel(), 1)[:, None]
+    for _ in range(SNAP_SPREAD):
+        move[~moved] = ((link @ move) / count)[~moved]
+    return trimesh.Trimesh(P + move, mesh.faces, process=False)
 
 
 def round_from(p1, n1, p2, n2):
@@ -567,11 +743,21 @@ def round_from(p1, n1, p2, n2):
 
 
 def on_shape(shape, P: np.ndarray):
-    """За равнина ("flat", точка, нормала) или цилиндър ("round", ос, точка, радиус): върховете P, преместени върху
-    формата, и нормалата на формата при всеки."""
+    """За равнина ("flat", точка, нормала), цилиндър ("round", ос, точка, радиус) или тяло на въртене ("turned",
+    център, височини, радиуси): върховете P, преместени върху формата (безкрайност извън височините на тялото на
+    въртене), и нормалата на формата при всеки."""
     if shape[0] == "flat":
         _, c, n = shape
         return P - np.outer((P - c) @ n, n), np.broadcast_to(n, P.shape)
+    if shape[0] == "turned":
+        _, c, zs, rs = shape
+        d = P[:, :2] - c
+        d = d / np.maximum(np.linalg.norm(d, axis=1, keepdims=True), 1e-12)
+        at = np.concatenate([c + d * np.interp(P[:, 2], zs, rs)[:, None], P[:, 2:]], 1)
+        n = np.concatenate([d, -np.interp(P[:, 2], zs, np.gradient(rs, zs))[:, None]], 1)
+        half = (zs[1] - zs[0]) / 2
+        at[(P[:, 2] < zs[0] - half) | (P[:, 2] > zs[-1] + half)] = np.inf
+        return at, n / np.linalg.norm(n, axis=1, keepdims=True)
     _, axis, c, r = shape
     rel = P - c
     along = np.outer(rel @ axis, axis)
@@ -845,16 +1031,26 @@ def fuse(dense: Path, inputs: Path, crops_file: Path, out: Path) -> None:
         raise SystemExit(f"only {used} frames' depth could be used")
     if frames[0][5] is not None:
         # Измерената дълбочина гласува сама (RAW_OFF) само където съседните кадри я потвърждават.
-        seen = agreeing([(f[0], f[1], np.where(f[5] > 0, f[5], f[2])) for f in frames], AGREE_NEAR * trunc)
-        takes = [a & (f[5] > 0) for a, f in zip(seen, frames)]
+        first = [(f[0], f[1], np.where(f[5] > 0, f[5], f[2])) for f in frames]
+        if THROUGH_VIEWS > 0:
+            seen = agreeing(first, AGREE_NEAR * trunc, [f[6] for f in frames], THROUGH * trunc)
+        else:
+            seen = [(a, np.zeros(a.shape, bool)) for a in agreeing(first, AGREE_NEAR * trunc)]
+        del first
+        takes = [a & (f[5] > 0) for (a, _), f in zip(seen, frames)]
+        gone = [g & (f[5] <= 0) & (f[2] > 0) for (_, g), f in zip(seen, frames)]
         took = sum(int(t.sum()) for t in takes) / max(1, sum(int((f[5] > 0).sum()) for f in frames))
-        frames = [(f[0], f[1], np.where(t, f[5], f[2]), np.where(t, np.float32(RAW_WEIGHT), f[3]),
-                   np.where(t, np.float32(0), f[4])) for t, f in zip(takes, frames)]  # fmt: skip
+        left = sum(int(g.sum()) for g in gone) / max(1, sum(int((f[2] > 0).sum()) for f in frames))
+        # Последното: където измерената дълбочина се разминава с AI, без съседите да са я потвърдили.
+        frames = [(f[0], f[1], np.where(t, f[5], np.where(g, np.float32(0), f[2])),
+                   np.where(t, np.float32(RAW_WEIGHT), np.where(g, np.float32(0), f[3])),
+                   np.where(t | g, np.float32(0), f[4]), (f[5] > 0) & ~t & (f[2] > 0))
+                  for t, g, f in zip(takes, gone, frames)]  # fmt: skip
         note(f"measured depth votes on its own where the AI depth is off or near the outline: {took:.0%} of it "
-             "confirmed by the neighbouring frames")  # fmt: skip
-        del seen, takes
+             f"confirmed by the neighbouring frames; {left:.1%} of the surface is seen through by them and left out")
+        del seen, takes, gone
     else:
-        frames = [f[:5] for f in frames]
+        frames = [(*f[:5], None) for f in frames]
     # Към всеки кадър: къде на дълбочината му може да се вярва (съгласна със съседите, или измерен фон извън предмета).
     # shiny: доколко на дълбочината на целия предмет не може да се вярва (0: може; 1: не), по дела от повърхността,
     # за която кадрите са съгласни. Само тогава несъгласната дълбочина губи глас и обвивката се налага.
@@ -866,11 +1062,13 @@ def fuse(dense: Path, inputs: Path, crops_file: Path, out: Path) -> None:
         note(f"frames agree on {share:.0%} of the surface they see: "
              + ("the depth is trusted" if shiny == 0 else f"the outlines' shape holds where they do not ({shiny:.0%})"))
         unsure = np.float32(1 - shiny * (1 - UNSURE))
-        frames = [(*f[:3], f[3] * np.where(a, np.float32(1), unsure), f[4], a | (f[2] <= 0))
-                  for a, f in zip(sure, frames)]  # fmt: skip
-        del sure
+        doubt = [np.float32(1) if f[5] is None else np.where(f[5] & ~a, np.float32(UNSURE), np.float32(1))
+                 for a, f in zip(sure, frames)]  # fmt: skip
+        frames = [(*f[:3], f[3] * np.where(a, np.float32(1), unsure) * d, f[4], a | (f[2] <= 0))
+                  for a, d, f in zip(sure, doubt, frames)]  # fmt: skip
+        del sure, doubt
     else:
-        frames = [(*f, np.ones(f[2].shape, bool)) for f in frames]
+        frames = [(*f[:5], np.ones(f[2].shape, bool)) for f in frames]
     if shiny == 0:
         rim_cells = None
     told = np.zeros((2, len(tsdf)), np.uint8) if rim_cells is not None else None  # за вярване, всички
@@ -944,12 +1142,20 @@ def fuse(dense: Path, inputs: Path, crops_file: Path, out: Path) -> None:
     try:
         if SMOOTH_PASSES > 0:
             mesh = smooth_keeping_edges(mesh, SMOOTH_PASSES)
+            if CALM_PASSES > 0:
+                mesh = calm_smoothed(mesh)
         if held is not None and SNAP_TOL > 0:
             at = np.clip(np.round((mesh.vertices - lo) / step).astype(int), 0, shape - 1)
             pool = ndimage.binary_dilation(held.reshape(tuple(shape)))[at[:, 0], at[:, 1], at[:, 2]]
             mesh, shapes = snap_shapes(mesh, pool)
             note(f"the hull holds {pool.mean():.0%} of the surface; exact shapes there: "
                  + (", ".join(f"{s[0]} {share:.0%}" for s, share in shapes) or "none"))  # fmt: skip
+        if TURN_TALL > 0 and np.isfinite(ground_z) and not any(s[0] == "round" for s, _ in shapes):
+            turned = turned_shape(mesh, ground_z)
+            if turned is not None:
+                mesh = snap_turned(mesh, turned)
+                tall, wide = np.ptp(turned[2]) + TURN_BAND * size, 2 * float(np.median(turned[3]))
+                note(f"turned shape on the table: {tall / size:.0%} of the size tall, {wide / size:.0%} wide")
         if not np.isfinite(mesh.vertices).all():
             raise ValueError("vertices are not finite")
     except Exception as e:  # тогава повърхността остава както е слята: и без това е добра
