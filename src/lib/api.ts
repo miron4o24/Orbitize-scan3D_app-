@@ -506,6 +506,7 @@ export type CadOverall = {
   ask: string;
   hint: string;
   photo: CadPhoto | null; // снимката с линията (null: схема)
+  guess?: { of: CadOverallId; k: number }; // по снимката размерът е около k пъти вече измерения `of`
 };
 export type CadPlan = {
   photos: CadPhoto[];

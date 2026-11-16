@@ -259,13 +259,11 @@ def base_view(d: dict, view: str, size=(1000, 640), margin=120) -> Sheet:
     if view == "profile":  # оста и отворът по нея (скрит: пунктир)
         R = V / 2
         sh.line((-U * 0.04, R), (U * 1.04, R), SOFT, 2, dash=14)
-        for f in d["features"]:
-            if f["t"] == "hole" and f["axis"] == "x":
-                r = D.value(d, f["d"]) / 2
-                depth = D.value(d, f["depth"]) if f.get("depth") else U
-                x0, x1 = (0, depth) if f.get("side") == "-" else (U - depth, U)
-                for v in (R - r, R + r):
-                    sh.line((x0, v), (x1, v), INK, 2, dash=12)
+        for f, _, c, r in end_holes(d):
+            depth = D.value(d, f["depth"]) if f.get("depth") else U
+            x0, x1 = (0, depth) if f.get("side") == "-" else (U - depth, U)
+            for v in (c - r, c + r):
+                sh.line((x0, v), (x1, v), INK, 2, dash=12)
     return sh
 
 
@@ -421,13 +419,15 @@ def question(d: dict, dim_id: str, photos: dict | None = None) -> Image.Image:
     view = view_for(d, dim_id)
     photos = photos or {}
     if view == "end" and d["kind"] == "turned":
-        if "end" in photos:
+        face = dim_face(d, dim_id)
+        key = "end:left" if face == "left" and "end:left" in photos else "end"
+        if key in photos:
             Dm = D.value(d, "D")
-            sh = PhotoSheet(photos["end"]["image"], photos["end"]["A"], Dm, Dm)
-            turned_end_marks(sh, d, dim_id)
-            photo_caption(sh, photos["end"]["name"])
+            sh = PhotoSheet(photos[key]["image"], photos[key]["A"], Dm, Dm)
+            turned_end_marks(sh, d, dim_id, face=photos[key].get("face"))
+            photo_caption(sh, photos[key]["name"])
             return sh.im
-        return turned_end(d, dim_id)
+        return turned_end(d, dim_id, face=face if d.get("upright") else None)
     src = photos.get("top" if view == "profile" else view)
     if src is not None:
         U, V = view_size(d, view)
@@ -479,36 +479,83 @@ def overall(photo: Image.Image | None, A, U: float, V: float, dim: str, along: s
 KNOWN = {"W": "ширината (вече)", "L": "дължината (вече)", "D": "диаметъра (вече)"}
 
 
-def turned_end(d: dict, dim_id: str, star: bool = False, size=(1000, 640)) -> Image.Image:
-    """Детайл от струг откъм края: кръгът и отворът по оста. star: за чертежа (синьо, без оцветяване)."""
+END_TITLE = {None: "Изглед отстрани", "right": "Отгоре (горният край)", "left": "Отдолу (дъното)"}
+
+
+def end_holes(d: dict, face: str | None = None) -> list[tuple[dict, float, float, float]]:
+    """Отворите по оста X (в краищата на тяло от струг) като (елемент, u, v, радиус) в мм на края: всички, или
+    видимите от края `face` (проходните - от двата, глухите - от своя). Неизмерените (добавени, без оценка) - не."""
+    out = []
+    for f in d["features"]:
+        if f["t"] != "hole" or f["axis"] != "x" or not D.present(d, f):
+            continue
+        if face and f.get("depth") and f.get("face", "left") != face:
+            continue
+        try:
+            place = D.feature_place(d, f)
+            out.append((f, place["u"], place["v"], D.value(d, f["d"]) / 2))
+        except D.DesignError:
+            continue
+    return out
+
+
+def dim_face(d: dict, dim_id: str) -> str | None:
+    """Краят на отвора, към който е размерът (за снимката към въпроса), или None."""
+    fid = (d["dims"][dim_id].get("show") or {}).get("feature")
+    f = next((f for f in d["features"] if f["id"] == fid), None)
+    return f.get("face") if f and f.get("axis") == "x" else None
+
+
+def turned_end(d: dict, dim_id: str | None, star: bool = False, size=(1000, 640),
+               face: str | None = None) -> Image.Image:  # fmt: skip
+    """Детайл от струг откъм края: кръгът и отворите в него (face: на кой край - "right" горният, "left" дъното на
+    изправен цилиндър; None: всички). star: за чертежа (синьо, всички размери)."""
     Dm = D.value(d, "D")
     im = Image.new("RGB", size, PAPER)
     m = round(size[1] * 0.16)
     sh = Sheet(im, (m, m, size[0] - m, size[1] - m), Dm, Dm)
     t = np.linspace(0, 2 * math.pi, 96)
     sh.poly(np.c_[Dm / 2 + Dm / 2 * np.cos(t), Dm / 2 + Dm / 2 * np.sin(t)], fill=FILL, outline=INK, width=4)
-    turned_end_marks(sh, d, dim_id, star)
-    caption(sh, "Изглед отстрани")
+    turned_end_marks(sh, d, dim_id, star, face)
+    caption(sh, END_TITLE.get(face, END_TITLE[None]) if d.get("upright") else END_TITLE[None])
     return im
 
 
-def turned_end_marks(sh: Sheet, d: dict, dim_id: str, star: bool = False):
-    """Отворите по оста в кръга на края; този с размера `dim_id` е оцветен и с размерна линия."""
+def turned_end_marks(sh: Sheet, d: dict, dim_id: str | None, star: bool = False, face: str | None = None):
+    """Отворите по оста в кръга на края; този с размера `dim_id` е оцветен и с размерна линия (диаметърът му,
+    окръжността през центровете или дълбочината). star: на чертежа всички размери са надписани."""
     Dm = D.value(d, "D")
     color = BLUE if star else ACCENT
     t = np.linspace(0, 2 * math.pi, 96)
-    dim = d["dims"][dim_id]
-    for f in d["features"]:
-        if f["t"] == "hole" and f["axis"] == "x":
-            r = D.value(d, f["d"]) / 2
-            hit = f["d"] == dim_id
-            mark = hit and not star
-            sh.poly(np.c_[Dm / 2 + r * np.cos(t), Dm / 2 + r * np.sin(t)], fill=(255, 237, 224) if mark else PAPER,
-                    outline=ACCENT if mark else INK, width=5 if mark else 3)  # fmt: skip
-            if hit:
-                value = value_text(dim, star)
-                off = (0, -(Dm / 2) * sh.s - 40)
-                sh.dimension((Dm / 2 - r, Dm / 2), (Dm / 2 + r, Dm / 2), off, "Ø " + value, color)
+    labelled = set()
+    for f, u, v, r in end_holes(d, face):
+        pcd = (f.get("polar") or {}).get("pcd")
+        hit = dim_id is not None and dim_id in (f["d"], pcd, f.get("depth"))
+        mark = hit and not star
+        sh.poly(np.c_[u + r * np.cos(t), v + r * np.sin(t)], fill=(255, 237, 224) if mark else PAPER,
+                outline=ACCENT if mark else INK, width=5 if mark else 3)  # fmt: skip
+        if star:
+            if f["d"] not in labelled:
+                labelled.add(f["d"])
+                label(sh.draw, sh.shift((u, v + r), (0, -34)), "Ø " + value_text(d["dims"][f["d"]], True), BLUE, 24)
+            if pcd and pcd not in labelled:
+                labelled.add(pcd)
+                pr = D.value(d, pcd) / 2
+                sh.stroke([sh.px(Dm / 2 + pr * math.cos(a), Dm / 2 + pr * math.sin(a)) for a in t], SOFT, 2)
+                label(sh.draw, sh.shift((Dm / 2, Dm / 2 - pr), (0, 30)), "окр. Ø " + value_text(d["dims"][pcd], True),
+                      BLUE, 24)  # fmt: skip
+            continue
+        if not hit:
+            continue
+        dim = d["dims"][dim_id]
+        value = value_text(dim, star)
+        if dim_id == pcd:  # през оста до срещуположното място
+            sh.dimension((u, v), (Dm - u, Dm - v), (0, 0), "Ø " + value, color)
+        elif dim_id == f.get("depth"):
+            label(sh.draw, sh.shift((u, v + r), (0, -40)), f"дълбочина {value}", color)
+        else:
+            off = (0, -(Dm - v) * sh.s - 40)
+            sh.dimension((u - r, v), (u + r, v), off, "Ø " + value, color)
 
 
 def caption(sh: Sheet, text: str):
@@ -526,10 +573,8 @@ def overlay_shapes(d: dict, view: str, face: str | None = None) -> tuple[float, 
         Dm = D.value(d, "D")
         t = np.linspace(0, 2 * math.pi, 96)
         polys = [(None, np.c_[Dm / 2 + Dm / 2 * np.cos(t), Dm / 2 + Dm / 2 * np.sin(t)])]
-        for f in d["features"]:
-            if f["t"] == "hole" and f["axis"] == "x" and D.present(d, f):
-                r = D.value(d, f["d"]) / 2
-                polys.append((f, np.c_[Dm / 2 + r * np.cos(t), Dm / 2 + r * np.sin(t)]))
+        for f, u, v, r in end_holes(d, face if face in ("left", "right") else None):
+            polys.append((f, np.c_[u + r * np.cos(t), v + r * np.sin(t)]))
         return Dm, Dm, polys
     shape_view = "profile" if d["kind"] == "turned" else view
     U, V = view_size(d, shape_view)
@@ -637,12 +682,13 @@ def feature_at(d: dict, view: str, photo: Image.Image, A, x: float, y: float, fa
 def drawing(d: dict) -> Image.Image:
     """Изгледите с всички размери по тях (оценените със *) и списъкът на размерите отдолу."""
     views = ["profile", "end"] if d["kind"] == "turned" else ["top", "side", "end"]
+    if d.get("upright"):
+        views = ["profile", "end:right", "end:left"]
     tiles = []
     TILE = (1100, 820)
     for view in views:
-        if view == "end" and d["kind"] == "turned":
-            bore = next((f["d"] for f in d["features"] if f["t"] == "hole" and f["axis"] == "x"), None)
-            tile = turned_end(d, bore or "D", star=True, size=TILE)
+        if view.startswith("end") and d["kind"] == "turned":
+            tile = turned_end(d, None, star=True, size=TILE, face=view[4:] or None)
         else:
             sh = base_view(d, view, size=TILE, margin=210)
             slots = {"u": 0, "v": 1, "vl": 0}
@@ -661,7 +707,8 @@ def drawing(d: dict) -> Image.Image:
                 went = annotate(sh, d, view, i, value_text(dim, star=True), BLUE, slots.get(side, 0), False, 3, 24)
                 if went:
                     slots[went] = slots.get(went, 0) + 1
-            caption(sh, f"Изглед {D.VIEW_NAME[view]}")
+            caption(sh, "Отстрани: дъното вляво, горният край вдясно" if d.get("upright") and view == "profile"
+                    else f"Изглед {D.VIEW_NAME[view]}")  # fmt: skip
             tile = sh.im
         tiles.append(tile)
     lines = ["Размери (мм); * = оценено от снимките, не измерено с шублер:"]

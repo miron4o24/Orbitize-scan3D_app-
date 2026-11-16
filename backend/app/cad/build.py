@@ -7,6 +7,7 @@ DIM_ID, числа и изброени стойности, никога текс
 
 import json
 import keyword
+import math
 import re
 from pathlib import Path
 
@@ -35,6 +36,8 @@ def clean(raw: dict) -> dict:
          "notes": [_txt(n, 300) for n in (raw.get("notes") or [])[:20]]}  # fmt: skip
     if raw.get("flat"):
         d["flat"] = True
+    if raw.get("upright") and raw["kind"] == "turned":  # изправен цилиндър (cylinder.py): файловете стоят на дъното
+        d["upright"] = True
     if len(raw.get("dims") or {}) > 400 or len(raw.get("levels") or {}) > 400:
         raise D.DesignError("Твърде много размери.")
     for i, dim in (raw.get("dims") or {}).items():
@@ -153,6 +156,13 @@ def clean(raw: dict) -> dict:
                 g["open"] = dict(o)
             if t == "hole" and f.get("thread"):
                 g["thread"] = re.sub(r"[^A-Za-z0-9.,x×/ -]", "", str(f["thread"]))[:12]
+            if f.get("polar") is not None:  # отвор в края на цилиндъра встрани от оста (cylinder.add_end_hole)
+                pol = f["polar"]
+                if not (t == "hole" and raw["kind"] == "turned" and g["axis"] == "x" and isinstance(pol, dict)
+                        and pol.get("pcd") in d["dims"] and isinstance(pol.get("a"), (int, float))
+                        and not isinstance(pol.get("a"), bool) and math.isfinite(pol["a"])):  # fmt: skip
+                    raise D.DesignError("Непознато положение на отвор.")
+                g["polar"] = {"pcd": pol["pcd"], "a": round(float(pol["a"]) % 360, 3)}
         d["features"].append(g)
     return d
 
@@ -482,7 +492,7 @@ def code(d: dict) -> str:
                 sk = f"rounded_rect({f['w']}, {f['h']}, {f.get('r') or '0.0'})"
             else:
                 sk = f"lambda wp: wp.slot2D({f['len']}, {f['w']}, {f.get('angle', 0)})"
-            note = D.label(d, f) + (f", {D.FACE_NAME[f['face']]}" if f.get("face") else "")
+            note = D.label(d, f) + (f", {D.face_name(d, f['face'])}" if f.get("face") else "")
             if f.get("boss") and f.get("depth"):  # издатина (камерата на телефон): навън от стената си
                 lines.append(f"body = boss(body, '{f['axis']}', '{f['side']}', {u}, {v}, {size}, {depth}, {sk}, "
                              f"{bool(f.get('outside'))})  # {_txt(note, 70)}")  # fmt: skip
@@ -500,6 +510,9 @@ def code(d: dict) -> str:
             else:
                 lines.append(f"body = body.copyWorkplane(cq.Workplane(plane('x', {lv(f['at'])}))).split(keepTop=True, "
                              "keepBottom=True)")  # fmt: skip
+    if d.get("upright"):  # изправен цилиндър: оста X (от дъното) става Z, дъното е на масата
+        lines += ["", "# --- Изправен: дъното на масата (Z = 0), оста нагоре ---",
+                  "body = body.rotate((0, 0, 0), (0, 1, 0), -90).translate((D, 0, 0))"]
     lines += ["", "result = body", ""]
     return "\n".join(lines)
 
@@ -521,6 +534,9 @@ def present_item(d: dict, item_id: str) -> bool:
 def pos_expr(f: dict, key: str, lv) -> str:
     p = f[key]
     c = lv(p["lvl"])
+    if f.get("polar"):  # на окръжност около оста (D.feature_place)
+        trig = "cos" if key == "u" else "sin"
+        return f"({c} + {f['polar']['pcd']} / 2 * math.{trig}(math.radians({num(f['polar']['a'])})))"
     if f["t"] in ("rect", "slot") and p["anchor"] in ("min", "max"):
         if f["t"] == "rect":
             size = f["w"] if key == "u" else f["h"]

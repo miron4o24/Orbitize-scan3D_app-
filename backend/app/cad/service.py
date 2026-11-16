@@ -7,7 +7,10 @@ job/cad/draft.json  - текущото описание (от него са ка
 job/cad/out/        - последният построен детайл: part.step, part.py, part.stl, part.glb, drawing.png
 
 Редът: read (без мерки) -> общите размери, всеки с линия върху снимка -> assemble (с тях) -> "Какво виждам" ->
-мерките, по една, с линия върху снимката -> build. Всичко става веднага (секунди), не в опашката на сканиранията."""
+мерките, по една, с линия върху снимката -> build. Всичко става веднага (секунди), не в опашката на сканиранията.
+
+Цилиндър (третият вариант в приложението, cylinder.py): снимките top (изправен), bottom (обърнат) и front (легнал,
+профилът); job/cad/mode съдържа "cylinder" от първото четене (за имената на снимките в съобщенията)."""
 
 import json
 import logging
@@ -22,6 +25,7 @@ import numpy as np
 from shapely.geometry import Point, Polygon
 
 from . import assemble as AS
+from . import cylinder as C
 from . import design as D
 from . import fit
 from . import photos as P
@@ -66,6 +70,25 @@ def photo_path(job: Path, name: str) -> Path | None:
 
 def present(job: Path) -> list[str]:
     return [n for n in P.NAMES if photo_path(job, n)]
+
+
+def is_cylinder(job: Path) -> bool:
+    mode = job / "cad" / "mode"
+    return mode.exists() and mode.read_text(encoding="utf-8").strip() == "cylinder"
+
+
+def set_mode(job: Path, cylinder: bool) -> None:
+    (job / "cad").mkdir(parents=True, exist_ok=True)
+    mode = job / "cad" / "mode"
+    if cylinder:
+        mode.write_text("cylinder", encoding="utf-8")
+    elif mode.exists():
+        mode.unlink()
+
+
+def title(job: Path, name: str) -> str:
+    """Как се казва снимката в приложението ("отгоре", "отстрани")."""
+    return C.TITLE.get(name, P.TITLE[name]) if is_cylinder(job) else P.TITLE[name]
 
 
 KEPT = 10  # толкова от последните изоставени детайли на собственика се пазят за проверка
@@ -173,9 +196,9 @@ def shots(job: Path) -> dict:
                         result[name] = VI.segment(sess, path) | {"key": key}
                     except ValueError as e:
                         if str(e) == "cut":
-                            raise D.DesignError(f"На снимката {P.TITLE[name]} предметът не се събира целият в кадъра: "
-                                                "снимайте я отново от по-високо.") from e  # fmt: skip
-                        raise D.DesignError(f"На снимката {P.TITLE[name]} не се вижда целият предмет: снимайте я "
+                            raise D.DesignError(f"На снимката {title(job, name)} предметът не се събира целият в "
+                                                "кадъра: снимайте я отново от по-високо.") from e  # fmt: skip
+                        raise D.DesignError(f"На снимката {title(job, name)} не се вижда целият предмет: снимайте я "
                                             "отново, предметът в средата, на контрастна повърхност.") from e  # fmt: skip
         old = [n for n in result if result[n].get("profiles") != VI.PROFILES]  # от по-стара версия: без изрязване
         for name in old:
@@ -265,21 +288,84 @@ FLAT_RATIO = 0.2  # дебелина под толкова от по-малка�
 
 
 def read(job: Path, L: float | None = None, W: float | None = None, H: float | None = None,
-         flips: dict | None = None, flat: bool = False) -> dict:  # fmt: skip
+         flips: dict | None = None, flat: bool = False, cylinder: bool = False) -> dict:  # fmt: skip
     """Чете снимките. Без мерки: кои общи размери да се измерят и на коя снимка (overall). С мерки (първият
-    вариант на приложението): направо описанието, като assemble. flat: плосък детайл (третият размер е дебелина)."""
+    вариант на приложението): направо описанието, като assemble. flat: плосък детайл (третият размер е дебелина).
+    cylinder: цилиндър от три снимки (cylinder.py): диаметърът и височината."""
+    set_mode(job, cylinder)
+    if cylinder:
+        sh = shots(job)
+        lay = C.layout(sh)
+        write_json(job / "cad" / "plan.json", lay)
+        return {"photos": present(job), "overall": guesses(sh, lay, C.overall(lay)), "warnings": lay["warnings"],
+                "round": lay["round"], "stamp": str(int(time.time() * 1000))}  # fmt: skip
     if L and W and H:
         return assemble(job, {"L": L, "W": W, "H": H}, flips, flat)
-    lay = P.layout(shots(job)) | {"flat": bool(flat)}
+    sh = shots(job)
+    lay = P.layout(sh) | {"flat": bool(flat)}
     write_json(job / "cad" / "plan.json", lay)
-    return {"photos": present(job), "overall": P.overall(lay, flat), "warnings": lay["warnings"], "round": lay["round"],
-            "stamp": str(int(time.time() * 1000))}  # fmt: skip
+    return {"photos": present(job), "overall": guesses(sh, lay, P.overall(lay, flat)), "warnings": lay["warnings"],
+            "round": lay["round"], "stamp": str(int(time.time() * 1000))}  # fmt: skip
 
 
-def assemble(job: Path, values: dict, flips: dict | None = None, flat: bool = False) -> dict:
+RATIO_ASK = 1.2  # мярка, различна от снимката с повече от толкова: приложението пита "сигурни ли сте?"
+
+
+def photo_ratio(shot: dict, o: dict) -> float:
+    """Колко пъти размерът напряко (ev) на снимката е по-голям от този по eu."""
+    f = P.Frame(shot)
+    return f.ext(np.asarray(o["ev"], float)) / max(f.ext(np.asarray(o["eu"], float)), 1e-9)
+
+
+def guesses(sh: dict, lay: dict, overall: list[dict]) -> list[dict]:
+    """Към всеки общ размер, който се вижда на една снимка с вече измерен: колко е по снимката спрямо него
+    ("guess": {"of": размерът, "k": множителят}). Приложението го показва ("по снимката: около 24 мм") и пита, ако
+    въведеното се разминава: ширина 54 вместо 24 на ключ (дължината, измерена втори път) правеше квадратна плоча."""
+    out = []
+    for q in overall:
+        q = dict(q)
+        o = lay["orient"].get(q.get("photo") or "")
+        try:
+            if o is not None and q["photo"] in sh:
+                r = photo_ratio(sh[q["photo"]], o)
+                if lay.get("cylinder") and q["id"] == "H":  # отстрани: височината по оста, диаметърът напряко
+                    q["guess"] = {"of": "D", "k": round(1 / r, 4)}
+                elif q["id"] == "W":
+                    q["guess"] = {"of": "L", "k": round(r, 4)}
+                elif q["id"] == "H" and q.get("known"):
+                    q["guess"] = {"of": q["known"], "k": round(r, 4)}
+        except (ValueError, ZeroDivisionError, KeyError):
+            pass
+        out.append(q)
+    return out
+
+
+def check_sizes(sh: dict, lay: dict, L: float, W: float) -> None:
+    """Дължината и ширината трябва да пасват на снимката отгоре: иначе тя не се ползва и детайлът става
+    правоъгълник (ключ 54 x 24 мм, въведен като 54 x 54, излезе квадратна плоча). Тогава грешката е в мярката:
+    DesignError с това, което показва снимката, вместо модел, който не прилича на предмета."""
+    o = lay["orient"].get("top")
+    if o is None or "top" not in sh or lay.get("round", {}).get("top"):
+        return
+    r = photo_ratio(sh["top"], o)
+    if abs(math.log((W / L) / max(r, 1e-9))) > math.log(P.RATIO_DROP):
+        raise D.DesignError(f"Ширината {D.mm(W)} мм не пасва на снимката отгоре: при дължина {D.mm(L)} мм по нея "
+                            f"ширината е около {D.mm(round(L * r))} мм. Проверете двете мерки (Назад).")  # fmt: skip
+
+
+def assemble(job: Path, values: dict, flips: dict | None = None, flat: bool = False, cylinder: bool = False) -> dict:
     """Описанието от снимките и измерените общи размери (L, W, H или D за кръглото сечение). flat: плосък детайл
     (избран в приложението или тънък спрямо размерите отгоре): само очертанието отгоре с една дебелина, а ръбовете
-    отгоре и отдолу може да са заоблени. Снимките отстрани на такъв детайл са в ръка и само развалят формата."""
+    отгоре и отдолу може да са заоблени. Снимките отстрани на такъв детайл са в ръка и само развалят формата.
+    cylinder: цилиндър от три снимки (D и H: cylinder.assemble)."""
+    if cylinder:
+        set_mode(job, True)
+        try:
+            C.resolve(values)
+        except ValueError as e:
+            raise D.DesignError("Въведете диаметъра и височината в милиметри.") from e
+        d, warnings = C.assemble(shots(job), values, sanitize_flips(flips))
+        return response(job, d, warnings)
     sh = shots(job)
     try:
         L, W, H = P.resolve(P.layout(sh), {k: v for k, v in values.items() if v})
@@ -287,6 +373,7 @@ def assemble(job: Path, values: dict, flips: dict | None = None, flat: bool = Fa
         raise D.DesignError("Въведете общите размери в милиметри.") from e
     flips = sanitize_flips(flips)
     lay = layout(job, sh, (L, W, H), flips)
+    check_sizes(sh, lay, L, W)
     views, warnings = P.views_mm(sh, lay, L, W, H)
     chosen = bool(flat)
     flat = chosen or H <= FLAT_RATIO * min(L, W)
@@ -767,6 +854,8 @@ def edit(job: Path, raw: dict, op: dict) -> dict:
         cur[axis] = not cur[axis]
         flips[view] = cur
         L, W, H = sizes(d)
+        if d.get("upright"):  # цилиндър: обръщане на снимката отстрани - горният край и дъното си сменят местата
+            return assemble(job, {"H": L, "D": W}, flips, cylinder=True)
         return assemble(job, {"L": L, "W": W, "H": H}, flips, d["flat"])
     else:
         raise D.DesignError("Непозната промяна.")
@@ -806,7 +895,7 @@ def set_through(d: dict, fid: str, through: bool) -> dict:
         D.unused_cleanup(d)
     elif not f.get("depth"):
         face = f.get("face") or "top"
-        f["depth"] = D.add_dim(d, "t", None, "Дълбочина", f"Измерете дълбочината от {D.FACE_NAME[face]}",
+        f["depth"] = D.add_dim(d, "t", None, "Дълбочина", f"Измерете дълбочината от {D.face_name(d, face)}",
                                "С дълбокомера на шублера.", show={"feature": fid})  # fmt: skip
     return d
 
@@ -830,6 +919,17 @@ def view_photos(job: Path, d: dict) -> dict:
     if "top" not in sh:
         return {}
     L, W, H = sizes(d)
+    if d.get("upright"):
+        if "front" not in sh:
+            return {}
+        lay = C.layout(sh, (L, W), d.get("flips") or {})
+        out = {}
+        for name, o in lay["orient"].items():
+            U, V = P.view_sizes(o["view"], L, W, H)
+            key = {"front": "top", "top": "end", "bottom": "end:left"}[name]
+            out[key] = {"image": load(photo_path(job, name)), "A": photo_A(sh[name], o, U, V), "name": C.TITLE[name],
+                        "face": CYL_FACE[name]}  # fmt: skip
+        return out
     lay = layout(job, sh, (L, W, H), d.get("flips") or {})
     out = {}
     for name, o in lay["orient"].items():
@@ -839,6 +939,22 @@ def view_photos(job: Path, d: dict) -> dict:
         out[o["view"]] = {"image": load(photo_path(job, name)), "A": P.placement(sh[name], o, U, V)["A"],
                           "name": name}  # fmt: skip
     return out
+
+
+CYL_FACE = {"top": "right", "bottom": "left", "front": None}  # краят на цилиндъра на всяка снимка
+
+
+def photo_A(shot: dict, o: dict, U: float, V: float) -> np.ndarray:
+    """От мм на изгледа към пиксели на снимката: краищата на цилиндъра - по мащаба на края (cylinder.end_scale)."""
+    return np.asarray(o["A"], float) if "A" in o else P.placement(shot, o, U, V)["A"]
+
+
+def photo_layout(job: Path, d: dict, sh: dict, name: str) -> tuple[dict, str | None]:
+    """Как е снимката `name` в описанието: (ориентацията ѝ, краят на детайла на нея за отворите)."""
+    L, W, H = sizes(d)
+    if d.get("upright"):
+        return C.layout(sh, (L, W), d.get("flips") or {})["orient"][name], CYL_FACE.get(name)
+    return layout(job, sh, (L, W, H), d.get("flips") or {})["orient"][name], P.FACE.get(name)
 
 
 def question_png(job: Path, dim: str) -> bytes:
@@ -857,7 +973,8 @@ def question_png(job: Path, dim: str) -> bytes:
     from .vision import load
 
     lay = json.loads(plan_path.read_text(encoding="utf-8"))
-    q = next((q for q in P.overall(lay, lay.get("flat", False)) if q["id"] == dim), None)
+    plan = C.overall(lay) if lay.get("cylinder") else P.overall(lay, lay.get("flat", False))
+    q = next((q for q in plan if q["id"] == dim), None)
     if q is None:
         raise D.DesignError("Непознат размер.")
     if q["photo"] is None:
@@ -867,7 +984,8 @@ def question_png(job: Path, dim: str) -> bytes:
     f = P.Frame(sh[q["photo"]])
     U, V = f.ext(o["eu"]), f.ext(o["ev"])  # пиксели като мм: само за положението на линията
     A = P.placement(sh[q["photo"]], o, U, V)["A"]
-    return png(R.overall(load(photo_path(job, q["photo"])), A, U, V, dim, q["along"], q["photo"], q.get("known")))
+    name = C.TITLE[q["photo"]] if lay.get("cylinder") else q["photo"]
+    return png(R.overall(load(photo_path(job, q["photo"])), A, U, V, dim, q["along"], name, q.get("known")))
 
 
 def photo_jpg(job: Path, name: str) -> bytes:
@@ -884,10 +1002,9 @@ def photo_jpg(job: Path, name: str) -> bytes:
     if name not in sh:
         raise D.DesignError("Снимката още не е прочетена.")
     L, W, H = sizes(d)
-    lay = layout(job, {k: v for k, v in sh.items() if photo_path(job, k)}, (L, W, H), d.get("flips") or {})
-    o = lay["orient"][name]
+    o, face = photo_layout(job, d, {k: v for k, v in sh.items() if photo_path(job, k)}, name)
     U, V = P.view_sizes(o["view"], L, W, H)
-    im = R.overlay(d, o["view"], load(path), P.placement(sh[name], o, U, V)["A"], face=P.FACE.get(name))
+    im = R.overlay(d, o["view"], load(path), photo_A(sh[name], o, U, V), face=face)
     import io
 
     buf = io.BytesIO()
@@ -910,14 +1027,13 @@ def tap(job: Path, name: str, x: float, y: float) -> dict:
     if name not in sh:
         raise D.DesignError("Снимката още не е прочетена.")
     L, W, H = sizes(d)
-    lay = layout(job, {k: v for k, v in sh.items() if photo_path(job, k)}, (L, W, H), d.get("flips") or {})
-    o = lay["orient"][name]
+    o, face = photo_layout(job, d, {k: v for k, v in sh.items() if photo_path(job, k)}, name)
     U, V = P.view_sizes(o["view"], L, W, H)
-    fid = R.feature_at(d, o["view"], load(path), P.placement(sh[name], o, U, V)["A"], x, y, face=P.FACE.get(name))
+    fid = R.feature_at(d, o["view"], load(path), photo_A(sh[name], o, U, V), x, y, face=face)
     if fid is None:
         return {"id": None}
     f = next(f for f in d["features"] if f["id"] == fid)
-    where = f" в {D.FACE_NAME[f['face']]}" if f.get("face") else ""
+    where = f" в {D.face_name(d, f['face'])}" if f.get("face") else ""
     return {"id": fid, "text": D.label(d, f) + where}
 
 
