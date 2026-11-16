@@ -28,6 +28,7 @@ import pymeshlab
 import trimesh
 from PIL import Image, ImageDraw
 from scipy import ndimage, sparse
+from scipy.sparse import linalg as splinalg
 from scipy.spatial import cKDTree
 from skimage import measure
 
@@ -46,6 +47,37 @@ MAX_VOXELS = 60_000_000  # около 1,5 GB при пика; по-големи�
 TRUNC = 6  # клетки: разстоянието със знак се пресича на това разстояние от повърхността (шумът на дълбочината е няколко клетки)
 MIN_CONF = 0.5  # увереността на OpenMVS, под която измерена дълбочина не се брои (медианата при дрелка: 0,8)
 FIELD = 0.01  # от дългата страна на изрязването: колко гладка е корекцията на AI дълбочината (при дрелка: 10 пиксела)
+# Корекцията далеч от измерени пиксели (гладка кожа на фигурка: измерени са само ръбовете на очите, веждите и върхът
+# на носа) идва от все по-широко осредняване (вижте spread), вместо да пада до нула: с нула лицето беше на две нива,
+# с кратер около всяко око и носа. FIELD_KNOWN: дял на измерените пиксели в осредняването, под който се гледа по-широко.
+FIELD_KNOWN = 0.1
+# AI дълбочината греши различно за различните бои и материали: при фигурка тя слага гладката кожа на лицето с 1-2 мм
+# по-навътре спрямо косата, а черните очи вдлъбва. Измерени по лицето са само ръбовете на очите, веждите, носът и
+# брадичката; с една обща корекция кожата до тях се вдигаше, а по-далеч оставаше при тази на косата: лице на бучки, с
+# кратер около всяко око. Затова корекцията се смята поотделно за всеки тон на кадъра (FIELD_TONES нива на сивото, в
+# клетки от FIELD_CELL пиксела): пиксел я взема от измерените пиксели със своя тон до FIELD_REACH удвоявания на
+# осредняването далеч (поне FIELD_SAME от ядрото), и чак тогава от общата.
+FIELD_TONES = 8
+FIELD_CELL = 4
+FIELD_SAME = 0.02
+FIELD_REACH = 4
+# Неизмерен остров, ограден от измерени пиксели (черно гланцово око: измерен е само ръбът му): формата на AI в него
+# не е потвърдена от нищо, а AI вдлъбва тъмната боя. Плитък релеф там (до FIELD_SHALLOW от ширината на острова) не е
+# за вярване: островът става гладка повърхност, опъната между измерения си ръб (вижте membrane). По-дълбокото остава
+# (истинска дупка). Само острови до FIELD_ISLAND от дългата страна на изрязването навътре от ръба си и оградени
+# поне на FIELD_FENCED. FIELD_SHALLOW 0: изключено.
+FIELD_SHALLOW = 0.15
+FIELD_ISLAND = 0.04
+FIELD_FENCED = 0.8
+# Измерената дълбочина гласува сама (а не чрез AI дълбочината, напасната към нея) на две места. Първо: където е на над
+# RAW_OFF (от разстоянието на пресичане) от напаснатата - там AI е размазала ръб или е сляла тънка част с това зад нея
+# (меч на фигурка до крака: през процепа се вижда основата, а AI го затваряше с ципа). Второ: в ивицата покрай
+# очертанието, която маските пазят извън "вътрешността" (2% от предмета; AI там се размазва към фона) - иначе
+# всичко по-тънко от двойно това (меч, ръка, уши, връх на лист) идваше само от обвивката. И на двете места само ако
+# съседните кадри виждат повърхността на същото място (вижте agreeing): по гланц (златна основа) суровите карти
+# грешат различно във всеки кадър и оставяха пъпки. RAW_WEIGHT: гласът ѝ там. RAW_OFF 0: изключено.
+RAW_OFF = 0.5
+RAW_WEIGHT = 0.5
 AI_WEIGHT = 0.5  # глас, където само AI е видял повърхността (измерени пиксели: 1)
 FREE_WEIGHT = 0.3  # глас за празно пространство пред повърхността: издълбава, но един грешен кадър не може да пробие дупка
 AI_FREE = 0.3  # и от него, където само AI е видял повърхността (без това дръжката на дрелка се разкъсваше)
@@ -190,12 +222,142 @@ def at_image_size(dm: DepthMap) -> DepthMap:
     return DepthMap(dm.image, dm.image_size, K, dm.R, dm.C, dm.depth[np.ix_(rows, cols)], conf)
 
 
-def completed(dm: DepthMap, disp: np.ndarray, box, inner: np.ndarray, allowed: np.ndarray, core: np.ndarray):
+def spread(values: np.ndarray, known: np.ndarray, sigma: float, reach: int = 99,
+           beyond: np.ndarray | None = None, enough: float = FIELD_KNOWN) -> np.ndarray:  # fmt: skip
+    """Стойностите на известните пиксели (`known`: тегло 0..1), осреднени с Гаусово ядро и продължени гладко върху
+    останалите: където известните са под `enough` от ядрото, стойността идва от същото осредняване върху двойно
+    по-едра мрежа (и така нататък, най-много `reach` пъти), така че далеч от известните остава най-близкото им
+    средно, а не нула. Отвъд `reach`: стойностите `beyond` (ако са дадени)."""
+    values, known = values.astype(np.float32), known.astype(np.float32)
+    num = ndimage.gaussian_filter(values * known, sigma)
+    den = ndimage.gaussian_filter(known, sigma)
+    near = num / np.maximum(den, 1e-6)
+    h, w = values.shape
+    if den.min() >= enough:
+        return near
+    t = np.clip(den / enough, 0, 1)
+    if reach <= 0 or min(h, w) < 4 or not known.any():
+        return t * near + (1 - t) * beyond if beyond is not None else near
+    v2, k2 = in_cells(values * known, 2), in_cells(known, 2)
+    far = spread(v2 / np.maximum(k2, 1e-6), k2, sigma, reach - 1, None if beyond is None else in_cells(beyond, 2),
+                 enough)  # fmt: skip
+    return t * near + (1 - t) * from_cells(far, 2, (h, w))
+
+
+def in_cells(a: np.ndarray, c: int) -> np.ndarray:
+    """Средното на всяка клетка от c x c пиксела (непълните в края се допълват с крайните стойности)."""
+    h, w = a.shape
+    full = np.pad(a.astype(np.float32, copy=False), ((0, -h % c), (0, -w % c)), mode="edge")
+    return full.reshape(full.shape[0] // c, c, full.shape[1] // c, c).mean((1, 3))
+
+
+def from_cells(a: np.ndarray, c: int, shape) -> np.ndarray:
+    return ndimage.zoom(a, c, order=1, mode="nearest", grid_mode=True)[: shape[0], : shape[1]]
+
+
+def membrane(values: np.ndarray, free: np.ndarray) -> np.ndarray:
+    """Стойностите върху клетките `free`, заменени с гладка повърхност, опъната между останалите като сапунен филм
+    (уравнението на Лаплас): равнина остава равнина, така че остров в наклонена стена се запълва по наклона ѝ."""
+    out = values.astype(np.float64)
+    if not free.any():
+        return out
+    h, w = values.shape
+    number = np.full((h, w), -1, np.int64)
+    number[free] = np.arange(free.sum())
+    n = int(free.sum())
+    rows, cols, degree, rhs = [], [], np.zeros(n), np.zeros(n)
+    for dy, dx in ((0, 1), (0, -1), (1, 0), (-1, 0)):
+        here = number[max(0, -dy) : h - max(0, dy), max(0, -dx) : w - max(0, dx)]
+        there = number[max(0, dy) : h - max(0, -dy), max(0, dx) : w - max(0, -dx)]
+        value = out[max(0, dy) : h - max(0, -dy), max(0, dx) : w - max(0, -dx)]
+        on = here >= 0
+        np.add.at(degree, here[on], 1)
+        both = on & (there >= 0)
+        rows.append(here[both])
+        cols.append(there[both])
+        np.add.at(rhs, here[on & (there < 0)], value[on & (there < 0)])
+    rows, cols = np.concatenate(rows + [np.arange(n)]), np.concatenate(cols + [np.arange(n)])
+    vals = np.concatenate([np.full(len(rows) - n, -1.0), degree])
+    out[free] = splinalg.spsolve(sparse.csc_matrix((vals, (rows, cols)), shape=(n, n)), rhs)
+    return out
+
+
+def toned_field(r: np.ndarray, good: np.ndarray, tone: np.ndarray, sigma: float) -> np.ndarray:
+    """Корекцията на AI дълбочината (вижте FIELD_TONES): остатъкът r на измерените пиксели `good`, осреднен и
+    продължен върху останалите поотделно за всеки тон (tone: сивото на кадъра, 0..1)."""
+    c = FIELD_CELL
+    s = sigma / c
+    k = in_cells(good, c)
+    blind = spread(in_cells(r * good, c) / np.maximum(k, 1e-6), k, s)
+    at = tone * (FIELD_TONES - 1)
+    out = np.zeros(r.shape, np.float32)
+    for b in range(FIELD_TONES):
+        share = np.clip(1 - np.abs(at - b), 0, 1).astype(np.float32)
+        if not share.any():
+            continue
+        kb = in_cells(good * share, c)
+        own = blind
+        if kb.any():
+            own = spread(in_cells(r * good * share, c) / np.maximum(kb, 1e-6), kb, s, FIELD_REACH, blind, FIELD_SAME)
+        out += share * from_cells(own, c, r.shape)
+    return out
+
+
+def islands(full: np.ndarray, inv: np.ndarray, good: np.ndarray, inner: np.ndarray, focal: float) -> np.ndarray:
+    """Обратната дълбочина `full` с плиткия релеф на AI в неизмерените острови (вижте FIELD_SHALLOW), заменен с
+    гладка повърхност през измерения им ръб. inv: измерената обратна дълбочина върху пикселите `good`."""
+    c = FIELD_CELL
+    k = in_cells(good, c)
+    known = k >= 0.5
+    lab, n = ndimage.label(in_cells(inner, c) > 0.5)
+    if n == 0 or not known.any():
+        return full
+    body = lab == 1 + int(np.argmax(ndimage.sum(np.ones(lab.shape), lab, range(1, n + 1))))
+    lab, n = ndimage.label(body & ~known)
+    if n == 0:
+        return full
+    deep = ndimage.distance_transform_edt(lab > 0)
+    limit = FIELD_ISLAND * max(full.shape) / c
+    outside = ~ndimage.binary_erosion(body, iterations=2)
+    found = []
+    for j, where in enumerate(ndimage.find_objects(lab), 1):
+        where = tuple(slice(max(0, a.start - 2), a.stop + 2) for a in where)
+        island = lab[where] == j
+        if island.sum() < 4 or deep[where][island].max() > limit or (island & outside[where]).any():
+            continue
+        rim = ndimage.binary_dilation(island) & ~island
+        if (rim & known[where]).sum() >= FIELD_FENCED * rim.sum():
+            found.append((where, island))
+    if not found:
+        return full
+    free = np.zeros(lab.shape, bool)
+    for where, island in found:
+        free[where] |= island
+    # Ръбът: измерената дълбочина, леко осреднена (а където не е измерен - каквото е сега).
+    cur = in_cells(full, c)
+    edge = ndimage.gaussian_filter(in_cells(inv * good, c), 1.0) / np.maximum(ndimage.gaussian_filter(k, 1.0), 1e-6)
+    flat = membrane(np.where(known, edge, cur), free)
+    change = np.zeros(lab.shape, np.float32)
+    for where, island in found:
+        # релефът на AI спрямо гладката повърхност, като дял от ширината на острова
+        width = 2 * deep[where][island].max() * c / focal / np.median(cur[where][island])
+        relief = np.percentile(np.abs(1 / cur[where][island] - 1 / flat[where][island]), 90)
+        if relief <= FIELD_SHALLOW * width:
+            change[where][island] = (flat - cur)[where][island]
+    if not change.any():
+        return full
+    return full + from_cells(change, c, full.shape)
+
+
+def completed(dm: DepthMap, disp: np.ndarray, box, inner: np.ndarray, allowed: np.ndarray, core: np.ndarray,
+              tone: np.ndarray | None = None, tight: np.ndarray | None = None, off: float = 0.0):  # fmt: skip
     """Дълбочината на кадъра върху изрязването му: AI дълбочината, напасната към измерената, върху пикселите на
     предмета: вътрешността на маската и на обвивката (`core`: където маската е пропуснала тъмна част, черен спусък
-    на дрелка), но само където обвивката се вижда (`allowed`). Връща (depth, weight, free), 0 където няма нищо, или
-    None, ако двете не пасват. free: измерената дълбочина на другите пиксели, която показва само празно
-    пространство (пред пропуснат пиксел от предмета пак е празно)."""
+    на дрелка), но само където обвивката се вижда (`allowed`). Връща (depth, weight, free, own), 0 където няма нищо, или
+    None, ако двете не пасват. tone: сивото на изрязването (0-255), ако е запазено (вижте FIELD_TONES). tight, off:
+    очертанието на обвивката в кадъра и разстоянието (световни единици), над което измерената дълбочина гласува сама
+    (вижте RAW_OFF). free: измерената дълбочина на другите пиксели, която показва само празно пространство (пред
+    пропуснат пиксел от предмета пак е празно). own: измерената дълбочина там, където би гласувала сама (или None)."""
     x0, y0, x1, y1 = box
     dep = dm.depth[y0:y1, x0:x1]
     if dep.shape != disp.shape:
@@ -218,16 +380,22 @@ def completed(dm: DepthMap, disp: np.ndarray, box, inner: np.ndarray, allowed: n
     mad = 1.4826 * np.median(np.abs(r[on] - med))
     good = on & (np.abs(r - med) <= 4 * mad) if mad > 0 else on
     sigma = max(3.0, FIELD * max(disp.shape))
-    num = ndimage.gaussian_filter(np.where(good, r, 0).astype(np.float32), sigma)
-    den = ndimage.gaussian_filter(good.astype(np.float32), sigma)
-    full = base + np.where(den > 1e-3, num / np.maximum(den, 1e-3), 0)
+    if tone is None:
+        full = base + spread(r, good, sigma)
+    else:
+        full = base + toned_field(r, good, tone.astype(np.float32) / 255, sigma)
+        if FIELD_SHALLOW > 0:
+            full = islands(full, inv, good, inner, float(dm.K[0, 0]))
     ok = inner & (full > 0)
     depth = np.where(ok, 1 / np.maximum(full, 1e-12), 0).astype(np.float32)
     weight = np.where(on, 1.0, AI_WEIGHT).astype(np.float32) * ok
+    own = None
+    if off > 0 and tight is not None:
+        own = np.where(measured & np.where(ok, np.abs(dep - depth) > off, tight), dep, 0).astype(np.float32)
     if FACING_MIN > 0:
         weight *= np.clip(facing(depth, dm.K, box), FACING_MIN, 1.0)
     free = np.where(measured & ~ok, dep, 0).astype(np.float32)
-    return depth, weight, free
+    return depth, weight, free, own
 
 
 def facing(depth: np.ndarray, K: np.ndarray, box) -> np.ndarray:
@@ -246,19 +414,19 @@ def facing(depth: np.ndarray, K: np.ndarray, box) -> np.ndarray:
     return np.where(holes | ~np.isfinite(cos), 1.0, cos).astype(np.float32)
 
 
-def hull_view(points: np.ndarray, spacing: float, dm: DepthMap, box) -> tuple[np.ndarray, np.ndarray]:
+def hull_view(points: np.ndarray, spacing: float, dm: DepthMap, box) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Къде се вижда обвивката в изрязването (точките от вътрешността ѝ, световни, всяка нарисувана широка колкото
-    разстоянието между тях) и ядрото ѝ далеч от очертанието (толкова навътре, колкото app/depth.py пази вътрешността
-    на маските: дълбочината се размазва при очертанието). Обвивката е това, за което маските на повечето кадри са
-    съгласни, така че парче фон, включено от маската на един кадър (стол зад дръжката на дрелка, ивица маса, плакат),
-    е извън нея, а част, пропусната от една маска, е вътре."""
+    разстоянието между тях), ядрото ѝ далеч от очертанието (толкова навътре, колкото app/depth.py пази вътрешността
+    на маските: дълбочината се размазва при очертанието) и самото ѝ очертание (без това разширяване). Обвивката е
+    това, за което маските на повечето кадри са съгласни, така че парче фон, включено от маската на един кадър (стол
+    зад дръжката на дрелка, ивица маса, плакат), е извън нея, а част, пропусната от една маска, е вътре."""
     x0, y0, x1, y1 = box
     out = np.zeros((y1 - y0, x1 - x0), bool)
     x = PAR.turned(points - dm.C, dm.R)
     z = x[:, 2]
     ok = z > 1e-9
     if not ok.any():
-        return out, out
+        return out, out, out
     u = np.round(dm.K[0, 0] * x[ok, 0] / z[ok] + dm.K[0, 2]).astype(np.int64) - x0
     v = np.round(dm.K[1, 1] * x[ok, 1] / z[ok] + dm.K[1, 2]).astype(np.int64) - y0
     inb = (u >= 0) & (v >= 0) & (u < x1 - x0) & (v < y1 - y0)
@@ -267,7 +435,7 @@ def hull_view(points: np.ndarray, spacing: float, dm: DepthMap, box) -> tuple[np
     shown = ndimage.maximum_filter(out, size=2 * r + 1)
     # Изрязването е кутията на предмета, разширена с 20% от всяка страна (app/depth.py predict).
     edge = max(2, int(0.02 * max(out.shape) / 1.4))
-    return shown, ndimage.binary_erosion(shown, iterations=r + edge)
+    return shown, ndimage.binary_erosion(shown, iterations=r + edge), ndimage.binary_erosion(shown, iterations=r)
 
 
 def untrusted(share: float) -> float:
@@ -655,14 +823,15 @@ def fuse(dense: Path, inputs: Path, crops_file: Path, out: Path) -> None:
         (n,) = struct.unpack_from("<H", head, o)
         maps[Path(head[o + 2 : o + 2 + n].decode("utf-8", "replace")).name] = p
     with np.load(crops_file) as crops:
-        todo = [(name, crops[f"disp_{i}"], tuple(int(v) for v in crops[f"box_{i}"]), crops[f"inner_{i}"])
+        todo = [(name, crops[f"disp_{i}"], tuple(int(v) for v in crops[f"box_{i}"]), crops[f"inner_{i}"],
+                 crops[f"tone_{i}"] if f"tone_{i}" in crops else None)
                 for i, name in enumerate(names) if f"disp_{i}" in crops and name in maps]  # fmt: skip
 
     def prepare(item):
-        name, disp, box, inner = item
+        name, disp, box, inner, tone = item
         dm = at_image_size(read_dmap(maps[name]))
-        allowed, core = hull_view(hull_points, spacing, dm, box)
-        got = completed(dm, disp, box, inner, allowed, core)
+        allowed, core, tight = hull_view(hull_points, spacing, dm, box)
+        got = completed(dm, disp, box, inner, allowed, core, tone, tight, RAW_OFF * trunc)
         if got is None:
             note(f"{name}: AI depth does not fit the depth map, left out")
             return None
@@ -674,6 +843,18 @@ def fuse(dense: Path, inputs: Path, crops_file: Path, out: Path) -> None:
     note(f"{used} of {len(names)} frames have depth to fuse")
     if used < 3:
         raise SystemExit(f"only {used} frames' depth could be used")
+    if frames[0][5] is not None:
+        # Измерената дълбочина гласува сама (RAW_OFF) само където съседните кадри я потвърждават.
+        seen = agreeing([(f[0], f[1], np.where(f[5] > 0, f[5], f[2])) for f in frames], AGREE_NEAR * trunc)
+        takes = [a & (f[5] > 0) for a, f in zip(seen, frames)]
+        took = sum(int(t.sum()) for t in takes) / max(1, sum(int((f[5] > 0).sum()) for f in frames))
+        frames = [(f[0], f[1], np.where(t, f[5], f[2]), np.where(t, np.float32(RAW_WEIGHT), f[3]),
+                   np.where(t, np.float32(0), f[4])) for t, f in zip(takes, frames)]  # fmt: skip
+        note(f"measured depth votes on its own where the AI depth is off or near the outline: {took:.0%} of it "
+             "confirmed by the neighbouring frames")  # fmt: skip
+        del seen, takes
+    else:
+        frames = [f[:5] for f in frames]
     # Към всеки кадър: къде на дълбочината му може да се вярва (съгласна със съседите, или измерен фон извън предмета).
     # shiny: доколко на дълбочината на целия предмет не може да се вярва (0: може; 1: не), по дела от повърхността,
     # за която кадрите са съгласни. Само тогава несъгласната дълбочина губи глас и обвивката се налага.

@@ -11,7 +11,8 @@ names (n,), masks_<i> (uint8, всякакъв размер), refs (m,3) све�
 ref_weights (m,), probes (k,3) световни точки вътре в обвивката, margin (световни единици), agree (нивото на
 обвивката). out.npz: limit (k,) най-големият дял на обвивката за всяка проба (вижте mesh.visual_hull), fits:
 напаснати кадри, used: дали това стига за издълбаване (иначе limit е изцяло 1). crops.npz (незадължително):
-изрязването с дълбочина на всеки кадър за app/fuse.py: disp_<i>, box_<i> (x0, y0, x1, y1), inner_<i>."""
+изрязването с дълбочина на всеки кадър за app/fuse.py: disp_<i>, box_<i> (x0, y0, x1, y1), inner_<i>, tone_<i>
+(сивото на изрязването)."""
 
 import os
 import sys
@@ -121,6 +122,7 @@ class Frame:
     R: np.ndarray
     t: np.ndarray
     K: np.ndarray
+    tone: np.ndarray | None = None  # (h, w) сивото на изрязването, 0-255 (за app/fuse.py: вижте FIELD_TONES там)
 
 
 def predict(sess, image: Image.Image, mask: np.ndarray, R, t, K) -> Frame | None:
@@ -141,7 +143,8 @@ def predict(sess, image: Image.Image, mask: np.ndarray, R, t, K) -> Frame | None
     # Ръбовете на дълбочината се размазват към фона: използват се само пиксели доста навътре от очертанието.
     erode = max(2, int(0.02 * max(x1 - x0, y1 - y0)))
     inner = ndimage.binary_erosion(m[by0:by1, bx0:bx1], iterations=erode)
-    return Frame(box, disparity(sess, image.crop(box)), inner, R, t, K)
+    crop = image.crop(box)
+    return Frame(box, disparity(sess, crop), inner, R, t, K, np.asarray(crop.convert("L")))
 
 
 def fit(f: Frame, refs: np.ndarray, ref_w: np.ndarray):
@@ -227,6 +230,8 @@ def save_crops(path: Path, seen: dict) -> None:
     arrays = {}
     for i, f in seen.items():
         arrays |= {f"disp_{i}": f.disp.astype(np.float32), f"box_{i}": np.array(f.box), f"inner_{i}": f.inner}
+        if f.tone is not None:
+            arrays[f"tone_{i}"] = f.tone
     np.savez(path, **arrays)
 
 
