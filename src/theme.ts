@@ -2,10 +2,11 @@ import { File, Paths } from 'expo-file-system';
 import { useSyncExternalStore } from 'react';
 import { type ImageStyle, StyleSheet, type TextStyle, type ViewStyle } from 'react-native';
 
-// Визията на Orbitize, по примера на сайта: спокойна и плоска, с градиента на марката върху единственото главно
-// действие на екрана. Повърхности с линии от 1px вместо сенки, Onest за текст, JetBrains Mono за числа, размери, дати
-// и малки главни етикети (шрифтовете се зареждат в app/_layout.tsx). Тъмна по подразбиране
-// default; the choice (profile → Тема) is kept in theme.txt.
+// Визията на Orbitize: технически инструмент за сканиране. Тъмна по подразбиране (изборът, профил → Тема, се пази в
+// theme.txt). Циан за действия, избор, връзки и напредъка на сканирането; кехлибарен "сигнал" само за мерки, живата
+// точка на сканирането и предупрежденията при заснемане. Линии от 1px вместо сенки, остри ъгли (до 8, освен
+// хапчетата), IBM Plex Sans за текст и IBM Plex Mono за всяко число, етикет, размер, номер, време и процент
+// (шрифтовете се зареждат в app/_layout.tsx). Без градиенти освен фона на 3D изгледа и сцената.
 
 export type Scheme = 'dark' | 'light';
 
@@ -36,97 +37,101 @@ export type Palette = {
   viewer: readonly [string, string]; // радиалният фон на 3D изгледа, от центъра към ръба
   stage: readonly [string, string, string]; // радиалният фон на сцената с изображението, от центъра към ръба
   backdrop: string; // зад диалоговите прозорци
+  signal: string; // measurements, live scan point, capture warnings. Never an action.
+  tint: readonly [string, string, string]; // soft fills behind model thumbnails, rotate by index
 };
 
 const dark: Palette = {
   scheme: 'dark',
-  bg: '#09090b',
-  surface: '#131317',
-  surface2: '#1a1a1f',
-  surface3: '#25252b',
-  line: 'rgba(255,255,255,0.09)',
-  lineStrong: 'rgba(255,255,255,0.16)',
-  text: '#f2f2f4',
-  text2: '#bcbcc4',
-  muted: '#8c8c96',
-  accent: '#9d9bff',
-  accentStrong: '#6d6af7',
-  accentSoft: 'rgba(109,106,247,0.14)',
-  success: '#4ade80',
-  successSoft: 'rgba(74,222,128,0.12)',
-  warning: '#fbbf24',
-  warningSoft: 'rgba(251,191,36,0.12)',
-  danger: '#f87171',
-  dangerSoft: 'rgba(248,113,113,0.12)',
-  primary: '#f2f2f4',
-  onPrimary: '#09090b',
-  accentLine: 'rgba(157,155,255,0.38)',
-  glass: 'rgba(9,9,11,0.78)',
-  viewer: ['#1d1d23', '#0c0c0f'],
-  stage: ['#19191f', '#0d0d10', '#09090b'],
-  backdrop: 'rgba(0,0,0,0.6)',
+  bg: '#080b10',
+  surface: '#0f141b',
+  surface2: '#161d26',
+  surface3: '#1e2733',
+  line: '#1f2a36',
+  lineStrong: '#56687a',
+  text: '#e6edf5',
+  text2: '#a9b8c7',
+  muted: '#8795a5',
+  accent: '#35d4ff',
+  accentStrong: '#00b8e6',
+  accentSoft: '#0c2b3a',
+  success: '#3ddc84',
+  successSoft: 'rgba(61,220,132,0.12)',
+  warning: '#ffc24d',
+  warningSoft: 'rgba(255,194,77,0.12)',
+  danger: '#ff6b6b',
+  dangerSoft: 'rgba(255,107,107,0.12)',
+  primary: '#35d4ff',
+  onPrimary: '#00131c',
+  accentLine: 'rgba(53,212,255,0.4)',
+  glass: 'rgba(8,11,16,0.82)',
+  viewer: ['#161d26', '#080b10'],
+  stage: ['#161d26', '#0b0f14', '#080b10'],
+  backdrop: 'rgba(0,0,0,0.65)',
+  signal: '#ffb829',
+  tint: ['#131d28', '#12202a', '#171c2b'],
 };
 
 const light: Palette = {
   scheme: 'light',
-  bg: '#fafafa',
+  bg: '#edf0f4',
   surface: '#ffffff',
-  surface2: '#f4f4f5',
-  surface3: '#ececee',
-  line: '#e7e7ea',
-  lineStrong: '#d6d6db',
-  text: '#0a0a0c',
-  text2: '#3f3f46',
-  muted: '#71717a',
-  accent: '#4f46e5',
-  accentStrong: '#4338ca',
-  accentSoft: '#eef0ff',
-  success: '#15803d',
-  successSoft: 'rgba(21,128,61,0.09)',
-  warning: '#b45309',
-  warningSoft: 'rgba(180,83,9,0.09)',
-  danger: '#dc2626',
-  dangerSoft: 'rgba(220,38,38,0.08)',
-  primary: '#0a0a0c',
+  surface2: '#e1e6ed',
+  surface3: '#d3dae3',
+  line: '#cbd3dc',
+  lineStrong: '#7a8896',
+  text: '#0b1116',
+  text2: '#33404d',
+  muted: '#566370',
+  accent: '#0866ad',
+  accentStrong: '#065490',
+  accentSoft: '#d9eaf7',
+  success: '#116b34',
+  successSoft: 'rgba(17,107,52,0.1)',
+  warning: '#8a5a00',
+  warningSoft: 'rgba(138,90,0,0.1)',
+  danger: '#b3261e',
+  dangerSoft: 'rgba(179,38,30,0.09)',
+  primary: '#0866ad',
   onPrimary: '#ffffff',
-  accentLine: '#c7cbfb',
-  glass: 'rgba(250,250,250,0.82)',
-  viewer: ['#ffffff', '#efeff2'],
-  stage: ['#ffffff', '#f1f1f4', '#ebebef'],
-  backdrop: 'rgba(10,10,12,0.35)',
+  accentLine: '#9cc3e3',
+  glass: 'rgba(237,240,244,0.85)',
+  viewer: ['#ffffff', '#e1e6ed'],
+  stage: ['#ffffff', '#e4e9ee', '#d3dae3'],
+  backdrop: 'rgba(11,17,22,0.4)',
+  signal: '#8f5200',
+  tint: ['#dde6f0', '#d8e3ea', '#e4e4ee'],
 };
 
 export const palettes: Record<Scheme, Palette> = { dark, light };
 
-/* Логото и аватарът. */
-export const brand = ['#3b6cf6', '#8b5cf6'] as const;
-/* Под бял текст и икони: единственото главно действие на екрана. */
-export const brandDeep = ['#2f5ee8', '#7c3aed'] as const;
+export const brand = ['#35d4ff', '#0866ad'] as const;
+export const brandDeep = ['#0866ad', '#065490'] as const; // legacy only, remove when unused
 
 export const font = {
-  regular: 'Onest_400Regular',
-  medium: 'Onest_500Medium',
-  semibold: 'Onest_600SemiBold',
-  mono: 'JetBrainsMono_400Regular',
-  monoMedium: 'JetBrainsMono_500Medium',
+  regular: 'IBMPlexSans_400Regular',
+  medium: 'IBMPlexSans_500Medium',
+  semibold: 'IBMPlexSans_600SemiBold',
+  mono: 'IBMPlexMono_400Regular',
+  monoMedium: 'IBMPlexMono_500Medium',
 };
 
 export const space = { xs: 4, sm: 8, md: 12, lg: 16, xl: 24, xxl: 32 };
-export const radius = { sm: 12, md: 18, pill: 999 };
+// sm: buttons, inputs, chips, thumbnails. md: cards, panels. pill: status pills, record button.
+export const radius = { sm: 4, md: 8, pill: 999 };
 
-// Само размери: цветът идва от палитрата (components/ui.tsx). Собствените шрифтове носят дебелината си в семейството:
-// без fontWeight (Android би минал към системния шрифт). Скалата на сайта: големи сбити заглавия, спокоен основен
-// текст, моноширинни подробности.
+// Само размери: цветът идва от палитрата (components/ui.tsx). Шрифтовете носят дебелината си в семейството: без
+// fontWeight (Android би минал към системния шрифт).
 export const text = {
-  display: { fontFamily: font.semibold, fontSize: 40, lineHeight: 44, letterSpacing: -1.8 },
-  title: { fontFamily: font.semibold, fontSize: 32, lineHeight: 36, letterSpacing: -1.2 },
-  h2: { fontFamily: font.semibold, fontSize: 22, lineHeight: 27, letterSpacing: -0.6 },
-  h3: { fontFamily: font.semibold, fontSize: 16, lineHeight: 21, letterSpacing: -0.25 },
-  lead: { fontFamily: font.regular, fontSize: 16.5, lineHeight: 25 },
-  small: { fontFamily: font.regular, fontSize: 13.5, lineHeight: 19 },
-  label: { fontFamily: font.mono, fontSize: 11, lineHeight: 14, letterSpacing: 1, textTransform: 'uppercase' },
+  display: { fontFamily: font.semibold, fontSize: 40, lineHeight: 44, letterSpacing: -0.8 },
+  title: { fontFamily: font.semibold, fontSize: 28, lineHeight: 34, letterSpacing: -0.28 },
+  h2: { fontFamily: font.semibold, fontSize: 18, lineHeight: 24, letterSpacing: 0 },
+  h3: { fontFamily: font.semibold, fontSize: 15, lineHeight: 22, letterSpacing: 0 },
+  lead: { fontFamily: font.regular, fontSize: 15, lineHeight: 22 },
+  small: { fontFamily: font.regular, fontSize: 13, lineHeight: 18 },
+  label: { fontFamily: font.monoMedium, fontSize: 11, lineHeight: 14, letterSpacing: 0.66, textTransform: 'uppercase' },
   mono: { fontFamily: font.mono, fontSize: 13, lineHeight: 18 },
-  number: { fontFamily: font.semibold, fontSize: 24, lineHeight: 30, letterSpacing: -0.8 },
+  number: { fontFamily: font.monoMedium, fontSize: 22, lineHeight: 28, letterSpacing: 0 },
 } satisfies Record<string, TextStyle>;
 
 // --- Избраната тема ------------------------------------------------------------------------------------------------
