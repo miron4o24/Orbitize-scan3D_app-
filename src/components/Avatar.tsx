@@ -1,19 +1,21 @@
+import Ionicons from '@expo/vector-icons/Ionicons';
 import { Image } from 'expo-image';
-import { LinearGradient } from 'expo-linear-gradient';
 import { useState } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { Text, View } from 'react-native';
 
 import { authHeaders, avatarUrl } from '@/lib/api';
 import { getAvatarVersion, type Profile } from '@/lib/session';
-import { brand, font } from '@/theme';
+import { font, makeStyles, radius, useColors } from '@/theme';
 
 type Person = Pick<Profile, 'name' | 'has_avatar' | 'google_picture'>;
 
 /**
- * Собствената качена снимка, иначе снимката от Google, иначе инициалите върху градиента на марката. photo: къде е
- * качената снимка на някой друг (автор в общността); по подразбиране тази на влезлия потребител.
+ * Собствената качена снимка, иначе снимката от Google, иначе инициалите (или знак за човек) в квадрат с рамка. photo:
+ * къде е качената снимка на някой друг (автор в общността); по подразбиране тази на влезлия потребител.
  */
 export function Avatar({ user, size, photo }: { user: Person | null; size: number; photo?: string }) {
+  const c = useColors();
+  const s = useStyles();
   const version = getAvatarVersion();
   const [failed, setFailed] = useState<string | null>(null);
   const source = user?.has_avatar
@@ -21,29 +23,35 @@ export function Avatar({ user, size, photo }: { user: Person | null; size: numbe
     : user?.google_picture
       ? { uri: user.google_picture }
       : null;
-  const initials = (user?.name ?? '?')
+  const initials = (user?.name ?? '')
     .split(/\s+/)
     .map((w) => w[0])
     .filter(Boolean)
     .slice(0, 2)
     .join('')
     .toUpperCase();
-  const round = { width: size, height: size, borderRadius: size / 2 };
+  const box = { width: size, height: size, borderRadius: size >= 48 ? radius.md : radius.sm };
   return (
-    <View style={[styles.circle, round]}>
+    <View style={[s.box, box]}>
       {source && failed !== source.uri ? (
-        <Image source={source} style={round} contentFit="cover" transition={150} onError={() => setFailed(source.uri)} />
+        <Image source={source} style={{ width: size, height: size }} contentFit="cover" transition={150} onError={() => setFailed(source.uri)} />
+      ) : initials ? (
+        <Text style={[s.initials, { fontSize: size * 0.36 }]}>{initials}</Text>
       ) : (
-        <>
-          <LinearGradient colors={brand} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={StyleSheet.absoluteFill} />
-          <Text style={[styles.initials, { fontSize: size * 0.36 }]}>{initials}</Text>
-        </>
+        <Ionicons name="person-outline" size={size * 0.5} color={c.text2} />
       )}
     </View>
   );
 }
 
-const styles = StyleSheet.create({
-  circle: { alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
-  initials: { color: '#ffffff', fontFamily: font.semibold },
-});
+const useStyles = makeStyles((c) => ({
+  box: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+    backgroundColor: c.surface2,
+    borderWidth: 1,
+    borderColor: c.lineStrong,
+  },
+  initials: { color: c.text2, fontFamily: font.monoMedium },
+}));
