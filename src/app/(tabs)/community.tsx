@@ -1,16 +1,17 @@
 import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useRef, useState } from 'react';
-import { ActivityIndicator, RefreshControl, View } from 'react-native';
+import { ActivityIndicator, RefreshControl, Text, View } from 'react-native';
 import Animated from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Appear } from '@/components/motion';
 import { PostCard, PostCardSkeleton } from '@/components/PostCard';
 import { Stage } from '@/components/Stage';
-import { Button, ErrorText, Lead, ScrollBar, Segmented, Small, Title, useScrollY } from '@/components/ui';
+import { Button, ErrorText, Label, Lead, ScrollBar, Segmented, Small, Title, useScrollY } from '@/components/ui';
 import { communityFeed, errorText, type Post, type PostSort } from '@/lib/api';
+import { useProgress } from '@/lib/progress';
 import { clearSession, useSession } from '@/lib/session';
-import { makeStyles, space, useColors } from '@/theme';
+import { font, makeStyles, radius, space, useColors } from '@/theme';
 
 export default function Community() {
   const session = useSession();
@@ -25,6 +26,9 @@ export default function Community() {
   const [more, setMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const asked = useRef(0); // показва се само отговорът на последната заявка
+  const progress = useProgress();
+  // Седмичното предизвикателство отгоре: първото незавършено (или последното, ако всички са завършени).
+  const challenge = progress?.challenges.items.find((x) => !x.done) ?? progress?.challenges.items.at(-1);
 
   const load = useCallback(
     async (pulled?: boolean) => {
@@ -87,6 +91,22 @@ export default function Community() {
       <Appear>
         <Title style={s.title}>Общност</Title>
       </Appear>
+      {account && challenge && (
+        <Appear index={2} style={s.challenge}>
+          <Label style={s.signal}>Седмични предизвикателства</Label>
+          <View style={s.challengeRow}>
+            <Text style={s.challengeTitle} numberOfLines={2}>
+              {challenge.title}
+            </Text>
+            <Text style={s.challengeCount}>
+              {Math.min(challenge.progress, challenge.target)}/{challenge.target}
+            </Text>
+          </View>
+          <View style={s.track}>
+            <View style={[s.trackFill, { width: `${Math.round((Math.min(challenge.progress, challenge.target) / Math.max(1, challenge.target)) * 100)}%` }]} />
+          </View>
+        </Appear>
+      )}
       {account && (
         <Appear index={3} style={s.sort}>
           <Segmented<PostSort>
@@ -171,7 +191,7 @@ export default function Community() {
         }
         renderItem={({ item, index }) => (
           <Appear index={Math.min(index, 8) + 2} style={[s.cell, (posts?.length ?? 0) % 2 === 1 && index === (posts?.length ?? 0) - 1 && s.lastOdd]}>
-            <PostCard post={item} onPress={() => open(item)} />
+            <PostCard post={item} index={index} onPress={() => open(item)} />
           </Appear>
         )}
       />
@@ -181,17 +201,24 @@ export default function Community() {
 
 const useStyles = makeStyles((c) => ({
   fill: { flex: 1, backgroundColor: c.bg },
-  list: { paddingHorizontal: 18, paddingBottom: 48, gap: 14, flexGrow: 1 },
-  columns: { flexDirection: 'row', gap: 14 },
+  list: { paddingHorizontal: 16, paddingBottom: 48, gap: space.md, flexGrow: 1 },
+  columns: { flexDirection: 'row', gap: space.md },
   cell: { flex: 1 },
   lastOdd: { maxWidth: '50%', paddingRight: 7 },
   header: { gap: space.md, paddingTop: space.xl, paddingBottom: space.lg },
-  title: { fontSize: 38, lineHeight: 42, letterSpacing: -1.7, marginTop: space.sm },
+  title: { marginTop: space.sm },
+  challenge: { borderWidth: 1, borderColor: c.lineStrong, borderRadius: radius.md, padding: space.md, gap: space.sm, backgroundColor: c.surface },
+  signal: { color: c.signal },
+  challengeRow: { flexDirection: 'row', alignItems: 'center', gap: space.md },
+  challengeTitle: { flex: 1, fontFamily: font.semibold, fontSize: 15, lineHeight: 20, color: c.text },
+  challengeCount: { fontFamily: font.monoMedium, fontSize: 13, color: c.signal },
+  track: { height: 3, backgroundColor: c.surface3, overflow: 'hidden' },
+  trackFill: { height: 3, backgroundColor: c.signal },
   sort: { marginTop: space.sm },
   guest: { gap: space.lg, marginTop: space.xl },
-  skeletons: { gap: 14 },
+  skeletons: { gap: space.md },
   more: { paddingVertical: space.lg },
   empty: { gap: space.xl, paddingTop: space.sm },
   emptyText: { gap: space.md },
-  emptyTitle: { fontSize: 28, lineHeight: 32 },
+  emptyTitle: { fontSize: 22, lineHeight: 28 },
 }));
