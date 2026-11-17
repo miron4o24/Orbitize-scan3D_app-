@@ -126,12 +126,12 @@ const useStyles = makeStyles((c) => ({
   tool: {
     width: 38,
     height: 38,
-    borderRadius: 19,
+    borderRadius: radius.sm,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: c.surface,
     borderWidth: 1,
-    borderColor: c.line,
+    borderColor: c.lineStrong,
     opacity: 0.94,
   },
 }));
