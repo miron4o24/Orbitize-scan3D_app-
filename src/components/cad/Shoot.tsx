@@ -30,11 +30,14 @@ export const SHOTS: { photo: CadPhoto; title: string; how: string; required?: bo
   { photo: 'bottom', title: 'Отдолу', how: 'Обърнете го с дъното нагоре.' },
 ];
 
+// Върху живото изображение от камерата: тъмната палитра и постоянните циан и сигнален цвят, за да се четат и при
+// двете теми.
 const dark = palettes.dark;
-const WHITE = '#ffffff';
-const DARK_TEXT = '#09090b';
-const GLASS = 'rgba(9,9,11,0.72)';
-const GOOD = '#22c55e';
+const WHITE = dark.text;
+const DARK_TEXT = dark.onPrimary;
+const GLASS = dark.glass;
+const GOOD = dark.success;
+const CAM_ACCENT = '#35d4ff';
 
 export function Shoot({
   index,
@@ -149,7 +152,12 @@ export function Shoot({
         </View>
 
         <View style={styles.middle} pointerEvents="none">
-          <View style={styles.frame} />
+          <View style={styles.frame}>
+            <View style={[styles.corner, styles.tl]} />
+            <View style={[styles.corner, styles.tr]} />
+            <View style={[styles.corner, styles.bl]} />
+            <View style={[styles.corner, styles.br]} />
+          </View>
           {level.available && (
             <View style={[styles.bubbleRing, straight && styles.bubbleRingOk]}>
               <View style={styles.cross} />
@@ -189,66 +197,75 @@ export function Shoot({
 }
 
 const styles = StyleSheet.create({
-  fill: { flex: 1, backgroundColor: '#000' },
+  fill: { flex: 1, backgroundColor: dark.bg },
   overlay: { justifyContent: 'space-between' },
   top: { padding: space.md, gap: space.sm },
   topRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   round: {
     width: 40,
     height: 40,
-    borderRadius: 20,
+    borderRadius: radius.sm,
     backgroundColor: GLASS,
     borderWidth: 1,
-    borderColor: dark.line,
+    borderColor: dark.lineStrong,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  roundOn: { backgroundColor: '#facc15', borderColor: '#facc15' },
+  roundOn: { backgroundColor: CAM_ACCENT, borderColor: CAM_ACCENT },
   pill: {
     height: 36,
     justifyContent: 'center',
     paddingHorizontal: 14,
-    borderRadius: 18,
+    borderRadius: radius.pill,
     backgroundColor: GLASS,
     borderWidth: 1,
-    borderColor: dark.line,
+    borderColor: dark.lineStrong,
   },
-  pillText: { color: WHITE, fontSize: 13.5, fontFamily: font.medium },
+  pillText: { color: WHITE, fontSize: 12.5, fontFamily: font.monoMedium },
   panel: { padding: space.lg, gap: 6, borderRadius: radius.md, backgroundColor: GLASS, borderWidth: 1, borderColor: dark.line },
   panelTitle: { color: WHITE, fontSize: 16, fontFamily: font.semibold },
   guideRow: { flexDirection: 'row', alignItems: 'center', gap: space.md, padding: space.md },
   guideText: { flex: 1, gap: 4 },
-  under: { color: WHITE, fontSize: 13, lineHeight: 18, fontFamily: font.medium, textAlign: 'center', textShadowColor: '#000', textShadowRadius: 4 },
+  under: {
+    color: WHITE,
+    fontSize: 13,
+    lineHeight: 18,
+    fontFamily: font.medium,
+    textAlign: 'center',
+    backgroundColor: GLASS,
+    borderRadius: radius.sm,
+    paddingHorizontal: space.sm,
+    paddingVertical: 4,
+    overflow: 'hidden',
+  },
   hint: { color: dark.text2, fontSize: 13.5, lineHeight: 19, fontFamily: font.regular },
   warn: { color: dark.warning, fontSize: 14.5, lineHeight: 20, fontFamily: font.medium, textAlign: 'center' },
   middle: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center' },
   // Рамката е по-малка от кадъра: телефонът е по-високо и перспективата (по-близкото изглежда по-голямо) е по-малка.
-  frame: {
-    position: 'absolute',
-    width: '58%',
-    aspectRatio: 1.45,
-    borderRadius: 14,
-    borderWidth: 2,
-    borderStyle: 'dashed',
-    borderColor: 'rgba(255,255,255,0.55)',
-  },
+  frame: { position: 'absolute', width: '58%', aspectRatio: 1.45 },
+  corner: { position: 'absolute', width: 18, height: 18, borderColor: CAM_ACCENT },
+  tl: { left: 0, top: 0, borderLeftWidth: 1.5, borderTopWidth: 1.5 },
+  tr: { right: 0, top: 0, borderRightWidth: 1.5, borderTopWidth: 1.5 },
+  bl: { left: 0, bottom: 0, borderLeftWidth: 1.5, borderBottomWidth: 1.5 },
+  br: { right: 0, bottom: 0, borderRightWidth: 1.5, borderBottomWidth: 1.5 },
+  // Нивелирът е кръгъл като истинския (кръг, не ъгъл).
   bubbleRing: {
     width: 92,
     height: 92,
-    borderRadius: 46,
-    borderWidth: 2,
-    borderColor: 'rgba(255,255,255,0.7)',
+    borderRadius: radius.pill,
+    borderWidth: 1.5,
+    borderColor: dark.lineStrong,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(0,0,0,0.18)',
+    backgroundColor: GLASS,
   },
   bubbleRingOk: { borderColor: GOOD },
-  cross: { position: 'absolute', width: 92, height: 1, backgroundColor: 'rgba(255,255,255,0.4)' },
+  cross: { position: 'absolute', width: 92, height: 1, backgroundColor: dark.lineStrong },
   crossV: { width: 1, height: 92 },
-  bubble: { width: 22, height: 22, borderRadius: 11, backgroundColor: 'rgba(255,255,255,0.9)' },
+  bubble: { width: 22, height: 22, borderRadius: radius.pill, backgroundColor: dark.text },
   bubbleOk: { backgroundColor: GOOD },
   bottomArea: { gap: space.sm },
-  status: { color: dark.warning, textAlign: 'center', fontFamily: font.semibold, fontSize: 15 },
+  status: { color: dark.signal, textAlign: 'center', fontFamily: font.monoMedium, fontSize: 14 },
   statusOk: { color: GOOD },
   bottom: {
     flexDirection: 'row',
@@ -258,32 +275,32 @@ const styles = StyleSheet.create({
     marginTop: 0,
     paddingVertical: space.md,
     paddingHorizontal: space.sm,
-    borderRadius: 24,
-    backgroundColor: GLASS,
+    borderRadius: radius.md,
+    backgroundColor: dark.surface,
     borderWidth: 1,
     borderColor: dark.line,
   },
   side: { width: 96, alignItems: 'center' },
-  shutter: { width: 76, height: 76, borderRadius: 38, borderWidth: 4, borderColor: WHITE, alignItems: 'center', justifyContent: 'center' },
-  shutterIn: { width: 60, height: 60, borderRadius: 30, backgroundColor: WHITE },
+  shutter: { width: 72, height: 72, borderRadius: radius.pill, borderWidth: 3, borderColor: WHITE, alignItems: 'center', justifyContent: 'center' },
+  shutterIn: { width: 56, height: 56, borderRadius: radius.pill, backgroundColor: WHITE },
   shutterOk: { backgroundColor: GOOD },
   disabled: { opacity: 0.4 },
-  skip: { height: 40, paddingHorizontal: 14, borderRadius: 20, justifyContent: 'center', backgroundColor: 'rgba(255,255,255,0.14)' },
+  skip: { height: 40, paddingHorizontal: 14, borderRadius: radius.sm, justifyContent: 'center', borderWidth: 1, borderColor: dark.lineStrong },
   skipText: { color: WHITE, fontFamily: font.medium, fontSize: 14 },
   choices: { flexDirection: 'row', gap: space.md, margin: space.md },
   secondary: {
     flex: 1,
-    height: 52,
-    borderRadius: 26,
+    height: 48,
+    borderRadius: radius.sm,
     flexDirection: 'row',
     gap: 6,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: GLASS,
+    backgroundColor: dark.surface,
     borderWidth: 1,
-    borderColor: dark.line,
+    borderColor: dark.lineStrong,
   },
   secondaryText: { color: WHITE, fontFamily: font.semibold, fontSize: 15 },
-  primary: { flex: 1, height: 52, borderRadius: 26, flexDirection: 'row', gap: 4, alignItems: 'center', justifyContent: 'center', backgroundColor: WHITE },
+  primary: { flex: 1, height: 48, borderRadius: radius.sm, flexDirection: 'row', gap: 4, alignItems: 'center', justifyContent: 'center', backgroundColor: CAM_ACCENT },
   primaryText: { color: DARK_TEXT, fontFamily: font.semibold, fontSize: 15 },
 });

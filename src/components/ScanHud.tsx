@@ -4,6 +4,7 @@ import Svg, { Circle, G, Line, Path } from 'react-native-svg';
 import type { ObjectShape } from '@/lib/api';
 import { LOOPS, SECTORS, type OrbitState } from '@/lib/orbit';
 import { nextSectors } from '@/lib/scanHud';
+import { palettes } from '@/theme';
 
 // Средата на екрана за заснемане: рамка около предмета, двата кръга около него (долният за обиколката ниско, горният
 // за тази отвисоко), разделени на сектори по 15°, които светват, когато са заснети рязко и от правилната височина
@@ -12,12 +13,15 @@ import { nextSectors } from '@/lib/scanHud';
 // app/silhouette.py), завъртяно около оста му; докато то дойде (или ако не дойде), са цилиндър. Не са възстановеният
 // модел (той се прави на сървъра от видеото). Оранжевото е следващото за заснемане: най-близките липсващи сектори.
 
+// Върху живото изображение от камерата: постоянните циан (напредък на сканирането, рамката) и сигнален цвят (живата
+// точка, предупрежденията), останалото от тъмната палитра, за да се чете и при двете теми.
+const dark = palettes.dark;
 export const HUD = {
-  cyan: '#38bdf8',
-  amber: '#f59e0b',
-  dim: 'rgba(255,255,255,0.26)',
-  line: 'rgba(255,255,255,0.55)',
-  panel: 'rgba(8,12,17,0.9)',
+  cyan: '#35d4ff',
+  amber: '#ffb829',
+  dim: dark.lineStrong,
+  line: dark.text2,
+  panel: dark.surface,
 };
 
 const TICKS = SECTORS * 2; // по две черти на сектор
@@ -112,7 +116,7 @@ const Rings = memo(function Rings({ w, h, orbit, shape, recording }: RingsProps)
             cx={d.x}
             cy={d.y}
             r={todo ? d.r + 0.6 : d.r}
-            fill={on ? HUD.cyan : todo ? HUD.amber : '#ffffff'}
+            fill={on ? HUD.cyan : todo ? HUD.amber : dark.text}
             opacity={on ? 0.75 : todo ? 0.9 : 0.22}
           />
         );
@@ -136,7 +140,7 @@ const Rings = memo(function Rings({ w, h, orbit, shape, recording }: RingsProps)
               y2={y2}
               stroke={on ? HUD.cyan : todo ? HUD.amber : HUD.dim}
               strokeWidth={(loop === 0 ? 1.6 : 1.2) + (front + 1) * 0.7}
-              strokeLinecap="round"
+              strokeLinecap="butt"
               opacity={todo ? 1 : (now || on ? 1 : 0.45) * (0.6 + 0.4 * (front + 1) * 0.5)}
             />
           );
@@ -155,7 +159,7 @@ const Frame = memo(function Frame({ w, h }: { w: number; h: number }) {
   const cx = w / 2;
   const cy = h * 0.12;
   return (
-    <G stroke={HUD.line} strokeWidth={1.6} fill="none">
+    <G stroke={HUD.cyan} strokeWidth={1.5} fill="none">
       <Path d={c(m, top, 1, 1)} />
       <Path d={c(w - m, top, -1, 1)} />
       <Path d={c(m, bottom, 1, -1)} />
@@ -178,7 +182,7 @@ export function ScanStage({ w, h, orbit, angle, recording, shape }: Props) {
       {recording && (
         <G>
           <Line x1={mx} y1={my - 12} x2={mx} y2={0} stroke={HUD.amber} strokeWidth={1.4} strokeDasharray="3 4" opacity={0.85} />
-          <Circle cx={mx} cy={my} r={11} stroke={HUD.amber} strokeWidth={1.6} fill="rgba(245,158,11,0.18)" />
+          <Circle cx={mx} cy={my} r={11} stroke={HUD.amber} strokeWidth={1.5} fill={HUD.amber} fillOpacity={0.18} />
           <Circle cx={mx} cy={my} r={5.5} fill={HUD.amber} />
         </G>
       )}

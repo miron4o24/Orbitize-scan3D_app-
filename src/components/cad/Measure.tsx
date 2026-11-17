@@ -120,10 +120,10 @@ export function Measure({
 }
 
 const useStyles = makeStyles((c) => ({
-  progress: { height: 4, borderRadius: 2, backgroundColor: c.surface2, overflow: 'hidden' },
-  bar: { height: 4, borderRadius: 2, backgroundColor: c.accent },
-  picture: { width: '100%', aspectRatio: 4 / 3, borderRadius: radius.md, backgroundColor: '#18181b' },
+  progress: { height: 3, backgroundColor: c.surface3, overflow: 'hidden' },
+  bar: { height: 3, backgroundColor: c.accent },
+  picture: { width: '100%', aspectRatio: 4 / 3, borderRadius: radius.md, borderWidth: 1, borderColor: c.line, backgroundColor: c.surface2 },
   line: { flexDirection: 'row', alignItems: 'center', gap: space.md },
-  input: { flex: 1, fontSize: 28, height: 64, fontFamily: font.semibold, textAlign: 'right' },
-  unit: { color: c.muted, fontFamily: font.medium, fontSize: 18 },
+  input: { flex: 1, fontSize: 28, height: 64, fontFamily: font.monoMedium, textAlign: 'right', color: c.signal },
+  unit: { color: c.muted, fontFamily: font.mono, fontSize: 18 },
 }));
