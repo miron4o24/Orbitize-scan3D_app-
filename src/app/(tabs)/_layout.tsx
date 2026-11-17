@@ -1,15 +1,14 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { LinearGradient } from 'expo-linear-gradient';
 import { Tabs } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, Text, View } from 'react-native';
 import Animated, { useAnimatedStyle, useReducedMotion, useSharedValue, withSequence, withTiming } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { easeOut, haptic, PressScale } from '@/components/motion';
 import type { IconName } from '@/components/ui';
 import { startScan } from '@/lib/startScan';
-import { brandDeep, font, makeStyles, space, useColors } from '@/theme';
+import { font, makeStyles, radius, space, useColors } from '@/theme';
 
 // По два раздела от двете страни на бутона за сканиране, който е на позиция 2.
 const ITEMS: Record<string, { label: string; icon: IconName; active: IconName; slot: number }> = {
@@ -18,8 +17,7 @@ const ITEMS: Record<string, { label: string; icon: IconName; active: IconName; s
   scans: { label: 'Сканирания', icon: 'cube-outline', active: 'cube', slot: 3 },
   profile: { label: 'Профил', icon: 'person-outline', active: 'person', slot: 4 },
 };
-const SLOTS = 5;
-const MARK = 20; // линията над отворения раздел
+const SLOTS = 5; // линията в цвета за акцент е по горния ръб на клетката на отворения раздел
 
 type BarProps = { state: { index: number; routes: { key: string; name: string }[] }; navigateToTab: (routeKey: string) => void };
 
@@ -54,11 +52,12 @@ function TabBar({ state, navigateToTab }: BarProps) {
     const each = width / SLOTS;
     shown.set(withTiming(slot == null ? 0 : 1, { duration: 200 }));
     if (slot == null) return;
-    const to = each * slot + (each - MARK) / 2;
+    const to = each * slot;
     x.set(placed.current && !reduce ? withTiming(to, { duration: 300, easing: easeOut }) : to);
     placed.current = true;
   }, [slot, width, reduce, x, shown]);
   const mark = useAnimatedStyle(() => ({ opacity: shown.value, transform: [{ translateX: x.value }] }));
+  const cell = width / SLOTS;
 
   const item = (name: string) => {
     const it = ITEMS[name];
@@ -77,20 +76,19 @@ function TabBar({ state, navigateToTab }: BarProps) {
         accessibilityState={{ selected: on }}
         accessibilityLabel={it.label}
       >
-        <TabIcon name={on ? it.active : it.icon} on={on} color={on ? c.text : c.muted} />
+        <TabIcon name={on ? it.active : it.icon} on={on} color={on ? c.accent : c.muted} />
         <Text style={[s.label, on && s.labelOn]}>{it.label}</Text>
       </Pressable>
     );
   };
   return (
     <View style={[s.bar, { paddingBottom: Math.max(insets.bottom, space.sm) }]} onLayout={(e) => setWidth(e.nativeEvent.layout.width)}>
-      <Animated.View style={[s.mark, mark]} />
+      <Animated.View style={[s.mark, { width: cell }, mark]} />
       {item('index')}
       {item('community')}
       <View style={s.item}>
         <PressScale onPress={startScan} feedback style={s.scan} accessibilityRole="button" accessibilityLabel="Ново сканиране">
-          <LinearGradient colors={brandDeep} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={StyleSheet.absoluteFill} />
-          <Ionicons name="add" size={26} color="#ffffff" />
+          <Ionicons name="add" size={26} color={c.onPrimary} />
         </PressScale>
       </View>
       {item('scans')}
@@ -115,10 +113,10 @@ export default function TabsLayout() {
 }
 
 const useStyles = makeStyles((c) => ({
-  bar: { flexDirection: 'row', backgroundColor: c.bg, paddingTop: space.sm, borderTopWidth: 1, borderTopColor: c.line },
-  mark: { position: 'absolute', top: -1, left: 0, width: MARK, height: 2, borderRadius: 1, backgroundColor: c.accent },
+  bar: { flexDirection: 'row', backgroundColor: c.surface, paddingTop: space.sm, borderTopWidth: 1, borderTopColor: c.line },
+  mark: { position: 'absolute', top: -1, left: 0, height: 2, backgroundColor: c.accent },
   item: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 3, minHeight: 48 },
-  label: { fontFamily: font.medium, fontSize: 11, color: c.muted },
-  labelOn: { color: c.text },
-  scan: { width: 54, height: 42, borderRadius: 14, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
+  label: { fontFamily: font.monoMedium, fontSize: 11, letterSpacing: 0.4, textTransform: 'uppercase', color: c.muted },
+  labelOn: { color: c.accent },
+  scan: { width: 52, height: 40, borderRadius: radius.sm, backgroundColor: c.primary, alignItems: 'center', justifyContent: 'center' },
 }));

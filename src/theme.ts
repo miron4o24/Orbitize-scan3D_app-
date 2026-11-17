@@ -105,9 +105,6 @@ const light: Palette = {
 
 export const palettes: Record<Scheme, Palette> = { dark, light };
 
-export const brand = ['#35d4ff', '#0866ad'] as const;
-export const brandDeep = ['#0866ad', '#065490'] as const; // legacy only, remove when unused
-
 export const font = {
   regular: 'IBMPlexSans_400Regular',
   medium: 'IBMPlexSans_500Medium',
