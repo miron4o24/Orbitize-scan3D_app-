@@ -183,6 +183,26 @@ export const uploadPhoto = (jobId: string, file: File) =>
     await check(res, `upload ${file.name}`);
   });
 
+// Очертанието на предмета от снимката точно преди записа за AI модел (сървър app/silhouette.py): по него се рисуват
+// точките на екрана за заснемане. rows: отдолу нагоре, ляво и дясно като дял от ширината (null: празен ред). null при
+// какъвто и да е проблем (по-стар сървър, няма предмет, няма връзка): тогава точките остават общ цилиндър.
+export type ObjectShape = { aspect: number; rows: ([number, number] | null)[] };
+
+export async function objectShape(photo: File): Promise<ObjectShape | null> {
+  try {
+    const res = await expoFetch(`${API_URL}/outline`, {
+      method: 'POST',
+      headers: headers({ 'Content-Type': 'image/jpeg' }),
+      body: photo,
+    });
+    if (!res.ok) return null;
+    const r = (await res.json()) as { found: boolean } & Partial<ObjectShape>;
+    return r.found && r.aspect && r.rows?.some(Boolean) ? { aspect: r.aspect, rows: r.rows } : null;
+  } catch {
+    return null;
+  }
+}
+
 // Положението на телефона по време на записа (src/lib/motion.ts). Сървър без тази крайна точка (404) просто минава
 // без него.
 export async function uploadMotion(jobId: string, file: File) {

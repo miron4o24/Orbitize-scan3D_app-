@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import { elevation, isUsableAim, viewDir, type Vec3 } from './coverage.ts';
 import { OrbitTracker } from './orbit.ts';
 import { judge, measure } from './quality.ts';
-import { coverage, lightPercent, sharpness, ViewCounter } from './scanHud.ts';
+import { coverage, lightPercent, nextSectors, sharpness, ViewCounter } from './scanHud.ts';
 import { clampZoom, pinch, unproject } from './zoom.ts';
 
 const W = 128;
@@ -137,6 +137,12 @@ test('scan screen: the numbers come from the sensors', () => {
   assert.equal(v.count, 1);
   for (let d = 0; d < 360; d += 3) v.add(viewDir({ alpha: rad(d), beta: rad(80), gamma: 0 }), 90);
   assert.ok(v.count >= 38 && v.count <= 42, `${v.count}`);
+  // Следващото за заснемане: най-близките липсващи сектори до телефона (след 90° обиколка: 6-ти и последният).
+  const next = nextSectors(o.state);
+  assert.equal(next.length, 2);
+  assert.ok(next.every((i) => !o.state.covered[0][i]), `${next}`);
+  assert.ok(next.every((i) => Math.min(Math.abs(i - o.state.sector), 24 - Math.abs(i - o.state.sector)) <= 2), `${next}`);
+  assert.deepEqual(nextSectors(null), []);
   const blurred = new ViewCounter();
   for (let d = 0; d < 360; d += 3) blurred.add(viewDir({ alpha: rad(d), beta: rad(80), gamma: 0 }), 20);
   assert.equal(blurred.count, 0);
