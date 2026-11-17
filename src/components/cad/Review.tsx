@@ -2,7 +2,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { File, Paths } from 'expo-file-system';
 import { Image } from 'expo-image';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, Text, View } from 'react-native';
 import type { Object3D } from 'three';
 
 import { ModelView } from '@/components/ModelView';
@@ -25,6 +25,7 @@ import {
 import { parseGlb } from '@/lib/model';
 import { ZoomTap } from './ZoomTap';
 import { font, makeStyles, radius, space, useColors } from '@/theme';
+import { showDialog } from '@/lib/dialog';
 
 // "Какво виждам": снимките с разпознатото очертание, детайлът в 3D по оценките (за да се види, че е разчетен
 // правилно: посоки, стъпала, отвори) и списъкът на елементите, които могат да се махнат, обърнат или добавят.
@@ -166,7 +167,7 @@ function TapPhoto({ jobId, photo, stamp, busy, onRemove }: { jobId: string; phot
         return;
       }
       const id = hit.id;
-      Alert.alert('Да махна ли този елемент?', `${hit.text ?? 'Отвор'}: ако го няма на предмета (например отблясък от светкавицата), моделът ще е без него.`, [
+      showDialog('Да махна ли този елемент?', `${hit.text ?? 'Отвор'}: ако го няма на предмета (например отблясък от светкавицата), моделът ще е без него.`, [
         { text: 'Отказ', style: 'cancel' },
         { text: 'Махни', style: 'destructive', onPress: () => onRemove(id) },
       ]);

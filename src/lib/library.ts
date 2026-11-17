@@ -1,7 +1,8 @@
 import { router, useFocusEffect } from 'expo-router';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 
 import type { BadgeKind } from '@/components/ui';
+import { afterTransition } from './afterTransition';
 import { ApiError, cancelJob, errorText, listMyScans, type ServerScan } from './api';
 import { deleteScan, importScan, listScans, scanTitle, updateScan, type Scan, type ScanStatus } from './scans';
 import { currentUserId, useSession } from './session';
@@ -64,6 +65,9 @@ function sync(server: ServerScan[]) {
   }
 }
 
+// Списъкът от сървъра се пита наново при връщане към екрана най-често през толкова (дръпването надолу пита винаги).
+const SERVER_EVERY_MS = 15_000;
+
 function merge(local: Scan[], server: ServerScan[] | null): Entry[] {
   const out: Entry[] = [];
   const byJob = new Map((server ?? []).map((s) => [s.id, s]));
@@ -103,13 +107,16 @@ export function useLibrary() {
   const [server, setServer] = useState<ServerScan[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const asked = useRef(0);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (force = true) => {
     setLocal(visibleScans());
     if (!uid) {
       setServer(null);
       return;
     }
+    if (!force && Date.now() - asked.current < SERVER_EVERY_MS) return;
+    asked.current = Date.now();
     setLoading(true);
     try {
       const list = await listMyScans();
@@ -124,9 +131,11 @@ export function useLibrary() {
     }
   }, [uid]);
 
+  // При връщане към екрана: след анимацията на прехода, за да не я накъса, и сървърът - не по-често от
+  // SERVER_EVERY_MS.
   useFocusEffect(
     useCallback(() => {
-      refresh();
+      return afterTransition(() => refresh(false));
     }, [refresh]),
   );
 

@@ -5,7 +5,7 @@ import { useKeepAwake } from 'expo-keep-awake';
 import { router, useLocalSearchParams } from 'expo-router';
 import { DeviceMotion, LightSensor } from 'expo-sensors';
 import { useEffect, useRef, useState } from 'react';
-import { Alert, Platform, Pressable, StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
+import { Platform, Pressable, StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { HUD, ScanStage } from '@/components/ScanHud';
@@ -20,6 +20,7 @@ import { createScan, deleteScan, motionFile, updateScan, videoFile } from '@/lib
 import { currentUserId } from '@/lib/session';
 import { checkVideo } from '@/lib/videoCheck';
 import { font, makeStyles, palettes, radius, space } from '@/theme';
+import { showDialog } from '@/lib/dialog';
 
 // Заснемане за AI модела: предметът в рамката, два кръга около него (ниско, после отвисоко). Всичко на екрана е
 // измерено от сензорите на телефона (lib/scanHud.ts) и казва на потребителя какво още трябва на модела: кои страни
@@ -169,7 +170,7 @@ export default function Capture() {
     setChecking(false);
     if (!extending && tracker.current.firstLoopFraction < MIN_ROUND) found.push('Не обиколихте целия предмет.');
     if (!found.length) return keep(uri, secs);
-    Alert.alert('Да запишем ли отново?', `${found.join('\n')}\n\nМоделът може да излезе по-лош.`, [
+    showDialog('Да запишем ли отново?', `${found.join('\n')}\n\nМоделът може да излезе по-лош.`, [
       { text: 'Запиши отново', onPress: () => new File(uri).delete() },
       { text: 'Използвай все пак', onPress: () => keep(uri, secs) },
     ]);

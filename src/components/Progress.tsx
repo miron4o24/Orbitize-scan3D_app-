@@ -1,6 +1,6 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useEffect } from 'react';
-import { Alert, Pressable, Text, View } from 'react-native';
+import { Pressable, Text, View } from 'react-native';
 import Animated, { useAnimatedProps, useAnimatedStyle, useReducedMotion, useSharedValue, withDelay, withTiming } from 'react-native-reanimated';
 import Svg, { Circle, Polygon } from 'react-native-svg';
 
@@ -9,6 +9,7 @@ import { shortDate } from '@/lib/dates';
 import { font, makeStyles, radius, space, text, useColors } from '@/theme';
 import { CountUp, ease, PressScale } from './motion';
 import { Card, H2, Label, Small, type IconName } from './ui';
+import { showDialog } from '@/lib/dialog';
 
 // Точките на профила (lib/progress.ts) в профила и на началния екран: нивото в пръстен, който се запълва към
 // следващото, седмичните предизвикателства и значките.
@@ -168,7 +169,7 @@ export function Badges({ progress }: { progress: Progress }) {
   const c = useColors();
   const s = useStyles();
   const open = (b: Progress['badges'][number]) =>
-    Alert.alert(
+    showDialog(
       b.title,
       b.unlocked ? `${b.description}.\nОтключена на ${shortDate((b.unlocked_at ?? 0) * 1000)}.` : `${b.description}.\nДосега: ${b.progress} от ${b.target}.`,
     );

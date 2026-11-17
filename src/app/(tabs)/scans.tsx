@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Alert, RefreshControl, View } from 'react-native';
+import { RefreshControl, View } from 'react-native';
 import Animated from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -11,6 +11,7 @@ import { errorText } from '@/lib/api';
 import { deleteEntry, isAi, openEntry, useLibrary, type Entry } from '@/lib/library';
 import { startScan } from '@/lib/startScan';
 import { makeStyles, radius, space, useColors } from '@/theme';
+import { showDialog } from '@/lib/dialog';
 
 type Group = 'ai' | 'other';
 
@@ -30,7 +31,7 @@ export default function MyScans() {
   const shown = !both ? entries : group === 'ai' ? ai : other;
 
   function confirmDelete(entry: Entry) {
-    Alert.alert(`Изтриване на „${entry.title}“?`, 'Това не може да се върне.', [
+    showDialog(`Изтриване на „${entry.title}“?`, 'Това не може да се върне.', [
       { text: 'Отказ', style: 'cancel' },
       {
         text: 'Изтрий',

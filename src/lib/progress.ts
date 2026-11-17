@@ -104,7 +104,10 @@ export function checkProgress(now = false): Promise<void> {
       if (currentUserId() !== userId) return; // междувременно е излязъл от профила
       const seen = loadSeen(userId);
       const fresh = state.owner === userId ? state.queue : [];
-      set({ owner: userId, progress: p, queue: [...fresh, ...celebrations(p, seen).map((c) => ({ ...c, id: ++serial }))] });
+      const added = celebrations(p, seen);
+      // Нищо ново (обичайното при връщане към екран): без съобщение, което би прерисувало всички екрани с точките.
+      if (state.owner === userId && !added.length && JSON.stringify(p) === JSON.stringify(state.progress)) return;
+      set({ owner: userId, progress: p, queue: [...fresh, ...added.map((c) => ({ ...c, id: ++serial }))] });
       saveSeen(userId, p, seen);
     } catch (e) {
       if (e instanceof ApiError && e.status === 404 && e.message === 'Not Found') unsupported = true;

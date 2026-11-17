@@ -3,7 +3,7 @@ import { File, Paths } from 'expo-file-system';
 import { router, useLocalSearchParams, type ErrorBoundaryProps } from 'expo-router';
 import * as Sharing from 'expo-sharing';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, ScrollView, Text, View } from 'react-native';
+import { ActivityIndicator, ScrollView, Text, View } from 'react-native';
 import Animated from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import type { Object3D } from 'three';
@@ -20,6 +20,7 @@ import { parseGlb } from '@/lib/model';
 import { checkProgress } from '@/lib/progress';
 import { listScans, updateScan } from '@/lib/scans';
 import { font, makeStyles, radius, space, useColors } from '@/theme';
+import { showDialog } from '@/lib/dialog';
 
 // Модел от общността: завъртане, харесване и изтегляне в размера, зададен от автора.
 
@@ -132,18 +133,18 @@ export default function CommunityPost() {
   const report = (reason: string) =>
     run('report', async () => {
       await reportPost(id, reason);
-      Alert.alert('Благодарим', 'Ще прегледаме модела.');
+      showDialog('Благодарим', 'Ще прегледаме модела.');
     });
 
   const askReport = () =>
-    Alert.alert('Докладване на модела', 'Какъв е проблемът?', [
+    showDialog('Докладване на модела', 'Какъв е проблемът?', [
       { text: 'Отказ', style: 'cancel' },
       { text: 'Спам или реклама', onPress: () => report('spam') },
       { text: 'Неподходящо съдържание', onPress: () => report('inappropriate') },
     ]);
 
   const takeDown = () =>
-    Alert.alert('Махане от общността?', 'Моделът остава при вас. Харесванията се изтриват.', [
+    showDialog('Махане от общността?', 'Моделът остава при вас. Харесванията се изтриват.', [
       { text: 'Отказ', style: 'cancel' },
       {
         text: 'Махни',

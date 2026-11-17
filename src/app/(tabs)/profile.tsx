@@ -4,7 +4,7 @@ import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import * as ImagePicker from 'expo-image-picker';
 import { useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
-import { ActivityIndicator, Alert, Modal, View } from 'react-native';
+import { ActivityIndicator, Modal, View } from 'react-native';
 import type { SharedValue } from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -30,11 +30,13 @@ import {
   useScrollY,
 } from '@/components/ui';
 import { deleteAccount, errorText, removeAvatar, renameMe, uploadAvatar } from '@/lib/api';
+import { afterTransition } from '@/lib/afterTransition';
 import { refreshProfile, signOut } from '@/lib/auth';
 import { checkProgress, useProgress } from '@/lib/progress';
 import { deleteScan, listScans } from '@/lib/scans';
 import { avatarChanged, clearSession, updateProfile, useSession, type Profile } from '@/lib/session';
 import { makeStyles, radius, setScheme, space, useColors, useScheme, type Scheme } from '@/theme';
+import { showDialog } from '@/lib/dialog';
 
 const AVATAR_SIDE = 512;
 
@@ -107,8 +109,10 @@ function Account({ user }: { user: Profile }) {
 
   useFocusEffect(
     useCallback(() => {
-      refreshProfile().catch(() => {}); // нова статистика; без връзка остава последната
-      checkProgress(true);
+      return afterTransition(() => {
+        refreshProfile().catch(() => {}); // нова статистика; без връзка остава последната
+        checkProgress(true);
+      });
     }, []),
   );
 
@@ -163,18 +167,18 @@ function Account({ user }: { user: Profile }) {
           }),
       });
     options.push({ text: 'Отказ', style: 'cancel' });
-    Alert.alert('Снимка на профила', undefined, options);
+    showDialog('Снимка на профила', undefined, options);
   }
 
   function confirmSignOut() {
-    Alert.alert('Изход?', 'Сканиранията остават в профила.', [
+    showDialog('Изход?', 'Сканиранията остават в профила.', [
       { text: 'Отказ', style: 'cancel' },
       { text: 'Изход', style: 'destructive', onPress: () => run('signout', signOut) },
     ]);
   }
 
   function confirmDelete() {
-    Alert.alert(
+    showDialog(
       'Изтриване на профила?',
       `Изтриват се профилът и всички ${user.stats.scans} сканирания, завинаги.`,
       [
