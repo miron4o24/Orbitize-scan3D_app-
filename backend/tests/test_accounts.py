@@ -61,7 +61,11 @@ def finished_scan(client, h, frames=8):
     job_id = client.post("/jobs", headers=h).json()["id"]
     for i in range(frames):
         client.put(f"/jobs/{job_id}/photos/img_{i:04d}.jpg", content=jpeg(), headers=h)
-    assert client.post(f"/jobs/{job_id}/start", json={}, headers=h).status_code == 200
+    # Стандартното сканиране е само за API ключа на сървъра: потребителят не може да го пусне.
+    if h is not ADMIN:
+        r = client.post(f"/jobs/{job_id}/start", json={}, headers=h)
+        assert r.status_code == 400 and "Стандартното сканиране" in r.json()["detail"]
+    assert client.post(f"/jobs/{job_id}/start", json={}, headers=ADMIN).status_code == 200
     end = time.time() + 5
     while client.get(f"/jobs/{job_id}", headers=h).json()["state"] != "done":
         assert time.time() < end

@@ -38,7 +38,7 @@ import { exportForPrint } from '@/lib/exportModel';
 import { badgeOf, deleteEntry } from '@/lib/library';
 import { parseGlb } from '@/lib/model';
 import { allowance, allowanceNote, blocked } from '@/lib/plan';
-import { madeWith, SCAN_INFO } from '@/lib/prefs';
+import { aiAvailable, madeWith } from '@/lib/prefs';
 import { estimate, euro, getPrices, printTime, setPrice } from '@/lib/printEstimate';
 import { checkProgress } from '@/lib/progress';
 import { createScan, getScan, modelFile, scanTitle, updateScan } from '@/lib/scans';
@@ -142,9 +142,10 @@ export default function Viewer() {
   const stressAllowed = allowance(user, 'stress', jobId);
   const arAllowed = allowance(user, 'ar', jobId);
   const canEdit = !!user?.pro && !!user.ai?.edit && !!jobId && scan?.status === 'done';
-  // Създаден от видео, чиито кадри още са на сървъра: може да се добави липсваща страна.
+  // Създаден от видео, чиито кадри още са на сървъра: може да се добави липсваща страна (с AI модела).
   const [openedAt] = useState(() => Date.now());
-  const canExtend = !!jobId && scan?.status === 'done' && !scan.report?.edit && openedAt - scan.createdAt < FRAMES_KEPT_MS;
+  const canExtend =
+    !!user && aiAvailable() && !!jobId && scan?.status === 'done' && !scan.report?.edit && openedAt - scan.createdAt < FRAMES_KEPT_MS;
 
   useEffect(() => {
     if (arDone) arSupport().then(setSupport);
@@ -266,7 +267,7 @@ export default function Viewer() {
         onPress: () =>
           router.push({
             pathname: '/capture',
-            params: { extend: jobId!, title: `${scanTitle(scan!)} · допълнен`.slice(0, 100), ...(report?.ai === 'single' && { ai: '1' }) },
+            params: { extend: jobId!, title: `${scanTitle(scan!)} · допълнен`.slice(0, 100) },
           }),
       },
     ]);
@@ -362,8 +363,8 @@ export default function Viewer() {
   const title = scanTitle(scan);
   const done = scan.status === 'done';
   const kind = badgeOf(scan.status);
-  // Кой от двата начина го е създал; безплатният профил има само един, затова няма какво да се различава.
-  const way = report?.ai ? madeWith(report.ai) : report && !report.edit && user?.pro ? SCAN_INFO.label : null;
+  // Как е създаден (AI модел или инженерният режим); старите стандартни сканирания нямат етикет.
+  const way = report?.ai ? madeWith(report.ai) : null;
   const tabs: { value: Tab; label: string }[] = [
     { value: 'size', label: 'Размер' },
     { value: 'files', label: 'Файлове' },
