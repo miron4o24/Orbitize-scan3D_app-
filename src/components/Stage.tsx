@@ -14,14 +14,15 @@ import Animated, {
   withTiming,
   type SharedValue,
 } from 'react-native-reanimated';
-import Svg, { Circle, Defs, Ellipse, LinearGradient, Mask, Path, Pattern, RadialGradient, Rect, Stop } from 'react-native-svg';
+import Svg, { Circle, Defs, Ellipse, Mask, Path, Pattern, RadialGradient, Rect, Stop } from 'react-native-svg';
 
-import { font, makeStyles, useColors } from '@/theme';
+import { font, makeStyles, radius, useColors } from '@/theme';
 import { ease } from './motion';
+import { Brackets } from './ui';
 
-// Сцената от сайта (assets/style.css .factory): мека радиална основа, мрежа от точки, която избледнява към краищата,
-// и в средата кубът на Orbitize (рисунката от сайта), носещ се, докато през него минава равнина на сканиране, а пътят
-// на телефона го обикаля. Стъклен етикет отдолу минава през стъпките.
+// Сцената: радиална основа, мрежа от точки, която избледнява към краищата, ъглови скоби и в средата кубът (плоски
+// стени в цветовете на темата, ръбове в цвета за акцент), носещ се, докато през него минава равнина на сканиране, а
+// пътят на телефона го обикаля. Етикет отдолу минава през стъпките.
 
 const CUBE = 124; // нарисуван размер на куба (рисунката му е от 200 единици)
 const ORBIT_W = 250;
@@ -42,7 +43,7 @@ function Orbiter({ t, phase, color }: { t: SharedValue<number>; phase: number; c
       ],
     };
   });
-  return <Animated.View style={[{ position: 'absolute', width: 8, height: 8, borderRadius: 4, backgroundColor: color }, style]} />;
+  return <Animated.View style={[{ position: 'absolute', width: 8, height: 8, borderRadius: radius.pill, backgroundColor: color }, style]} />;
 }
 
 export type Journey = { title: string; icon: keyof typeof Ionicons.glyphMap }[];
@@ -119,8 +120,6 @@ export function Stage({
     transform: [{ translateY: (-5 + 10 * float.value + 84 * sweep.value) * k }],
     opacity: 0.55 + 0.45 * Math.sin(sweep.value * Math.PI),
   }));
-  const shadow = useAnimatedStyle(() => ({ opacity: 0.55 - 0.25 * float.value, transform: [{ scaleX: 1.08 - 0.16 * float.value }] }));
-  const dark = c.scheme === 'dark';
 
   return (
     <View style={[s.stage, { height }, style]} pointerEvents="none" accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
@@ -135,8 +134,8 @@ export function Stage({
             <Circle cx="11" cy="11" r="1" fill={c.lineStrong} />
           </Pattern>
           <RadialGradient id="fadeOut" cx="50%" cy="45%" rx="70%" ry="65%">
-            <Stop offset="0" stopColor="#fff" stopOpacity="1" />
-            <Stop offset="0.85" stopColor="#fff" stopOpacity="0" />
+            <Stop offset="0" stopColor={c.text} stopOpacity="1" />
+            <Stop offset="0.85" stopColor={c.text} stopOpacity="0" />
           </RadialGradient>
           <Mask id="dotsMask">
             <Rect width="100%" height="100%" fill="url(#fadeOut)" />
@@ -160,31 +159,16 @@ export function Stage({
             fill="none"
           />
         </Svg>
-        <Animated.View style={[s.shadow, { backgroundColor: dark ? 'rgba(0,0,0,0.6)' : 'rgba(10,10,12,0.12)' }, shadow]} />
         <View style={s.orbiters}>
-          <Orbiter t={orbit} phase={0} color={c.accent} />
+          <Orbiter t={orbit} phase={0} color={c.signal} />
           <Orbiter t={orbit} phase={0.5} color={c.text2} />
         </View>
         <Animated.View style={[s.cube, cube]}>
           <Svg width={CUBE} height={CUBE} viewBox="0 0 200 200">
-            <Defs>
-              <LinearGradient id="g1" x1="0" y1="0" x2="1" y2="1">
-                <Stop offset="0" stopColor="#2563EB" />
-                <Stop offset="1" stopColor="#7C3AED" />
-              </LinearGradient>
-              <LinearGradient id="g2" x1="0" y1="0" x2="1" y2="1">
-                <Stop offset="0" stopColor="#60A5FA" />
-                <Stop offset="1" stopColor="#4F46E5" />
-              </LinearGradient>
-              <LinearGradient id="g3" x1="0" y1="0" x2="1" y2="1">
-                <Stop offset="0" stopColor="#A78BFA" />
-                <Stop offset="1" stopColor="#7C3AED" />
-              </LinearGradient>
-            </Defs>
-            <Path d="M100 18 172 58 100 98 28 58Z" fill="url(#g2)" />
-            <Path d="M28 58 100 98V182L28 142Z" fill="url(#g1)" />
-            <Path d="M172 58 100 98V182L172 142Z" fill="url(#g3)" />
-            <Path d="M100 98V182M28 58 100 98 172 58" stroke="rgba(255,255,255,0.35)" strokeWidth={1} fill="none" />
+            <Path d="M100 18 172 58 100 98 28 58Z" fill={c.surface3} />
+            <Path d="M28 58 100 98V182L28 142Z" fill={c.surface2} />
+            <Path d="M172 58 100 98V182L172 142Z" fill={c.surface} />
+            <Path d="M100 18 172 58V142L100 182 28 142V58ZM100 98V182M28 58 100 98 172 58" stroke={c.accent} strokeWidth={1.5} fill="none" />
           </Svg>
         </Animated.View>
         {/* равнината на сканиране, която го пресича */}
@@ -195,18 +179,18 @@ export function Stage({
         </Animated.View>
       </View>
 
+      <Brackets inset={10} />
       {journey && <JourneyPill steps={journey} />}
     </View>
   );
 }
 
 const useStyles = makeStyles((c) => ({
-  stage: { borderRadius: 18, borderWidth: 1, borderColor: c.line, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
+  stage: { borderRadius: radius.md, borderWidth: 1, borderColor: c.line, overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
   fill: { position: 'absolute', left: 0, top: 0, right: 0, bottom: 0 },
   centre: { width: ORBIT_W + 8, height: CUBE + 20, alignItems: 'center', justifyContent: 'center', marginTop: -28 },
   orbit: { position: 'absolute', bottom: -ORBIT_H / 2 + 6 },
   orbiters: { position: 'absolute', bottom: 10, left: 0, right: 0, alignItems: 'center', justifyContent: 'center', height: 0 },
-  shadow: { position: 'absolute', bottom: 0, width: CUBE * 0.9, height: 16, borderRadius: 999 },
   cube: { width: CUBE, height: CUBE, zIndex: 1 },
   plane: { position: 'absolute', zIndex: 2 },
   journey: {
@@ -219,14 +203,14 @@ const useStyles = makeStyles((c) => ({
     gap: 12,
     paddingVertical: 9,
     paddingHorizontal: 12,
-    borderRadius: 11,
+    borderRadius: radius.sm,
     borderWidth: 1,
     borderColor: c.lineStrong,
     backgroundColor: c.glass,
   },
-  journeyIcon: { width: 26, height: 26, borderRadius: 13, backgroundColor: c.primary, alignItems: 'center', justifyContent: 'center' },
+  journeyIcon: { width: 26, height: 26, borderRadius: radius.sm, backgroundColor: c.primary, alignItems: 'center', justifyContent: 'center' },
   journeyText: { flex: 1, minWidth: 0 },
   journeyTitle: { fontFamily: font.semibold, fontSize: 13, color: c.text },
-  journeyTrack: { width: 56, height: 2, backgroundColor: c.lineStrong, borderRadius: 1, overflow: 'hidden' },
-  journeyFill: { height: 2, backgroundColor: c.text },
+  journeyTrack: { width: 56, height: 2, backgroundColor: c.surface3, overflow: 'hidden' },
+  journeyFill: { height: 2, backgroundColor: c.accent },
 }));

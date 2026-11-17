@@ -1,6 +1,7 @@
 import Svg, { G, Line, Path, Polygon, Rect, Circle } from 'react-native-svg';
 
 import type { CadPhoto } from '@/lib/api';
+import { palettes } from '@/theme';
 
 // Картинката към всяка снимка: вляво предметът, както стои, с оранжевата страна, която трябва да се снима; вдясно
 // същият предмет, обърнат така, че тази страна да гледа нагоре, и телефонът над него. Предметът е кутия в
@@ -9,10 +10,13 @@ import type { CadPhoto } from '@/lib/api';
 type Face = CadPhoto;
 type P3 = [number, number, number];
 
-const ORANGE = '#f97316';
-const EDGE = 'rgba(255,255,255,0.85)';
-const HIDDEN = 'rgba(255,255,255,0.45)';
-const SHADES: Record<'top' | 'front' | 'right', string> = { top: '#9ca3af', front: '#6b7280', right: '#4b5563' };
+// Рисува се върху тъмен панел над камерата: тъмната палитра, а страната за снимане е в сигналния цвят (постоянен, за
+// да се чете над изображението от камерата и при двете теми).
+const dark = palettes.dark;
+const ORANGE = '#ffb829';
+const EDGE = dark.text;
+const HIDDEN = dark.lineStrong;
+const SHADES: Record<'top' | 'front' | 'right', string> = { top: dark.muted, front: dark.lineStrong, right: dark.surface3 };
 const BOX: P3 = [1.7, 1.0, 0.6]; // дължина, дълбочина, височина
 
 // Изометрия: x надясно-надолу, y навътре (назад), z нагоре; гледаме от предния десен горен ъгъл.
@@ -84,7 +88,7 @@ function Box({ dims, mark, at, scale }: { dims: P3; mark: Face; at: [number, num
   return (
     <G>
       {VISIBLE.map((face) => (
-        <Polygon key={face} points={pts(face)} fill={face === mark ? ORANGE : SHADES[face as 'top']} stroke={EDGE} strokeWidth={1.2} strokeLinejoin="round" />
+        <Polygon key={face} points={pts(face)} fill={face === mark ? ORANGE : SHADES[face as 'top']} stroke={EDGE} strokeWidth={1.2} strokeLinejoin="miter" />
       ))}
       {ends.map(([x, y], k) => (
         <Line
@@ -98,7 +102,7 @@ function Box({ dims, mark, at, scale }: { dims: P3; mark: Face; at: [number, num
           strokeDasharray="3,3"
         />
       ))}
-      {hiddenMark && <Polygon points={pts(mark)} fill="rgba(249,115,22,0.35)" stroke={ORANGE} strokeWidth={2} strokeDasharray="4,3" />}
+      {hiddenMark && <Polygon points={pts(mark)} fill={ORANGE} fillOpacity={0.35} stroke={ORANGE} strokeWidth={2} strokeDasharray="4,3" />}
     </G>
   );
 }
@@ -116,7 +120,7 @@ function fit(dims: P3, x: number, y: number, w: number, h: number): { at: [numbe
 function Phone({ cx, top }: { cx: number; top: number }) {
   return (
     <G>
-      <Rect x={cx - 15} y={top} width={30} height={10} rx={3} fill="#111827" stroke={EDGE} strokeWidth={1.2} />
+      <Rect x={cx - 15} y={top} width={30} height={10} rx={2} fill={dark.surface} stroke={EDGE} strokeWidth={1.2} />
       <Circle cx={cx - 8} cy={top + 5} r={2} fill={EDGE} />
       <Path d={`M ${cx} ${top + 13} L ${cx} ${top + 21} M ${cx - 4} ${top + 17} L ${cx} ${top + 22} L ${cx + 4} ${top + 17}`} stroke={ORANGE} strokeWidth={2} fill="none" strokeLinecap="round" strokeLinejoin="round" />
     </G>
