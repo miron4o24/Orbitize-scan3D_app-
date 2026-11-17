@@ -196,6 +196,7 @@ function Account({ user }: { user: Profile }) {
   const stats: [number, string][] = [
     [user.stats.scans, 'Сканирания'],
     user.stats.published != null ? [user.stats.published, 'В общността'] : [user.stats.shared, 'Споделени'],
+    ...(progress ? [[progress.points, 'Точки'] as [number, string]] : []),
   ];
   const spinner = (what: string) => (busy === what ? <ActivityIndicator size="small" color={c.muted} /> : undefined);
 
@@ -223,7 +224,7 @@ function Account({ user }: { user: Profile }) {
         </View>
 
         <Appear index={3}>
-          <Specs items={stats.map(([value, label]) => ({ label, value }))} />
+          <Specs items={stats.map(([value, label]) => ({ label, value }))} style={s.stats} />
         </Appear>
 
         {error && <ErrorText>{error}</ErrorText>}
@@ -308,7 +309,7 @@ const useStyles = makeStyles((c) => ({
   guest: { gap: space.lg },
   head: { gap: space.lg, paddingTop: space.sm },
   avatar: { alignSelf: 'flex-start', marginBottom: space.sm },
-  name: { fontSize: 34, lineHeight: 38, letterSpacing: -1.4 },
+  name: {},
   email: { color: c.muted, marginTop: space.sm },
   camera: {
     position: 'absolute',
@@ -316,7 +317,7 @@ const useStyles = makeStyles((c) => ({
     bottom: -2,
     width: 28,
     height: 28,
-    borderRadius: 14,
+    borderRadius: radius.sm,
     backgroundColor: c.surface3,
     borderWidth: 1,
     borderColor: c.lineStrong,
@@ -324,6 +325,7 @@ const useStyles = makeStyles((c) => ({
     justifyContent: 'center',
   },
   list: { paddingVertical: 0 },
+  stats: { borderWidth: 1, borderColor: c.line, borderRadius: radius.md, backgroundColor: c.surface, paddingHorizontal: space.md, paddingBottom: space.md },
   themeSwitch: { width: 150 },
   backdrop: { flex: 1, backgroundColor: c.backdrop, justifyContent: 'center', padding: space.xl },
   dialog: { gap: space.md, borderRadius: radius.md },

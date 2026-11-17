@@ -2,7 +2,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { useEffect } from 'react';
 import { Alert, Pressable, Text, View } from 'react-native';
 import Animated, { useAnimatedProps, useAnimatedStyle, useReducedMotion, useSharedValue, withDelay, withTiming } from 'react-native-reanimated';
-import Svg, { Circle } from 'react-native-svg';
+import Svg, { Circle, Polygon } from 'react-native-svg';
 
 import type { Progress } from '@/lib/api';
 import { shortDate } from '@/lib/dates';
@@ -14,6 +14,13 @@ import { Card, H2, Label, Small, type IconName } from './ui';
 // следващото, седмичните предизвикателства и значките.
 
 const AnimatedCircle = Animated.createAnimatedComponent(Circle);
+
+// Шестоъгълникът на значка (50 точки): отключена - рамка в цвета за акцент, заключена - пунктир при 50%.
+const HEX = 50;
+const HEX_POINTS = Array.from({ length: 6 }, (_, k) => {
+  const a = ((-90 + 60 * k) * Math.PI) / 180;
+  return `${HEX / 2 + (HEX / 2 - 1.5) * Math.cos(a)},${HEX / 2 + (HEX / 2 - 1.5) * Math.sin(a)}`;
+}).join(' ');
 
 const share = (p: Progress) => Math.min(1, Math.max(0, (p.points - p.level.from) / Math.max(1, p.level.to - p.level.from)));
 
@@ -41,7 +48,7 @@ function LevelRing({ progress, size }: { progress: Progress; size: number }) {
           stroke={c.accent}
           strokeWidth={stroke}
           fill="none"
-          strokeLinecap="round"
+          strokeLinecap="butt"
           strokeDasharray={`${length} ${length}`}
           animatedProps={arc}
           transform={`rotate(-90 ${size / 2} ${size / 2})`}
@@ -134,7 +141,7 @@ export function Challenges({ progress }: { progress: Progress }) {
       <Text style={s.listNote}>{daysLeft(progress.challenges.ends)}</Text>
       {items.map((x, i) => (
         <View key={x.id} style={[s.challenge, i < items.length - 1 && s.rowLine]}>
-          <View style={[s.icon, { backgroundColor: x.done ? c.successSoft : c.surface2 }]}>
+          <View style={[s.icon, { borderColor: x.done ? c.success : c.line }]}>
             <Ionicons name={(x.done ? 'checkmark' : x.icon) as IconName} size={18} color={x.done ? c.success : c.text2} />
           </View>
           <View style={s.challengeBody}>
@@ -175,8 +182,17 @@ export function Badges({ progress }: { progress: Progress }) {
           accessibilityRole="button"
           accessibilityLabel={`${b.title}, ${b.unlocked ? 'отключена' : `${b.progress} от ${b.target}`}`}
         >
-          <View style={[s.badgeIcon, b.unlocked ? { backgroundColor: c.warningSoft, borderColor: c.warning } : s.badgeLocked]}>
-            <Ionicons name={b.icon as IconName} size={22} color={b.unlocked ? c.warning : c.muted} />
+          <View style={[s.badgeIcon, !b.unlocked && s.badgeLocked]}>
+            <Svg width={HEX} height={HEX} style={s.ring}>
+              <Polygon
+                points={HEX_POINTS}
+                fill="none"
+                stroke={b.unlocked ? c.accent : c.lineStrong}
+                strokeWidth={1.5}
+                strokeDasharray={b.unlocked ? undefined : '3 3'}
+              />
+            </Svg>
+            <Ionicons name={b.icon as IconName} size={20} color={b.unlocked ? c.accent : c.muted} />
             {!b.unlocked && (
               <View style={s.lock}>
                 <Ionicons name="lock-closed-outline" size={10} color={c.muted} />
@@ -205,7 +221,7 @@ const useStyles = makeStyles((c) => ({
   flex: { flex: 1 },
   ring: { position: 'absolute' },
   ringInside: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  ringNumber: { fontFamily: font.semibold, fontSize: 24, letterSpacing: -0.8, color: c.text },
+  ringNumber: { fontFamily: font.monoMedium, fontSize: 22, color: c.text },
   ringNumberSmall: { fontSize: 17 },
   level: { gap: space.md },
   levelHead: { flexDirection: 'row', alignItems: 'center', gap: space.lg },
@@ -215,13 +231,13 @@ const useStyles = makeStyles((c) => ({
   weekText: { fontFamily: font.mono, fontSize: 12, color: c.success },
   strip: { flexDirection: 'row', alignItems: 'center', gap: space.md, paddingVertical: space.md },
   stripTitle: { fontFamily: font.semibold, fontSize: 15, color: c.text },
-  track: { height: 6, borderRadius: 3, backgroundColor: c.surface3, overflow: 'hidden' },
-  fill: { height: 6, borderRadius: 3 },
+  track: { height: 3, backgroundColor: c.surface3, overflow: 'hidden' },
+  fill: { height: 3 },
   list: { paddingVertical: 0 },
   listNote: { ...text.mono, fontSize: 11.5, color: c.muted, paddingTop: space.md },
   rowLine: { borderBottomWidth: 1, borderBottomColor: c.line },
   challenge: { flexDirection: 'row', alignItems: 'center', gap: space.md, paddingVertical: 14 },
-  icon: { width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center' },
+  icon: { width: 36, height: 36, borderRadius: radius.sm, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
   challengeBody: { flex: 1, gap: 8 },
   challengeTitle: { fontFamily: font.medium, fontSize: 14.5, lineHeight: 19, color: c.text },
   doneText: { color: c.text2 },
@@ -251,15 +267,15 @@ const useStyles = makeStyles((c) => ({
     borderRadius: radius.sm,
   },
   pressed: { opacity: 0.7 },
-  badgeIcon: { width: 48, height: 48, borderRadius: 24, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
-  badgeLocked: { backgroundColor: c.surface2, borderColor: c.line },
+  badgeIcon: { width: HEX, height: HEX, alignItems: 'center', justifyContent: 'center' },
+  badgeLocked: { opacity: 0.5 },
   lock: {
     position: 'absolute',
     right: -3,
     bottom: -3,
     width: 18,
     height: 18,
-    borderRadius: 9,
+    borderRadius: radius.sm,
     backgroundColor: c.surface3,
     borderWidth: 1,
     borderColor: c.line,
