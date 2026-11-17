@@ -67,9 +67,33 @@ def cutout(sess, im: Image.Image):
     return field_, solid, box
 
 
-def finish(soft: np.ndarray, crop: Image.Image, seed: tuple[float, float] | None = None):
+SURE_SOLID = 0.95  # петно по цвят, където мрежата е поне толкова сигурна, че е детайлът, е отвор само с рязък ръб
+RIM_PX = (3, 6)  # пръстенът около петното (пиксели навън), който при истински отвор вече е от самия детайл
+RIM_LEFT = 0.35  # там най-много толкова от разликата между цвета в петното и този на детайла остава
+
+
+def sharp_rim(rgb: np.ndarray, blob: np.ndarray, body: np.ndarray) -> bool:
+    """Ръбът на петното е рязък: на RIM_PX пиксела навън цветът е почти този на детайла (body), а не още като в
+    петното. Истински отвор има стена; отблясъкът избледнява постепенно."""
+    if body.sum() < 50:
+        return True  # няма от какво да се съди: остава, както преди
+    lum = rgb.mean(2)
+    near = ndimage.binary_dilation(blob, iterations=RIM_PX[0])
+    ring = ndimage.binary_dilation(blob, iterations=RIM_PX[1]) & ~near
+    if ring.sum() < 20:
+        return True
+    inside = ndimage.binary_erosion(blob, iterations=2)
+    hole = float(np.median(lum[inside if inside.sum() >= 20 else blob]))
+    part, around = float(np.median(lum[body])), float(np.median(lum[ring]))
+    if abs(hole - part) < 1e-3:
+        return True
+    return (around - part) / (hole - part) <= RIM_LEFT
+
+
+def finish(soft: np.ndarray, crop: Image.Image, seed: tuple[float, float] | None = None, keep: list | None = None):
     """Мека маска 0..1 в изрязването -> (поле за очертанието с точност под пиксел, твърда маска без отворите).
-    seed: точка (пиксели на изрязването) върху детайла; иначе средата."""
+    seed: точка (пиксели на изрязването) върху детайла; иначе средата. keep: точки (пиксели на изрязването), които
+    потребителят е докоснал като детайла: отвор под такава точка не е отвор."""
     sx, sy = seed if seed is not None else (crop.size[0] / 2, crop.size[1] / 2)
     hard = part_near_centre(soft > 0.5, sx, sy)
     if hard is None:
@@ -81,7 +105,26 @@ def finish(soft: np.ndarray, crop: Image.Image, seed: tuple[float, float] | None
     for k in range(1, n + 1):
         if (lab == k).sum() < MIN_HOLE * area:
             holes[lab == k] = False
-    holes |= color_holes(np.asarray(crop, np.float32), filled)
+    # Петната с цвета на фона (през отвора се вижда масата). Отблясъкът върху лъскава страна е бял като листа под
+    # детайла: при пауърбанка отпред (задача 14a3b5) три такива петна (4% от страната) станаха "отвори", а
+    # докосването отгоре не ги махаше. И при тях, и при малък истински отвор (6 мм в ключ) мрежата е сигурна, че там е
+    # детайлът (1,00); разликата е в ръба: на 3-5 пиксела от отвора вече е цветът на детайла (стената на отвора е
+    # рязка), а отблясъкът избледнява постепенно и не стига до него (оставаше на 84% и 44% от пътя).
+    rgb = np.asarray(crop, np.float32)
+    by_color = color_holes(rgb, filled)
+    lab, n = ndimage.label(by_color)
+    body = ndimage.binary_erosion(hard, iterations=4)
+    for k in range(1, n + 1):
+        blob = lab == k
+        if float(np.median(soft[blob])) < SURE_SOLID or sharp_rim(rgb, blob, body):
+            holes |= blob
+    if keep:  # докоснатото като детайла е детайлът, дори ако мрежата или цветът виждат отвор там
+        lab, n = ndimage.label(holes)
+        h, w = holes.shape
+        for x, y in keep:
+            k = lab[min(h - 1, max(0, int(y))), min(w - 1, max(0, int(x)))]
+            if k:
+                holes[lab == k] = False
     solid = filled & ~holes
     if solid.sum() < 100:
         raise ValueError("no object")
@@ -206,7 +249,8 @@ def sam_cutout(models, im: Image.Image, points: list):
         raise ValueError("no object")
     soft = 1.0 / (1.0 + np.exp(-np.clip(best, -30, 30)))
     seed = next((p for p in local if len(p) < 3 or p[2]), local[0])
-    field_, solid = finish(soft.astype(np.float32), crop, (seed[0], seed[1]))
+    keep = [(p[0], p[1]) for p in local if len(p) < 3 or p[2]]
+    field_, solid = finish(soft.astype(np.float32), crop, (seed[0], seed[1]), keep)
     return field_, solid, box
 
 

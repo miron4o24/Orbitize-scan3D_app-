@@ -34,6 +34,7 @@ BUTTON_R = (0.06, 0.2)  # бутонът: радиус толкова от по-
 BUTTON_RING = 0.85  # и ръбът минава по толкова от окръжността му
 BUTTON_PLAIN = 0.06  # а вътре е гладък: ръбове по толкова от лицето му (кръгче в текст не е бутон)
 SAME = 0.5  # два детайла с толкова общо са един
+NESTED = 0.4  # освен по-малък от толкова от панел, върху който е: отделен детайл в панела (порт в плочата)
 REGULAR = 0.88  # детайлът съвпада поне толкова с кръг или заоблен правоъгълник
 COLOR_PX = 20.0  # цветен пиксел (наситеност в Lab)
 COLORFUL = 0.25  # детайл с толкова цветни пиксели е цветен (езичето на USB, лого)
@@ -102,16 +103,20 @@ def judge(lab: np.ndarray, mask: np.ndarray) -> dict | None:
             "gap": gap, "around": float(around[0])}  # fmt: skip
 
 
-def kind_of(seen: dict, share: float, poly: Polygon) -> str | None:
+def kind_of(seen: dict, share: float, poly: Polygon, in_panel: bool = False) -> str | None:
     """Какво е детайлът по цвета вътре и около него (None: печат или лого). Светла стена (бяла флашка, сребрист
     телефон): отворите са ясно по-тъмни и сиви, а цветното и бледото е печат. Тъмна стена (черен powerbank): по-тъмно
-    или с цветни части вътре (езичето на USB, контактите) е порт, а със същия цвят - бутон."""
+    или с цветни части вътре (езичето на USB, контактите) е порт, а със същия цвят - бутон. in_panel: детайлът е върху
+    намерен панел (плочата с портовете на powerbank): по-тъмно и с тъмно вътре е порт, дори цветно (розовото езиче на
+    USB-A, медният USB-C)."""
     colorful = seen["colorful"] >= COLORFUL
     if share >= PANEL:
         return None if colorful else "panel"  # екранът или панелът; цветното голямо петно е лого
     x0, y0, x1, y1 = poly.bounds
     longish = max(x1 - x0, y1 - y0) >= PORT_LONG * min(x1 - x0, y1 - y0)
     small = share < DOT and not longish  # отворче или светодиод; USB-C на голяма стена е малък, но дълъг
+    if in_panel and seen["dark"] >= PORT_DARK and seen["shade"] >= SHADED:
+        return "dot" if small else "port"
     if seen["around"] >= DARK_FACE:
         if seen["dark"] >= (HOLE_DARK_SMALL if small else HOLE_DARK) and not colorful:
             return "dot" if small else "port"  # (решетката на високоговорителя е по-светла от отвор)
@@ -240,14 +245,26 @@ def find(models, im: Image.Image, outer: np.ndarray) -> list[dict]:
         if seen is None:
             continue
         found.append((seen["contrast"], poly, seen))
+    def panel(p: Polygon) -> bool:
+        return p.area >= PANEL * local.area
+
+    def same(a: Polygon, b: Polygon) -> bool:
+        """Един и същ детайл, освен ако по-малкият е върху панел, много по-голям от него: портовете в плочата
+        на powerbank са изцяло в нея, но са отделни детайли (преди се губеха като "същия" като панела)."""
+        if a.intersection(b).area < SAME * min(a.area, b.area):
+            return False
+        small, big = sorted((a, b), key=lambda p: p.area)
+        return not (panel(big) and small.area <= NESTED * big.area)
+
     keep: list[tuple] = []
     for con, poly, seen in sorted(found, key=lambda t: -t[0]):
-        if any(poly.intersection(k[1]).area >= SAME * min(poly.area, k[1].area) for k in keep):
+        if any(same(poly, k[1]) for k in keep):
             continue
         keep.append((con, poly, seen))
     out = []
     for _, poly, seen in keep:
-        kind = kind_of(seen, poly.area / local.area, poly)
+        inside = any(panel(k[1]) and k[1] is not poly and k[1].buffer(1).contains(poly) for k in keep)
+        kind = kind_of(seen, poly.area / local.area, poly, inside)
         if kind:
             out.append({"pts": np.asarray(poly.exterior.coords)[:-1] + off, "kind": kind})
     gray = np.asarray(crop.convert("L"), np.float32) / 255

@@ -722,6 +722,11 @@ export default function Viewer() {
         {report?.object_width != null && report.object_width < SMALL_OBJECT && (
           <Note warn>Предметът беше далеч от камерата. Следващия път се приближете.</Note>
         )}
+        {report?.tips?.map((tip) => (
+          <Note key={tip} warn>
+            {tip}
+          </Note>
+        ))}
 
         {/* Само за собственика на приложението: как е създаден моделът и колко време е отнело. */}
         {!!user?.owner && !!report && (
