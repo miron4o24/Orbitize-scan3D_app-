@@ -19,7 +19,7 @@ import { coverage, DARK_LUX, LEVEL_TEXT, lightPercent, sharpLevel, sharpness, TA
 import { createScan, deleteScan, motionFile, updateScan, videoFile } from '@/lib/scans';
 import { currentUserId } from '@/lib/session';
 import { checkVideo } from '@/lib/videoCheck';
-import { font, makeStyles, palettes, space } from '@/theme';
+import { font, makeStyles, palettes, radius, space } from '@/theme';
 
 // Заснемане за AI модела: предметът в рамката, два кръга около него (ниско, после отвисоко). Всичко на екрана е
 // измерено от сензорите на телефона (lib/scanHud.ts) и казва на потребителя какво още трябва на модела: кои страни
@@ -390,7 +390,7 @@ export default function Capture() {
               accessibilityState={{ checked: torch }}
               accessibilityLabel="Светкавица"
             >
-              <Ionicons name={torch ? 'flash' : 'flash-off'} size={22} color={torch ? '#000' : WHITE} />
+              <Ionicons name={torch ? 'flash' : 'flash-off'} size={22} color={torch ? dark.onPrimary : WHITE} />
             </Pressable>
             <Pressable
               style={[styles.shutter, recording && styles.stop, !ready && styles.disabled]}
@@ -440,15 +440,16 @@ const usePermissionStyles = makeStyles((c) => ({
   content: { flex: 1, justifyContent: 'center', padding: space.xl, gap: space.lg },
 }));
 
-// Върху изображението от камерата: винаги тъмни цветове.
+// Върху изображението от камерата: тъмната палитра, а цианът и сигналният цвят са постоянни (HUD), за да се четат и при
+// двете теми.
 const dark = palettes.dark;
-const WHITE = '#ffffff';
-const GLASS = 'rgba(9,9,11,0.6)';
+const WHITE = dark.text;
+const GLASS = dark.glass;
 
 const styles = StyleSheet.create({
-  fill: { flex: 1, backgroundColor: '#000' },
+  fill: { flex: 1, backgroundColor: dark.bg },
   top: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', paddingHorizontal: space.lg, paddingTop: space.sm },
-  readout: { gap: 2, paddingVertical: 6, paddingHorizontal: 10, borderRadius: 10, backgroundColor: GLASS },
+  readout: { gap: 2, paddingVertical: 6, paddingHorizontal: 10, borderRadius: radius.sm, borderWidth: 1, borderColor: dark.line, backgroundColor: GLASS },
   mono: { color: dark.text2, fontFamily: font.mono, fontSize: 12.5, lineHeight: 18, letterSpacing: 0.6 },
   value: { color: WHITE, fontFamily: font.monoMedium },
   soft: { color: HUD.dim },
@@ -457,14 +458,25 @@ const styles = StyleSheet.create({
   close: {
     width: 40,
     height: 40,
-    borderRadius: 20,
+    borderRadius: radius.sm,
     backgroundColor: GLASS,
     borderWidth: 1,
-    borderColor: dark.line,
+    borderColor: dark.lineStrong,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  way: { color: WHITE, fontSize: 12.5, fontFamily: font.medium, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 12, backgroundColor: GLASS, overflow: 'hidden' },
+  way: {
+    color: WHITE,
+    fontSize: 11.5,
+    fontFamily: font.monoMedium,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: dark.lineStrong,
+    backgroundColor: GLASS,
+    overflow: 'hidden',
+  },
   stage: { flex: 1 },
   guide: { alignItems: 'center', paddingHorizontal: space.lg, paddingBottom: space.sm, gap: 6 },
   tipText: {
@@ -473,9 +485,9 @@ const styles = StyleSheet.create({
     lineHeight: 17,
     fontFamily: font.regular,
     textAlign: 'center',
-    paddingHorizontal: 12,
+    paddingHorizontal: 10,
     paddingVertical: 5,
-    borderRadius: 12,
+    borderRadius: radius.sm,
     backgroundColor: GLASS,
     overflow: 'hidden',
   },
@@ -485,53 +497,55 @@ const styles = StyleSheet.create({
     lineHeight: 19,
     fontFamily: font.medium,
     textAlign: 'center',
-    paddingHorizontal: 12,
+    paddingHorizontal: 10,
     paddingVertical: 6,
-    borderRadius: 14,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: dark.line,
     backgroundColor: GLASS,
     overflow: 'hidden',
   },
   panel: {
-    backgroundColor: HUD.panel,
+    backgroundColor: dark.surface,
     borderTopWidth: 1,
-    borderTopColor: 'rgba(255,255,255,0.12)',
+    borderTopColor: dark.line,
     paddingHorizontal: space.lg,
     paddingTop: space.md,
     gap: space.sm,
   },
   row: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline' },
-  label: { color: dark.muted, fontFamily: font.mono, fontSize: 11, letterSpacing: 1.2 },
+  label: { color: dark.muted, fontFamily: font.monoMedium, fontSize: 11, letterSpacing: 0.66 },
   big: { color: WHITE, fontFamily: font.monoMedium, fontSize: 15 },
-  bar: { flexDirection: 'row', gap: 3, height: 9 },
-  cell: { flex: 1, borderRadius: 1.5, backgroundColor: 'rgba(255,255,255,0.12)' },
+  bar: { flexDirection: 'row', gap: 2, height: 8 },
+  cell: { flex: 1, backgroundColor: dark.surface3 },
   cellOn: { backgroundColor: HUD.cyan },
-  stats: { flexDirection: 'row', marginTop: 4 },
+  stats: { flexDirection: 'row', marginTop: 4, borderTopWidth: 1, borderTopColor: dark.line, paddingTop: space.sm },
   stat: { flex: 1, gap: 2 },
   statValue: { color: WHITE, fontFamily: font.monoMedium, fontSize: 17 },
   controls: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: space.sm },
   side: {
     width: 48,
     height: 48,
-    borderRadius: 24,
-    backgroundColor: 'rgba(255,255,255,0.1)',
+    borderRadius: radius.sm,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.18)',
+    borderColor: dark.lineStrong,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  sideOn: { backgroundColor: HUD.amber, borderColor: HUD.amber },
+  sideOn: { backgroundColor: HUD.cyan, borderColor: HUD.cyan },
   sideSpace: { width: 48 },
+  // Бутонът за запис е кръгъл (хапче): единственото изключение от острите ъгли освен етикетите за състояние.
   shutter: {
     width: 68,
     height: 68,
-    borderRadius: 34,
-    borderWidth: 4,
-    borderColor: '#fff',
+    borderRadius: radius.pill,
+    borderWidth: 3,
+    borderColor: WHITE,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  stop: { borderColor: '#e53935' },
+  stop: { borderColor: dark.danger },
   disabled: { opacity: 0.4 },
-  recIcon: { width: 50, height: 50, borderRadius: 25, backgroundColor: '#e53935' },
-  stopIcon: { width: 24, height: 24, borderRadius: 4, backgroundColor: '#e53935' },
+  recIcon: { width: 52, height: 52, borderRadius: radius.pill, backgroundColor: dark.danger },
+  stopIcon: { width: 24, height: 24, borderRadius: radius.sm, backgroundColor: dark.danger },
 });
