@@ -10,7 +10,7 @@ import { type Vec3 } from './coverage.ts';
 import { LOOPS, SECTORS, type OrbitState } from './orbit.ts';
 
 // Кадрите, които AI моделът взима от видеото (app/ai.py AI_FRAMES): толкова различни рязки гледни точки са нужни.
-export const TARGET_VIEWS = 48;
+export const TARGET_VIEWS = 50;
 const VIEW_STEP_DEG = 6; // нова гледна точка: поне толкова встрани от всяка вече преброена
 const SHARP_FULL_DEG_S = 10; // до тази скорост на завъртане кадрите са рязки
 const SHARP_ZERO_DEG_S = 60; // от тази нататък са размазани
