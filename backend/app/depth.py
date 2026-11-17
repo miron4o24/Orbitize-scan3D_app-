@@ -37,7 +37,11 @@ MODELS = Path(__file__).resolve().parent.parent / "tools" / "depth"
 BEST = MODELS / "depth_anything_v2_base.onnx"
 MODEL = Path(os.environ.get("DEPTH_MODEL", BEST if BEST.exists() else MODELS / "depth_anything_v2_small.onnx"))
 MODEL_URL = "https://huggingface.co/onnx-community/depth-anything-v2-small/resolve/main/onnx/model.onnx"
-SIZE = 518  # собствената разделителна способност на мрежата (дългата страна на изрязването на предмета)
+# Дългата страна на изрязването на предмета, подадено на мрежата. Обучена е на 518, но приема всякакво кратно на 14:
+# при 784 листата по основата на Фродо, стъпалата и ръбът на меча излизат по-ситни, а слятата повърхност - малко
+# по-ясна около краката, без нищо да се влоши; на лаптопа около 10% по-бавно на изрязване (2026-11-17). 1036 не добави
+# видимо повече за 6 пъти времето. Недостиг на памет: parallel.each_model минава на един модел наведнъж.
+SIZE = 784
 MAX_SIDE = 1920  # кадрите първо се смаляват до това (вижте predict)
 MAX_ERROR = 0.05  # медианна относителна грешка на дълбочината при напасване на кадър; по-лошите кадри отпадат
 # От размера на предмета: колко зад точка кадрите трябва да виждат повърхността средно, за да я издълбаят.
@@ -127,7 +131,7 @@ class Frame:
 
 def predict(sess, image: Image.Image, mask: np.ndarray, R, t, K) -> Frame | None:
     # Кадри над MAX_SIDE (4K видео, пазено за текстурата) се смаляват заедно с камерата си: мрежата така или иначе
-    # вижда 518 пиксела, а изрязването на всеки напаснат кадър остава в паметта.
+    # вижда SIZE пиксела, а изрязването на всеки напаснат кадър остава в паметта.
     s = MAX_SIDE / max(image.size)
     if s < 1:
         image = image.resize((max(1, round(image.size[0] * s)), max(1, round(image.size[1] * s))), Image.BILINEAR)
