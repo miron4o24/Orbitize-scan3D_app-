@@ -51,5 +51,5 @@ const useStyles = makeStyles((c) => ({
     paddingHorizontal: space.lg,
     paddingTop: space.sm,
   },
-  title: { flex: 1, textAlign: 'center', fontFamily: font.semibold, fontSize: 15, letterSpacing: -0.2, color: c.text },
+  title: { flex: 1, textAlign: 'center', fontFamily: font.semibold, fontSize: 15, color: c.text },
 }));

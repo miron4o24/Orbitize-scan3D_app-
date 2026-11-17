@@ -1,9 +1,10 @@
 import { GLView, type ExpoWebGLRenderingContext } from 'expo-gl';
 import { useEffect, useRef, useState } from 'react';
-import { PanResponder, StyleSheet, View } from 'react-native';
+import { PanResponder, PixelRatio, StyleSheet, View } from 'react-native';
 import { useReducedMotion } from 'react-native-reanimated';
 
 import { uploadPhotoTextures } from '@/lib/photoTexture';
+import { useColors } from '@/theme';
 import {
   AmbientLight,
   Box3,
@@ -64,15 +65,26 @@ function rgb(hex: string) {
   return new Vector3(r, g, b);
 }
 
-// Градиентът като четириъгълник на целия екран, нарисуван пръв. Цветовете му излизат непроменени (без преобразуване
-// на цветовото пространство в шейдъра), затова съвпадат точно с цветовете на приложението.
+// Градиентът като четириъгълник на целия екран, нарисуван пръв, с мрежата от точки на темата (стъпка 18, точки от 1
+// точка в c.lineStrong при 50%) зад модела. Цветовете излизат непроменени (без преобразуване на цветовото
+// пространство в шейдъра), затова съвпадат точно с цветовете на приложението.
+const DOT_PITCH = 18;
 function backdrop() {
+  const ratio = PixelRatio.get();
   const material = new ShaderMaterial({
-    uniforms: { inner: { value: new Vector3() }, outer: { value: new Vector3() } },
+    uniforms: {
+      inner: { value: new Vector3() },
+      outer: { value: new Vector3() },
+      dot: { value: new Vector3() },
+      pitch: { value: DOT_PITCH * ratio },
+      size: { value: Math.max(1, ratio) },
+    },
     vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
     fragmentShader:
-      'uniform vec3 inner; uniform vec3 outer; varying vec2 vUv;' +
-      'void main() { float t = clamp(length(vUv * 2.0 - 1.0) / 1.41421356, 0.0, 1.0); gl_FragColor = vec4(mix(inner, outer, t), 1.0); }',
+      'uniform vec3 inner; uniform vec3 outer; uniform vec3 dot; uniform float pitch; uniform float size; varying vec2 vUv;' +
+      'void main() { float t = clamp(length(vUv * 2.0 - 1.0) / 1.41421356, 0.0, 1.0); vec3 base = mix(inner, outer, t);' +
+      ' vec2 g = mod(gl_FragCoord.xy, pitch); float on = step(g.x, size) * step(g.y, size);' +
+      ' gl_FragColor = vec4(mix(base, dot, 0.5 * on), 1.0); }',
     depthTest: false,
     depthWrite: false,
   });
@@ -85,7 +97,6 @@ function backdrop() {
 const INITIAL = { rx: 0.35, ry: 0.6, zoom: 1 };
 const TAP_MOVE = 8; // докосване, което се мести по-малко от това (точки) и завършва в рамките на TAP_MS, е натискане, а не завъртане
 const TAP_MS = 400;
-const SPOT_COLOR = 0xff3d2e;
 const SPOT_SIZE = 0.018; // радиусът на кръгчето като дял от най-голямата страна на модела
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
@@ -125,6 +136,9 @@ const INTRO_MS = 1400;
 
 // Един пръст върти, два мащабират. Рисува само при промяна: след краткото завъртане при появата нищо не се анимира.
 export function ModelView({ model, wireframe, background, beforeDraw, spot, marks, onPick }: Props) {
+  const c = useColors();
+  // Мерките (две точки и линия) са в сигналния цвят; посоченото място за промяна е избор (цвета за акцент).
+  const markColor = marks ? c.signal : c.accent;
   const reduce = useReducedMotion();
   const [view, setView] = useState(() => (reduce ? INITIAL : { ...INITIAL, ry: INITIAL.ry - INTRO_TURN }));
   const [stage, setStage] = useState<Stage | null>(null);
@@ -238,7 +252,7 @@ export function ModelView({ model, wireframe, background, beforeDraw, spot, mark
     const d = box.getSize(new Vector3());
     const at = ([x, y, z]: Spot) => new Vector3(box.min.x + x * d.x, box.min.y + y * d.y, box.min.z + z * d.z);
     const dots = points.map((p) => {
-      const dot = new Mesh(new SphereGeometry(SPOT_SIZE * Math.max(d.x, d.y, d.z), 20, 14), new MeshBasicMaterial({ color: SPOT_COLOR }));
+      const dot = new Mesh(new SphereGeometry(SPOT_SIZE * Math.max(d.x, d.y, d.z), 20, 14), new MeshBasicMaterial({ color: markColor }));
       dot.position.copy(at(p));
       dot.raycast = () => {};
       model.add(dot);
@@ -246,7 +260,7 @@ export function ModelView({ model, wireframe, background, beforeDraw, spot, mark
     });
     const line =
       points.length === 2
-        ? new Line(new BufferGeometry().setFromPoints(points.map(at)), new LineBasicMaterial({ color: SPOT_COLOR, depthTest: false }))
+        ? new Line(new BufferGeometry().setFromPoints(points.map(at)), new LineBasicMaterial({ color: markColor, depthTest: false }))
         : null;
     if (line) {
       line.raycast = () => {};
@@ -265,19 +279,21 @@ export function ModelView({ model, wireframe, background, beforeDraw, spot, mark
         line.material.dispose();
       }
     };
-  }, [stage, model, shown]);
+  }, [stage, model, shown, markColor]);
 
   const [inner, outer] = background;
+  const grid = c.lineStrong;
   useEffect(() => {
     if (!stage) return;
     stage.backdrop.uniforms.inner.value.copy(rgb(inner));
     stage.backdrop.uniforms.outer.value.copy(rgb(outer));
+    stage.backdrop.uniforms.dot.value.copy(rgb(grid));
     stage.orbit.rotation.set(view.rx, view.ry, 0);
     stage.orbit.scale.setScalar(view.zoom);
     beforeDraw?.();
     stage.renderer.render(stage.scene, stage.camera);
     stage.gl.endFrameEXP();
-  }, [stage, model, view, wireframe, inner, outer, beforeDraw, shown]);
+  }, [stage, model, view, wireframe, inner, outer, grid, beforeDraw, shown]);
 
   return (
     <View
