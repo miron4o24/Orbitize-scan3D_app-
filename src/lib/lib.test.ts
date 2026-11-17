@@ -5,6 +5,7 @@ import { test } from 'node:test';
 import { elevation, isUsableAim, viewDir, type Vec3 } from './coverage.ts';
 import { OrbitTracker } from './orbit.ts';
 import { judge, measure } from './quality.ts';
+import { coverage, lightPercent, sharpness, ViewCounter } from './scanHud.ts';
 import { clampZoom, pinch, unproject } from './zoom.ts';
 
 const W = 128;
@@ -114,6 +115,31 @@ test('orbit: turning too fast covers nothing', () => {
   // Брои се само първата около 0,5 с, докато заглаждането на скоростта навакса.
   assert.ok(o.state.covered[0].filter(Boolean).length <= 4, `${o.state.covered[0].filter(Boolean).length}`);
   assert.equal(o.state.loop, 0);
+});
+
+test('scan screen: the numbers come from the sensors', () => {
+  // Рязкостта пада с бързото въртене: бавната обиколка е рязка, разклащането не.
+  assert.equal(sharpness(5), 100);
+  assert.ok(sharpness(30) > 40 && sharpness(30) < 70);
+  assert.equal(sharpness(80), 0);
+  assert.equal(lightPercent(1000), 100);
+  assert.ok(lightPercent(10) < 25); // тъмно
+  // Обиколката отбелязва къде е телефонът и покритието расте с нея.
+  const o = new OrbitTracker();
+  walk(o, 0, 90, 12, 10, 0);
+  assert.ok(Math.abs(o.angle - 90) < 1 || Math.abs(o.angle - 270) < 1, `${o.angle}`);
+  assert.ok(o.orbitSpeed > 8 && o.orbitSpeed < 16, `${o.orbitSpeed}`);
+  assert.ok(coverage(o.state) > 0.08 && coverage(o.state) < 0.15, `${coverage(o.state)}`);
+  // Гледните точки се броят само рязки и различни: стоене на място е една, кръг на стъпки по 3° са около 40 (по 9°).
+  const v = new ViewCounter();
+  const rad = (d: number) => (d * Math.PI) / 180;
+  for (let i = 0; i < 20; i++) v.add(viewDir({ alpha: 0, beta: rad(80), gamma: 0 }), 90);
+  assert.equal(v.count, 1);
+  for (let d = 0; d < 360; d += 3) v.add(viewDir({ alpha: rad(d), beta: rad(80), gamma: 0 }), 90);
+  assert.ok(v.count >= 38 && v.count <= 42, `${v.count}`);
+  const blurred = new ViewCounter();
+  for (let d = 0; d < 360; d += 3) blurred.add(viewDir({ alpha: rad(d), beta: rad(80), gamma: 0 }), 20);
+  assert.equal(blurred.count, 0);
 });
 
 test('print export: Y-up model becomes Z-up and is scaled to the requested size', async () => {

@@ -53,6 +53,16 @@ export class OrbitTracker {
     return this.state.loop >= LOOPS;
   }
 
+  /* Къде е телефонът около предмета: градуси от мястото, където е започнал записът (0-360). */
+  get angle() {
+    return this.startAz === null ? 0 : (((this.lastAz - this.startAz) % 360) + 360) % 360;
+  }
+
+  /* Колко бързо обикаля предмета: градуси в секунда (заглаждани). */
+  get orbitSpeed() {
+    return this.speed;
+  }
+
   /* Заснетата част от първия кръг: под 1 сканирането вероятно ще е непълно. */
   get firstLoopFraction() {
     return Math.min(1, this.state.covered[0].filter(Boolean).length / NEEDED);
