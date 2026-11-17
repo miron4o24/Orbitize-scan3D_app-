@@ -15,7 +15,7 @@ import { ArrowLink, IconButton, Kicker, ScrollBar, Section, useScrollY } from '@
 import { errorText } from '@/lib/api';
 import { refreshProfile } from '@/lib/auth';
 import { importVideo } from '@/lib/importVideo';
-import { aiAvailable, aiTrial, CAD_INFO, PRO_INFO } from '@/lib/prefs';
+import { aiAvailable, CAD_INFO, PRO_INFO } from '@/lib/prefs';
 import { openEntry, useLibrary } from '@/lib/library';
 import { checkProgress, useProgress } from '@/lib/progress';
 import { useSession } from '@/lib/session';
@@ -44,12 +44,12 @@ export default function Home() {
   const progress = useProgress();
 
   const canAi = !!user && aiAvailable(); // прочита се отново при всяка промяна на сесията (профила)
-  const aiSub = canAi ? (aiTrial() ? 'Един безплатен опит' : 'Най-бързият начин') : user?.pro ? 'Временно не е достъпен' : user ? 'С Orbitize Pro' : 'Влезте в профила си';
+  const aiSub = canAi ? 'Най-бързият начин' : user ? 'Временно не е достъпен' : 'Влезте в профила си';
 
   useFocusEffect(
     useCallback(() => {
       checkProgress();
-      refreshProfile().catch(() => {}); // Pro, включен или изключен от собственика
+      refreshProfile().catch(() => {}); // AI моделът, включен или изключен на сървъра
     }, []),
   );
 
@@ -65,10 +65,9 @@ export default function Home() {
     }
   }
 
-  // Без AI модел на този профил: вход, Pro или съобщение (Pro, но сървърът го е изключил).
+  // Без AI модел: вход или съобщение (сървърът го е изключил).
   const needAi = () => {
     if (!user) return router.push('/sign-in');
-    if (!user.pro) return router.push('/pro');
     Alert.alert('AI моделът временно не е достъпен', 'Опитайте по-късно или използвайте инженерния режим.');
   };
   const filmAi = () => (canAi ? router.push('/capture') : needAi());
@@ -109,7 +108,6 @@ export default function Home() {
               <ScanChoice highlight title={PRO_INFO.single.label} time={PRO_INFO.single.time} sub={aiSub} icon="sparkles" onPress={filmAi} />
               <ScanChoice title={CAD_INFO.label} time={CAD_INFO.time} sub="Детайл 1:1 от снимки и шублер: STEP за CAD" icon="construct-outline" onPress={engineer} />
               <ArrowLink label={importing ? 'Отваряне…' : 'Качи готово видео'} onPress={upload} style={s.ctaLink} />
-              {!!user && !user.pro && <ArrowLink label="Виж Orbitize Pro" onPress={() => router.push('/pro')} style={s.ctaLink} />}
             </Appear>
             {progress && (
               <Appear index={7}>

@@ -17,7 +17,6 @@
     "expo-font": "~58.0.10",
     "expo-gl": "~58.0.3",
     "expo-haptics": "~58.0.7",
-    "expo-iap": "^6.4.2",
     "expo-image": "~58.0.17",
     "expo-image-manipulator": "~58.0.15",
     "expo-image-picker": "~58.0.10",

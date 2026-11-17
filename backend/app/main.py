@@ -19,14 +19,12 @@ from pydantic import BaseModel, Field
 from . import accounts as A
 from . import ai as AI
 from . import ar as AR
-from . import billing
 from . import community
 from . import edit as ED
 from . import jobs
 from . import mesh as M
 from . import motion as MO
 from . import pipeline as PI
-from . import plans as PL
 from . import printing as PR
 from . import progress
 from . import render as RE
@@ -66,7 +64,6 @@ app.state.worker = worker
 app.include_router(A.router)
 app.include_router(community.router)
 app.include_router(progress.router)
-app.include_router(billing.router)
 
 
 def existing(job_id: str, p: Principal) -> dict:
@@ -268,16 +265,9 @@ def start_job(job_id: str, params: StartParams, p: Principal = Depends(principal
         params.method = "scan"
     if params.method == "scan" and not p.admin:
         raise HTTPException(400, NO_SCAN)
-    pro = params.method != "scan"
-    trial = False
-    if pro:
-        if not A.is_pro(p):
-            if params.method != "single":
-                raise HTTPException(403, "Това е само за Pro профили.")
-            PL.check(p, "ai", job_id)  # единственият AI модел на безплатен профил; 402, когато е използван
-            trial = True
-        if not AI.available()[params.method]:
-            raise HTTPException(503, "Тази AI услуга още не е включена.")
+    pro = params.method != "scan"  # AI модел: собствена опашка (jobs.is_pro); всеки профил може да го прави
+    if pro and not AI.available()[params.method]:
+        raise HTTPException(503, "Тази AI услуга още не е включена.")
     if not status["video_bytes"] and n < (1 if params.method in AI.METHODS else MIN_PHOTOS):
         raise HTTPException(400, f"Нужно е видео или поне {MIN_PHOTOS} снимки.")
     if (worker.ai_q if pro else worker.q).qsize() >= MAX_QUEUED:
@@ -286,8 +276,6 @@ def start_job(job_id: str, params: StartParams, p: Principal = Depends(principal
         if not status["video_bytes"] or params.extend == job_id:
             raise HTTPException(400, "За допълнение е нужно ново видео.")
         add_frames_of(existing(params.extend, p), params.extend, job_id)
-    if trial:
-        PL.record(p, "ai", job_id)
     worker.submit(job_id, params.model_dump(exclude={"extend"}))
     return jobs.public(job_id)
 
@@ -322,12 +310,10 @@ class EditParams(BaseModel):
 
 @app.post("/jobs/{job_id}/edit")
 def edit_job(job_id: str, params: EditParams, p: Principal = Depends(principal)):
-    """Pro: нов модел, създаден от този чрез текстова промяна (app/edit.py); този остава непроменен. Връща новата
+    """Нов модел, създаден от този чрез текстова промяна (app/edit.py); този остава непроменен. Връща новата
     задача, която приложението следи като сканиране."""
     if existing(job_id, p)["state"] != "done":
         raise HTTPException(409, "Моделът още не е готов.")
-    if not A.is_pro(p):
-        raise HTTPException(403, "Промените с текст са само за Pro профили.")
     if jobs.count() >= MAX_JOBS:
         raise HTTPException(503, "Услугата е натоварена в момента. Опитайте след малко.")
     if worker.ai_q.qsize() >= MAX_QUEUED:
@@ -355,11 +341,9 @@ class NameplateParams(BaseModel):
 
 @app.post("/jobs/{job_id}/nameplate")
 def nameplate_job(job_id: str, params: NameplateParams, p: Principal = Depends(principal)):
-    """Pro: нов модел, създаден от този, стоящ върху плочка с име (app/edit.py); този остава непроменен."""
+    """Нов модел, създаден от този, стоящ върху плочка с име (app/edit.py); този остава непроменен."""
     if existing(job_id, p)["state"] != "done":
         raise HTTPException(409, "Моделът още не е готов.")
-    if not A.is_pro(p):
-        raise HTTPException(403, "Табелката с име е за Pro профили.")
     if not " ".join(params.text.split()):
         raise HTTPException(400, "Напишете име.")
     if jobs.count() >= MAX_JOBS:
@@ -549,7 +533,7 @@ def delete_job(job_id: str, p: Principal = Depends(principal)):
 
 def owner(p: Principal) -> bool:
     try:
-        return p.admin or (p.user_id is not None and A.is_owner_email(A.user_email_pro(p.user_id)[0]))
+        return p.admin or (p.user_id is not None and A.is_owner_email(A.user_email(p.user_id)))
     except HTTPException:
         return False
 
@@ -710,20 +694,15 @@ def get_spin(job_id: str, p: Principal = Depends(principal)):
 
 @app.get("/jobs/{job_id}/stress/{case}")
 def get_stress(job_id: str, case: str, p: Principal = Depends(principal)):
-    """Безплатни профили: ограничен брой модели (app/plans.py), брои се след първия успешен тест на модел."""
     if existing(job_id, p)["state"] != "done":
         raise HTTPException(409, "Моделът още не е готов.")
-    PL.check(p, "stress", job_id)
-    out = ST.summary_response(job_id, case, p.user_id)
-    PL.record(p, "stress", job_id)
-    return out
+    return ST.summary_response(job_id, case, p.user_id)
 
 
 @app.get("/jobs/{job_id}/stress/{case}/model.glb")
 def get_stress_model(job_id: str, case: str, p: Principal = Depends(principal)):
     if existing(job_id, p)["state"] != "done":
         raise HTTPException(409, "Моделът още не е готов.")
-    PL.check(p, "stress", job_id)
     return ST.model_response(job_id, case)
 
 
@@ -749,10 +728,8 @@ def ar_link(job_id: str, params: ArParams, request: Request, p: Principal = Depe
     приложението, а не браузърът."""
     if existing(job_id, p)["state"] != "done":
         raise HTTPException(409, "Моделът още не е готов.")
-    PL.check(p, "ar", job_id)  # безплатни профили: ограничен брой сканирания (app/plans.py)
     tenths = round(params.longest_mm * 10)
     AR.cached(jobs.job_dir(job_id), tenths)
-    PL.record(p, "ar", job_id)
     expires = int(time.time()) + AR_LINK_SECONDS
     base = f"{A.base_url(request)}/ar/{job_id}/{tenths}/{expires}/{ar_signature(job_id, tenths, expires)}"
     return {"page": f"{base}/view", "url": f"{base}/model.glb", "expires": expires}

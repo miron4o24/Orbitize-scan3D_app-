@@ -91,26 +91,16 @@ def is_owner_email(email: str) -> bool:
     return email.strip().lower() in {e.strip().lower() for e in OWNER_EMAILS.split(",") if e.strip()}
 
 
-def user_email_pro(user_id: str) -> tuple[str, bool]:
+def user_email(user_id: str) -> str:
     with need_db().connect() as c:
-        u = c.execute(sa.select(db.users.c.email, db.users.c.pro, db.users.c.pro_until).where(db.users.c.id == user_id)).first()
+        u = c.execute(sa.select(db.users.c.email).where(db.users.c.id == user_id)).first()
     if u is None:
         raise HTTPException(401, "Този профил вече не съществува.")
-    return u.email, bool(u.pro) or (u.pro_until or 0) > time.time()
-
-
-def is_pro(p: Principal) -> bool:
-    """API ключът (администраторът) се брои за Pro, а собственикът винаги е с Pro."""
-    if p.admin:
-        return True
-    if not p.user_id:
-        return False
-    email, pro = user_email_pro(p.user_id)
-    return pro or is_owner_email(email)
+    return u.email
 
 
 def owner_only(p: Principal = Depends(principal)) -> Principal:
-    if not p.admin and not (p.user_id and is_owner_email(user_email_pro(p.user_id)[0])):
+    if not p.admin and not (p.user_id and is_owner_email(user_email(p.user_id))):
         raise HTTPException(403, "Само за собственика на приложението.")
     return p
 
@@ -283,9 +273,6 @@ def owned_jobs(user_id: str) -> list[sa.Row]:
 
 
 def profile(user_id: str) -> dict:
-    from . import billing, plans  # те импортират този модул
-
-    billing.refresh(user_id)  # изтекъл абонамент може да е подновен
     with need_db().connect() as c:
         u = c.execute(sa.select(db.users).where(db.users.c.id == user_id)).first()
     if u is None:
@@ -293,8 +280,6 @@ def profile(user_id: str) -> dict:
     rows = owned_jobs(user_id)
     statuses = [jobs.read(r.job_id) or {} for r in rows]
     owner = is_owner_email(u.email)
-    paid = (u.pro_until or 0) > time.time()
-    pro = owner or bool(u.pro) or paid
     done = [s for s in statuses if s.get("state") == "done"]
     return {
         "id": u.id,
@@ -303,15 +288,11 @@ def profile(user_id: str) -> dict:
         "google_picture": u.google_picture,
         "has_avatar": bool(u.avatar),
         "created": u.created,
-        # pro: може да създава AI модели (app/ai.py), "ai" казва за кои сървърът има ключове; owner: страницата за
-        # Pro.
-        "pro": pro,
-        "pro_until": u.pro_until if paid else None,  # чрез плащане: до кога (подновява се сам, ако не е отменен)
-        "billing": billing.configured(),  # Pro може да се купи в приложението
-        "pro_product": billing.PRODUCT,
+        # Pro и безплатният план са премахнати: всеки профил може всичко. "pro": True е за по-старите версии на
+        # приложението, които показват AI модела само на Pro. "ai" казва за кои AI модели сървърът има ключове.
+        "pro": True,
         "owner": owner,
         "ai": AI.available(),
-        "limits": plans.summary(user_id, pro),  # тестовете за здравина, AR и пробният AI модел на безплатния план (app/plans.py)
         "stats": {
             "scans": sum(1 for s in statuses if s),
             "done": len(done),
@@ -680,35 +661,6 @@ def put_settings(body: Settings):
     if body.google_client_id is not None:
         db.set_setting(GOOGLE_SETTING, body.google_client_id.strip())
     return get_settings()
-
-
-# --- Страницата на собственика за Pro (екран "Pro" в приложението)
-# ---------------------------------------------------
-
-
-@router.get("/owner/users", dependencies=[Depends(owner_only)])
-def owner_users(q: str = Query("", max_length=100), limit: int = Query(100, ge=1, le=500)):
-    """Първо най-новите профили; q: част от името или имейла."""
-    sel = sa.select(db.users.c.id, db.users.c.email, db.users.c.name, db.users.c.created, db.users.c.pro)
-    if q.strip():
-        like = f"%{q.strip().lower()}%"
-        sel = sel.where(sa.or_(sa.func.lower(db.users.c.email).like(like), sa.func.lower(db.users.c.name).like(like)))
-    with need_db().connect() as c:
-        rows = c.execute(sel.order_by(db.users.c.created.desc()).limit(limit)).all()
-    return [{"id": r.id, "email": r.email, "name": r.name, "created": r.created, "pro": bool(r.pro),
-             "owner": is_owner_email(r.email)} for r in rows]  # fmt: skip
-
-
-class ProSwitch(BaseModel):
-    pro: bool
-
-
-@router.put("/owner/users/{user_id}/pro", dependencies=[Depends(owner_only)])
-def owner_set_pro(user_id: str, body: ProSwitch):
-    with need_db().begin() as c:
-        if not c.execute(sa.update(db.users).where(db.users.c.id == user_id).values(pro=body.pro)).rowcount:
-            raise HTTPException(404, "Профилът не е намерен.")
-    return {"id": user_id, "pro": body.pro}
 
 
 # Ключовете на AI услугите са на приложението, а не на потребителите: задават се само с API ключа (никога от
