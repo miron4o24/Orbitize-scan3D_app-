@@ -17,8 +17,8 @@ import Animated, {
 } from 'react-native-reanimated';
 
 import { Appear, CountUp, LiveDot } from '@/components/motion';
-import { Button, Card, ErrorText, H3, Header, Mono, Row, Screen, Section, Segmented, Small } from '@/components/ui';
-import { aiAvailable, PRO_INFO, SCAN_INFO } from '@/lib/prefs';
+import { Button, Card, ErrorText, H3, Header, Mono, Row, Screen, Small } from '@/components/ui';
+import { aiAvailable, PRO_INFO } from '@/lib/prefs';
 import { refreshProfile } from '@/lib/auth';
 import { checkProgress } from '@/lib/progress';
 import { setUpPush } from '@/lib/push';
@@ -44,6 +44,8 @@ import {
 import { deleteScan, getScan, motionFile, photosDir, scanTitle, updateScan, videoFile, type Scan } from '@/lib/scans';
 
 const ACTIVE = ['queued', 'reconstructing', 'meshing', 'cleaning'];
+// Стандартното сканиране (премахнато): само за сканирания, пуснати преди това и още в обработка.
+const OLD_SCAN_MINUTES = 35;
 const STEPS: [string, string][] = [
   ['queued', 'На опашка'],
   ['reconstructing', 'Изграждане на предмета в 3D'],
@@ -323,16 +325,14 @@ export default function Processing() {
       }
       // Изборите в момента: могат да се променят, докато качването върви.
       const now = getScan(id) ?? scan!;
-      // Само предлаганите два начина: друг начин от по-старо сканиране (express, quick) се опитва отново като
-      // стандартно сканиране.
-      const chosen = now.method === 'single' && aiAvailable() ? 'single' : undefined;
-      update({ method: chosen, quality: undefined });
+      // Само AI моделът: стандартното сканиране е премахнато, затова и по-старо сканиране се опитва отново с него.
+      update({ method: 'single', quality: undefined });
       const started = await retrying(() =>
         startJob(job.id, {
           flat_base: now.flatBase ?? true,
           quality: 'detailed',
           ...(hasVideo && { video_bytes: video.size }),
-          ...(chosen && { method: chosen }),
+          method: 'single',
           ...(now.extendFrom && { extend: now.extendFrom }),
         }),
       ).catch((e) => {
@@ -391,7 +391,7 @@ export default function Processing() {
     );
 
   if (active) {
-    const total = pro ? PRO_INFO[pro].minutes : scan.quality === 'quick' ? 10 : SCAN_INFO.minutes;
+    const total = pro ? PRO_INFO[pro].minutes : scan.quality === 'quick' ? 10 : OLD_SCAN_MINUTES;
     const queued = scan.status === 'queued';
     const share = queued ? 0 : progress;
     const left = Math.max(1, Math.round(total * (1 - share)));
@@ -399,7 +399,7 @@ export default function Processing() {
     const at = steps.findIndex(([st]) => st === scan.status);
     return (
       <Screen>
-        <Header kicker={pro ? PRO_INFO[pro].label : canAi ? SCAN_INFO.label : undefined} title={scanTitle(scan)} />
+        <Header kicker={pro ? PRO_INFO[pro].label : undefined} title={scanTitle(scan)} />
         <Appear index={1}>
           <Card style={s.overall}>
             <View style={s.row}>
@@ -472,7 +472,6 @@ export default function Processing() {
     );
 
   const uploading = uploaded !== null;
-  const way = method === 'single' && canAi ? 'single' : 'scan';
   const failed = scan.status === 'failed';
   return (
     <Screen>
@@ -494,21 +493,13 @@ export default function Processing() {
         </Appear>
       )}
       {info && <Small>{info}</Small>}
-      {canAi && (
-        <Appear index={2}>
-          <Section label="Начин">
-            <Segmented<'scan' | 'single'>
-              value={way}
-              onChange={(m) => update({ method: m === 'single' ? 'single' : undefined })}
-              options={[
-                { value: 'scan', label: SCAN_INFO.label },
-                { value: 'single', label: PRO_INFO.single.label },
-              ]}
-            />
-            <Small>{way === 'single' ? PRO_INFO.single.time : SCAN_INFO.time}</Small>
-          </Section>
-        </Appear>
-      )}
+      <Appear index={2}>
+        <Small>
+          {canAi
+            ? `${PRO_INFO.single.label} · ${PRO_INFO.single.time}`
+            : `Моделът се прави с ${PRO_INFO.single.label}, а той не е достъпен за този профил.`}
+        </Small>
+      </Appear>
       <Appear index={3}>
         <Card style={s.list}>
           <Row
@@ -541,7 +532,7 @@ export default function Processing() {
           title={failed ? 'Опитай отново' : 'Създай модел'}
           icon={failed ? 'refresh' : 'cloud-upload-outline'}
           onPress={uploadAndStart}
-          disabled={total === 0}
+          disabled={total === 0 || !canAi}
         />
       )}
       {netError && <ErrorText>{netError}</ErrorText>}

@@ -74,7 +74,7 @@ export default function MyScans() {
                   onChange={setChosen}
                   options={[
                     { value: 'ai', label: `AI модели · ${ai.length}` },
-                    { value: 'other', label: `Стандартни · ${other.length}` },
+                    { value: 'other', label: `Стари сканирания · ${other.length}` },
                   ]}
                 />
               </Appear>

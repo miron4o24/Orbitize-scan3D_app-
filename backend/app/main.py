@@ -237,11 +237,15 @@ class StartParams(BaseModel):
     flat_base: bool = True
     video_bytes: int | None = None  # размерът на файла в приложението, за да не се обработва никога наполовина качено видео
     quality: Literal["detailed", "quick"] = "detailed"  # quick: по-малко и по-малки кадри (pipeline.run)
-    # scan: сканирането за около 35 минути (за всички). Pro: single, AI моделът (claude, photo: AI моделите, изискващи
-    # платени ключове; app/ai.py). quick или express от по-старо приложение е scan (start_job).
+    # single: AI моделът (claude, photo: AI моделите, изискващи платени ключове; app/ai.py). scan: стандартното
+    # сканиране, премахнато от приложението: само с API ключа на сървъра (тестове, сравнения). quick или express от
+    # по-старо приложение е scan (start_job).
     method: Literal["scan", "express", "single", "claude", "photo"] = "scan"
     tune: Tune | None = None
     extend: str | None = Field(None, pattern=r"^[0-9a-f]{32}$")  # това видео добавя липсваща страна към този модел
+
+
+NO_SCAN = "Стандартното сканиране вече го няма. Използвайте AI модел или инженерния режим (обновете приложението)."
 
 
 @app.post("/jobs/{job_id}/start")
@@ -262,6 +266,8 @@ def start_job(job_id: str, params: StartParams, p: Principal = Depends(principal
         params.tune = None
     if params.method == "express":
         params.method = "scan"
+    if params.method == "scan" and not p.admin:
+        raise HTTPException(400, NO_SCAN)
     pro = params.method != "scan"
     trial = False
     if pro:
