@@ -1,5 +1,5 @@
-import { JetBrainsMono_400Regular, JetBrainsMono_500Medium } from '@expo-google-fonts/jetbrains-mono';
-import { Onest_400Regular, Onest_500Medium, Onest_600SemiBold, useFonts } from '@expo-google-fonts/onest';
+import { IBMPlexMono_400Regular, IBMPlexMono_500Medium } from '@expo-google-fonts/ibm-plex-mono';
+import { IBMPlexSans_400Regular, IBMPlexSans_500Medium, IBMPlexSans_600SemiBold, useFonts } from '@expo-google-fonts/ibm-plex-sans';
 import { NavigationBar } from 'expo-navigation-bar';
 import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
@@ -22,11 +22,11 @@ export default function RootLayout() {
   const c = useColors();
   // Шрифт, който не се зарежда, преминава към системния, вместо да задържа началния екран.
   const [loaded, failed] = useFonts({
-    Onest_400Regular,
-    Onest_500Medium,
-    Onest_600SemiBold,
-    JetBrainsMono_400Regular,
-    JetBrainsMono_500Medium,
+    IBMPlexSans_400Regular,
+    IBMPlexSans_500Medium,
+    IBMPlexSans_600SemiBold,
+    IBMPlexMono_400Regular,
+    IBMPlexMono_500Medium,
   });
   const ready = loaded || !!failed;
   useEffect(() => {
