@@ -2,7 +2,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { File } from 'expo-file-system';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import * as ImagePicker from 'expo-image-picker';
-import { router, useFocusEffect } from 'expo-router';
+import { useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { ActivityIndicator, Alert, Modal, View } from 'react-native';
 import type { SharedValue } from 'react-native-reanimated';
@@ -198,14 +198,6 @@ function Account({ user }: { user: Profile }) {
     user.stats.published != null ? [user.stats.published, 'В общността'] : [user.stats.shared, 'Споделени'],
   ];
   const spinner = (what: string) => (busy === what ? <ActivityIndicator size="small" color={c.muted} /> : undefined);
-  // Ограниченията на безплатния план; при Pro няма какво да се покаже.
-  const limits = (
-    [
-      ['stress', 'Тестове за здравина'],
-      ['ar', 'Виж в стаята'],
-      ['ai', 'Безплатен AI модел'],
-    ] as const
-  ).filter(([kind]) => user.limits?.[kind]?.limit != null);
 
   return (
     <SafeAreaView style={s.fill} edges={['top']}>
@@ -254,25 +246,6 @@ function Account({ user }: { user: Profile }) {
           </>
         )}
 
-        {user.limits && (
-          <Appear index={2}>
-            <Section label="План">
-              <Card style={s.list}>
-                <Row
-                  label={user.pro ? 'Pro' : 'Безплатен'}
-                  description={user.pro ? undefined : 'С Pro: AI модели и без ограничения'}
-                  onPress={() => router.push('/pro')}
-                  last={limits.length === 0}
-                />
-                {limits.map(([kind, label], i) => {
-                  const l = user.limits![kind];
-                  return <Row key={kind} label={label} value={`${Math.min(l.used, l.limit!)} от ${l.limit}`} last={i === limits.length - 1} />;
-                })}
-              </Card>
-            </Section>
-          </Appear>
-        )}
-
         <Appear index={2}>
           <Section label="Настройки">
             <Card style={s.list}>
@@ -282,16 +255,6 @@ function Account({ user }: { user: Profile }) {
             </Card>
           </Section>
         </Appear>
-
-        {user.owner && (
-          <Appear index={3}>
-            <Section label="Собственик">
-              <Card style={s.list}>
-                <Row label="Pro" description="Кой може да прави AI модели" onPress={() => router.push('/owner')} last />
-              </Card>
-            </Section>
-          </Appear>
-        )}
 
         <Appear index={3}>
           <Section>

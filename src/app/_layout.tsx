@@ -41,7 +41,7 @@ export default function RootLayout() {
   }, [c]);
 
   // Точките, спечелени междувременно (завършено на сървъра сканиране, харесване на публикация), се празнуват при
-  // връщане; профилът (Pro) също се опреснява, защото копието на телефона решава кои сканирания да се предлагат.
+  // връщане; профилът също се опреснява, защото копието на телефона решава кои сканирания да се предлагат.
   const account = session?.kind === 'account' ? session.user.id : null;
   useEffect(() => {
     if (!account) return;
@@ -86,8 +86,6 @@ export default function RootLayout() {
           <Stack.Screen name="viewer/[id]" options={{ headerShown: false }} />
           <Stack.Screen name="community/[id]" options={{ headerShown: false }} />
           <Stack.Screen name="stress/[id]" options={{ headerShown: false }} />
-          <Stack.Screen name="owner" options={{ title: '' }} />
-          <Stack.Screen name="pro" options={{ title: '' }} />
         </Stack.Protected>
         <Stack.Protected guard={!inside}>
           <Stack.Screen name="sign-in" options={{ headerShown: false, animation: 'fade' }} />

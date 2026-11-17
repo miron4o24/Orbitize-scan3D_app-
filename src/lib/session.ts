@@ -15,19 +15,10 @@ export type Profile = {
   has_avatar: boolean;
   created: number; // секунди по Unix
   stats: { scans: number; done: number; seconds: number; shared: number; published?: number }; // published: по-нови сървъри
-  // Pro: може да създава AI модели; ai: за кои сървърът има ключове; owner: страницата за Pro (по-нови сървъри)
-  pro?: boolean;
-  pro_until?: number | null; // Pro чрез плащане: до кога (секунди по Unix)
-  billing?: boolean; // Pro може да се купи в приложението (сървърът е настроен за това)
-  pro_product?: string; // продуктът му в магазина
+  // ai: за кои AI модели сървърът има ключове; owner: собственикът на приложението (вижда дневника на сървъра)
   owner?: boolean;
   ai?: Partial<Record<ProMethod, boolean>>;
-  // Броените използвания от безплатния план (сървър app/plans.py): limit е null при Pro; refs: вече преброените
-  // модели
-  limits?: Record<LimitKind, { used: number; limit: number | null; refs: string[] }>;
 };
-
-export type LimitKind = 'stress' | 'ar' | 'ai';
 
 export type Session = { kind: 'account'; token: string; user: Profile } | null;
 

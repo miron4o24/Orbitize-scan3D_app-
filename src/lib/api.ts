@@ -36,19 +36,19 @@ export type Report = {
   photos_total?: number;
   seconds?: number;
   object_width?: number; // медианният дял от ширината на кадъра, който заема предметът
-  ai?: AiMethod | 'cad'; // създаден от AI (Pro) или в инженерния режим, а не сканиран
+  ai?: AiMethod | 'cad'; // създаден от AI или в инженерния режим, а не сканиран
   object?: string; // какво е видял AI, на български
   real_mm?: number | null; // реалната най-дълга страна: оценка на AI или резултат от текстова промяна
   // при размер 100 мм, за оценката на печата (lib/printEstimate.ts); за по-стари сканирания: getGeometry
   volume_mm3?: number;
   area_mm2?: number;
-  edit?: { prompt: string; changes: string[]; source: string | null }; // създаден чрез текстова промяна (Pro)
+  edit?: { prompt: string; changes: string[]; source: string | null }; // създаден чрез текстова промяна
   cad?: CadReport; // инженерният режим: детайлът, построен от измерените размери
 };
 
 export type Geometry = { dimensions_mm: [number, number, number]; volume_mm3: number; area_mm2: number };
 
-// Pro (сървър app/ai.py): експресното сканиране за около 5 минути и AI моделите: single (безплатен, на сървъра:
+// AI моделите (сървър app/ai.py): експресното сканиране за около 5 минути и AI моделите: single (безплатен, на сървъра:
 // очертанията на предмета, изрязани с AI във всеки кадър, в които се сливат измерената и AI дълбочината, със снимките
 // като текстура; TripoSR от един кадър е резервен вариант), claude и photo (платени услуги, изключени, докато
 // сървърът няма ключове за тях). edit: текстова промяна на модел (сървър app/edit.py), направена от екрана за
@@ -158,7 +158,7 @@ export type Health = { ok: boolean; accounts?: boolean; database?: string; googl
 export const health = () => call<Health>('GET', '/health');
 export const createJob = () => call<Job>('POST', '/jobs');
 export const getJob = (id: string) => call<Job>('GET', `/jobs/${id}`);
-// quality: сървъри отпреди бързите сканирания го пренебрегват и обработват с пълни детайли. method: AI модел (Pro).
+// quality: сървъри отпреди бързите сканирания го пренебрегват и обработват с пълни детайли. method: AI модел.
 export const startJob = (
   id: string,
   params: { flat_base: boolean; video_bytes?: number; quality?: 'quick' | 'detailed'; method?: Method; extend?: string },
@@ -262,12 +262,12 @@ export async function arLink(jobId: string, longestMm: number) {
 // Обем и повърхност за оценката на печата, за сканирания с отчет отпреди те да бъдат включени в него.
 export const getGeometry = (jobId: string) => call<Geometry>('GET', `/jobs/${jobId}/geometry`);
 
-// Pro: нов модел, създаден от този чрез текстова промяна (на английски); сървърът връща новата задача. spot: мястото,
+// Нов модел, създаден от този чрез текстова промяна (на английски); сървърът връща новата задача. spot: мястото,
 // което потребителят е докоснал върху модела ("smooth here", "make this red"), като Spot от components/ModelView.
 export const editModel = (jobId: string, prompt: string, longestMm: number, title: string, spot?: readonly number[] | null) =>
   call<Job>('POST', `/jobs/${jobId}/edit`, { prompt, longest_mm: longestMm, title, ...(spot ? { spot } : {}) });
 
-// Pro: нов модел, създаден от този, стоящ върху плочка с име.
+// Нов модел, създаден от този, стоящ върху плочка с име.
 export const nameplateModel = (jobId: string, text: string, shape: 'round' | 'square', longestMm: number, title: string) =>
   call<Job>('POST', `/jobs/${jobId}/nameplate`, { text, shape, longest_mm: longestMm, title });
 
@@ -300,9 +300,6 @@ export async function downloadSpin(jobId: string, dest: File) {
 // "Вашият модел е готов" на този телефон (lib/push.ts).
 export const savePushToken = (token: string) => call<{ ok: boolean }>('PUT', '/me/push-token', { token });
 export const forgetPushToken = (token: string) => call<{ ok: boolean }>('POST', '/me/push-token/forget', { token });
-
-// Pro, купен от Google Play: сървърът проверява покупката при Google и връща профила с включен Pro.
-export const confirmGooglePurchase = (token: string) => call<Profile>('POST', '/billing/google', { purchase_token: token });
 
 export const thumbUrl = (jobId: string) => `${API_URL}/jobs/${jobId}/thumb.jpg`;
 export const shareUrl = (slug: string) => `${API_URL}/s/${slug}`;
@@ -484,14 +481,6 @@ export type Progress = {
 };
 
 export const getProgress = () => call<Progress>('GET', '/me/progress');
-
-// --- Страницата на собственика за Pro: кой е с Pro (сървър app/accounts.py)
-// -----------------------------------------
-
-export type OwnerUser = { id: string; email: string; name: string; created: number; pro: boolean; owner: boolean };
-
-export const ownerUsers = (q: string) => call<OwnerUser[]>('GET', `/owner/users?q=${encodeURIComponent(q)}`);
-export const setPro = (userId: string, pro: boolean) => call<{ id: string; pro: boolean }>('PUT', `/owner/users/${userId}/pro`, { pro });
 
 // --- Инженерният режим: мерене по указания (сървър app/cad) ---------------------------------------------------------
 // До шест снимки (top.jpg задължително; front, back, right, left, bottom по желание) се качват с uploadPhoto. Сървърът

@@ -18,7 +18,6 @@ from pydantic import BaseModel, Field
 
 from . import db, jobs, progress
 from . import mesh as M
-from . import plans as PL
 from . import stress as ST
 from . import texture as TX
 from .accounts import Principal, admin_only, avatar_path, need_db, owned_row, signed_in
@@ -129,19 +128,14 @@ def post_model(job_id: str, p: Principal = Depends(signed_in)):
 
 @router.get("/community/{job_id}/stress/{case}")
 def post_stress(job_id: str, case: str, p: Principal = Depends(signed_in)):
-    """Всеки може да направи тест за здравина на публикация (app/stress.py), както може и да я изтегли; за безплатните
-    профили тя се брои към тестваните им модели (app/plans.py)."""
+    """Всеки може да направи тест за здравина на публикация (app/stress.py), както може и да я изтегли."""
     one(job_id, p.user_id)
-    PL.check(p, "stress", job_id)
-    out = ST.summary_response(job_id, case, p.user_id)
-    PL.record(p, "stress", job_id)
-    return out
+    return ST.summary_response(job_id, case, p.user_id)
 
 
 @router.get("/community/{job_id}/stress/{case}/model.glb")
 def post_stress_model(job_id: str, case: str, p: Principal = Depends(signed_in)):
     one(job_id, p.user_id)
-    PL.check(p, "stress", job_id)
     return ST.model_response(job_id, case)
 
 

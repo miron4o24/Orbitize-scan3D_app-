@@ -19,7 +19,6 @@ import Animated, {
 import { Appear, CountUp, LiveDot } from '@/components/motion';
 import { Button, Card, ErrorText, H3, Header, Mono, Row, Screen, Small } from '@/components/ui';
 import { aiAvailable, PRO_INFO } from '@/lib/prefs';
-import { refreshProfile } from '@/lib/auth';
 import { checkProgress } from '@/lib/progress';
 import { setUpPush } from '@/lib/push';
 import { useSession } from '@/lib/session';
@@ -68,7 +67,7 @@ const SUBSTEPS: Record<string, string> = {
   'fusing depth': 'Изграждане на повърхността',
   texturing: 'Оцветяване със снимките',
   'shape from motion sensors': 'Изграждане на формата',
-  // AI модели (Pro)
+  // AI модели
   'claude designing': 'Проектиране на предмета',
   'claude checking': 'Проверка на модела',
   'choosing frames': 'Избор на най-добрите кадри',
@@ -77,7 +76,7 @@ const SUBSTEPS: Record<string, string> = {
   'understanding the request': 'Разчитане на промяната',
   'finding the part': 'Намиране на частта от модела',
 };
-// Текстовата промяна (Pro) минава през тези вместо това.
+// Текстовата промяна минава през тези вместо това.
 const EDIT_STEPS: [string, string][] = [
   ['queued', 'На опашка'],
   ['reconstructing', 'Разчитане на промяната'],
@@ -105,7 +104,7 @@ const PLAN: [string, number][] = [
   ['cleaning', 6],
   ['texturing', 25],
 ];
-// Същото за методите на Pro: експресното е мащабирано от стъпките за 80 кадъра до 30 по-малки кадъра, а останалото е
+// Същото за AI моделите: експресното е мащабирано от стъпките за 80 кадъра до 30 по-малки кадъра, а останалото е
 // приблизително.
 const PRO_PLANS: Record<ProMethod, [string, number][]> = {
   edit: [
@@ -341,7 +340,6 @@ export default function Processing() {
         throw e;
       });
       update({ status: started.state, error: undefined });
-      refreshProfile().catch(() => {}); // пробният AI модел на безплатния профил вече е използван
       setUpPush(true); // моментът, в който "кажи ми, когато е готово" има смисъл
     } catch (e) {
       setNetError(`Качването спря. ${errorText(e)}`);

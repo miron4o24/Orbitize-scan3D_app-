@@ -32,12 +32,10 @@ import {
   type Report,
 } from '@/lib/api';
 import { arAvailable, arSupport, viewInRoom, type ArSupport } from '@/lib/ar';
-import { refreshProfile } from '@/lib/auth';
 import { duration, shortDate } from '@/lib/dates';
 import { exportForPrint } from '@/lib/exportModel';
 import { badgeOf, deleteEntry } from '@/lib/library';
 import { parseGlb } from '@/lib/model';
-import { allowance, allowanceNote, blocked } from '@/lib/plan';
 import { aiAvailable, madeWith } from '@/lib/prefs';
 import { estimate, euro, getPrices, printTime, setPrice } from '@/lib/printEstimate';
 import { checkProgress } from '@/lib/progress';
@@ -127,21 +125,19 @@ export default function Viewer() {
   const [tab, setTab] = useState<Tab>('size');
   const [surface, setSurface] = useState<Surface>('smooth');
   const [support, setSupport] = useState<ArSupport | null>(null); // AR на този телефон; null, докато се пита
-  const [editing, setEditing] = useState(false); // диалогът за текстова промяна (Pro)
+  const [editing, setEditing] = useState(false); // диалогът за текстова промяна
   const [editText, setEditText] = useState(''); // пази се, докато потребителят посочва върху модела
   const [spot, setSpot] = useState<Spot | null>(null); // мястото върху модела, за което е промяната ("smooth here")
   const [picking, setPicking] = useState(false); // посочване върху модела на целия екран
   const [measuring, setMeasuring] = useState(false); // две докосвания върху модела на целия екран
-  const [plating, setPlating] = useState(false); // диалогът за табелка с име (Pro)
+  const [plating, setPlating] = useState(false); // диалогът за табелка с име
   const session = useSession();
   const user = session?.kind === 'account' ? session.user : null;
   const jobId = scan?.jobId;
   const account = !!currentUserId() && !!jobId; // запазено в профила: преименуване на сървъра, споделяне с линк
   const arDone = arAvailable && !!jobId && scan?.status === 'done';
   const showAr = arDone && support !== null && support !== 'unsupported';
-  const stressAllowed = allowance(user, 'stress', jobId);
-  const arAllowed = allowance(user, 'ar', jobId);
-  const canEdit = !!user?.pro && !!user.ai?.edit && !!jobId && scan?.status === 'done';
+  const canEdit = !!user?.ai?.edit && !!jobId && scan?.status === 'done';
   // Създаден от видео, чиито кадри още са на сървъра: може да се добави липсваща страна (с AI модела).
   const [openedAt] = useState(() => Date.now());
   const canExtend =
@@ -220,21 +216,18 @@ export default function Viewer() {
     });
 
   const viewAr = () => {
-    if (blocked(arAllowed)) return Alert.alert('Виж в стаята', allowanceNote(arAllowed));
     run('ar', async () => {
       if (!mmValid || !scan) return;
       setScan(updateScan(id, { longestMm: mm }));
       await viewInRoom(jobId!, mm, scanTitle(scan), realSize);
-      if (arAllowed && !arAllowed.unlimited && !arAllowed.counted) refreshProfile().catch(() => {}); // остава един по-малко
     });
   };
 
   const stressTest = () => {
-    if (blocked(stressAllowed)) return Alert.alert('Тест за здравина', allowanceNote(stressAllowed));
     router.push({ pathname: '/stress/[id]', params: { id: jobId!, source: 'scan', mm: String(mm), title: scanTitle(scan!) } });
   };
 
-  // Pro: нов модел, създаден от този чрез текстова промяна; следи се на екрана за обработка като сканиране.
+  // Нов модел, създаден от този чрез текстова промяна; следи се на екрана за обработка като сканиране.
   const edit = (prompt: string) =>
     run('edit', async () => {
       if (!mmValid || !scan) return;
@@ -430,14 +423,12 @@ export default function Viewer() {
               loading={busy === 'ar'}
               disabled={!mmValid || (!!busy && busy !== 'ar')}
             />
-            {allowanceNote(arAllowed) && <Small style={s.noteText}>{allowanceNote(arAllowed)}</Small>}
           </Appear>
         )}
 
         {done && !!jobId && (
           <Appear index={2} style={s.withNote}>
             <Button title="Тест за здравина" icon="barbell-outline" variant="secondary" size="lg" disabled={!mmValid} onPress={stressTest} />
-            {allowanceNote(stressAllowed) && <Small style={s.noteText}>{allowanceNote(stressAllowed)}</Small>}
           </Appear>
         )}
 

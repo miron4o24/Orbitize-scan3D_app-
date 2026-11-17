@@ -80,8 +80,7 @@
         }
       ],
       "expo-notifications",
-      "expo-video",
-      "expo-iap"
+      "expo-video"
     ],
     "experiments": {
       "typedRoutes": true

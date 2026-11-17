@@ -195,6 +195,38 @@ def test_account_limits(client, monkeypatch):
     assert client.post("/jobs", headers=ADMIN).status_code == 503  # качванията се броят към ограничението на сървъра
 
 
+def test_every_account_can_use_everything(client, monkeypatch):
+    """Pro и безплатният план са премахнати: обикновен профил прави AI модели и AR колкото иска, без Pro."""
+    from app import ai
+
+    client.put("/admin/settings", json={"google_client_id": CLIENT_ID}, headers=ADMIN)
+    h, user = sign_in(client)
+    assert user["pro"] is True and "limits" not in user and "billing" not in user and not user["owner"]
+    monkeypatch.setattr(ai, "available", lambda: {"single": True, "claude": False, "photo": False})
+
+    def fake_ai(job, method, flat_base, set_state, sh, step, tune=None):
+        set_state("reconstructing")
+        trimesh.creation.box(extents=[1, 2, 4]).apply_translation([0, 0, 2]).export(job / "model.ply")
+        return {"dimensions_mm": [25, 50, 100], "triangles": 12, "watertight": True, "ai": method}
+
+    monkeypatch.setattr(ai, "run", fake_ai)
+    made = []
+    for _ in range(3):  # безплатният план имаше един AI модел
+        job_id = client.post("/jobs", headers=h).json()["id"]
+        client.put(f"/jobs/{job_id}/photos/img_0000.jpg", content=jpeg(), headers=h)
+        r = client.post(f"/jobs/{job_id}/start", json={"method": "single"}, headers=h)
+        assert r.status_code == 200, r.text
+        made.append(job_id)
+    end = time.time() + 10
+    while any(client.get(f"/jobs/{j}", headers=h).json()["state"] != "done" for j in made):
+        assert time.time() < end
+        time.sleep(0.05)
+    more = [finished_scan(client, h) for _ in range(2)]
+    for job_id in made + more:  # безплатният план имаше AR за 3 модела
+        assert client.post(f"/jobs/{job_id}/ar", json={"longest_mm": 100}, headers=h).status_code == 200
+    assert client.get("/owner/users", headers=h).status_code == 404  # страницата за Pro я няма
+
+
 def test_accounts_turned_off(client, monkeypatch):
     from app import db
 
