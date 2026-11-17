@@ -4,7 +4,7 @@ import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import type { Object3D } from 'three';
 
 import { ModelView, type Spot } from '@/components/ModelView';
-import { Button, Field, IconButton, Small } from '@/components/ui';
+import { Brackets, Button, Field, IconButton, Small } from '@/components/ui';
 import { font, makeStyles, radius, space, useColors } from '@/theme';
 
 type Props = {
@@ -56,6 +56,9 @@ export function MeasureTool({ visible, model, mm, onClose, onApply }: Props) {
         <KeyboardAvoidingView style={s.fill} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
           <View style={s.fill}>
             {visible && <ModelView model={model} wireframe={false} background={c.viewer} marks={marks} onPick={pick} />}
+            <View style={s.frame} pointerEvents="none">
+              <Brackets />
+            </View>
             <SafeAreaView edges={['top']} style={s.top} pointerEvents="box-none">
               <IconButton icon="close" label="Затвори" onPress={onClose} />
               <Text style={s.title} numberOfLines={1}>
@@ -69,7 +72,9 @@ export function MeasureTool({ visible, model, mm, onClose, onApply }: Props) {
                   <Small style={s.center}>{marks.length ? 'Докоснете втората точка' : 'Докоснете две точки на модела'}</Small>
                 ) : (
                   <>
-                    <Text style={s.value}>{mmText(distance)} мм</Text>
+                    <View style={s.valueChip}>
+                      <Text style={s.value}>{mmText(distance)} мм</Text>
+                    </View>
                     <View style={s.row}>
                       <Field
                         value={real}
@@ -106,12 +111,14 @@ const useStyles = makeStyles((c) => ({
     paddingHorizontal: space.lg,
     paddingTop: space.sm,
   },
-  title: { flex: 1, textAlign: 'center', fontFamily: font.semibold, fontSize: 15, letterSpacing: -0.2, color: c.text },
+  title: { flex: 1, textAlign: 'center', fontFamily: font.semibold, fontSize: 15, color: c.text },
+  frame: { position: 'absolute', left: 12, right: 12, top: 72, bottom: 200 },
   side: { width: 44 },
   bottom: { position: 'absolute', left: 0, right: 0, bottom: 0, paddingHorizontal: space.lg, paddingBottom: space.md },
   card: { backgroundColor: c.glass, borderWidth: 1, borderColor: c.line, borderRadius: radius.md, padding: space.lg, gap: space.sm },
   center: { textAlign: 'center' },
-  value: { fontFamily: font.monoMedium, fontSize: 24, color: c.text, textAlign: 'center' },
+  valueChip: { alignSelf: 'center', borderWidth: 1, borderColor: c.signal, borderRadius: radius.sm, paddingHorizontal: 10, paddingVertical: 2 },
+  value: { fontFamily: font.monoMedium, fontSize: 22, color: c.signal, textAlign: 'center' },
   row: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
   field: { flex: 1 },
 }));

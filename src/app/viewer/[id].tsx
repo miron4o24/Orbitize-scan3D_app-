@@ -3,7 +3,7 @@ import { File, Paths } from 'expo-file-system';
 import { router, useFocusEffect, useLocalSearchParams, type ErrorBoundaryProps } from 'expo-router';
 import * as Sharing from 'expo-sharing';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Modal, Pressable, Share, Switch, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Modal, Pressable, Share, Switch, Text, useWindowDimensions, View } from 'react-native';
 import Animated from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import type { Object3D } from 'three';
@@ -15,7 +15,28 @@ import { ModelView, type Spot } from '@/components/ModelView';
 import { Appear, fade, PressScale, Skeleton, swap } from '@/components/motion';
 import { PrintHelper } from '@/components/PrintHelper';
 import { SpotPicker } from '@/components/SpotPicker';
-import { Badge, Button, Card, ErrorText, Field, H2, H3, IconButton, Label, Note, Row, Screen, Section, Segmented, Small, Title } from '@/components/ui';
+import {
+  Badge,
+  Brackets,
+  Button,
+  Card,
+  DimLine,
+  ErrorText,
+  Field,
+  H2,
+  H3,
+  IconButton,
+  KeyValue,
+  Label,
+  Mono,
+  Note,
+  Row,
+  Screen,
+  Section,
+  Segmented,
+  Small,
+  Title,
+} from '@/components/ui';
 import {
   downloadResult,
   downloadSpin,
@@ -81,6 +102,7 @@ type Tab = 'size' | 'files' | 'share';
 const FRAMES_KEPT_MS = 7 * 86_400_000; // сървърът пази кадрите на модела толкова дълго (сървър JOB_TTL_DAYS)
 
 const mmText = (v: number) => (v >= 100 ? v.toFixed(0) : v.toFixed(1));
+const modelId = (jobId?: string) => (jobId ? `ORB-${jobId.slice(0, 4).toUpperCase()}` : null);
 
 // Грешка при показване на модела (издадената версия би затворила приложението) се показва тук.
 export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
@@ -96,6 +118,7 @@ export function ErrorBoundary({ error, retry }: ErrorBoundaryProps) {
 export default function Viewer() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const c = useColors();
+  const win = useWindowDimensions();
   const s = useStyles();
   const [scan, setScan] = useState(() => getScan(id));
   const [model, setModel] = useState<Object3D | null>(null);
@@ -390,9 +413,25 @@ export default function Viewer() {
             <Label>Зареждане на модела…</Label>
           </View>
         )}
+        <View style={s.frame} pointerEvents="none">
+          <Brackets />
+          {model && dims && (
+            <>
+              <View style={s.dimBottom}>
+                <DimLine length={win.width * 0.5} value={`${mmText(dims[0])} мм`} />
+              </View>
+              <View style={s.dimSide}>
+                <DimLine vertical length={win.height * 0.16} value={`${mmText(dims[2])}`} />
+              </View>
+            </>
+          )}
+        </View>
         <SafeAreaView edges={['top']} style={s.floatTop} pointerEvents="box-none">
           <IconButton icon="chevron-back" label="Назад" onPress={() => router.back()} />
-          {model && <IconButton icon="expand-outline" label="Цял екран" onPress={() => setFull(true)} />}
+          <View style={s.topRight}>
+            {!!modelId(jobId) && <Mono style={s.id}>{modelId(jobId)}</Mono>}
+            {model && <IconButton icon="expand-outline" label="Цял екран" onPress={() => setFull(true)} />}
+          </View>
         </SafeAreaView>
       </View>
 
@@ -413,16 +452,69 @@ export default function Viewer() {
           </View>
         </Appear>
 
-        {showAr && (
+        {model && (
+          <Appear index={1}>
+            <Segmented<'texture' | 'mesh'>
+              value={wireframe ? 'mesh' : 'texture'}
+              onChange={(v) => setWireframe(v === 'mesh')}
+              options={[
+                { value: 'texture', label: 'Текстура' },
+                { value: 'mesh', label: 'Мрежа' },
+              ]}
+            />
+          </Appear>
+        )}
+
+        {done && (
+          <Appear index={1}>
+            <Card style={s.list}>
+              <KeyValue
+                style={s.kvFirst}
+                rows={[
+                  { key: 'Размер', value: dims ? `${dims.map(mmText).join(' × ')} мм` : '—' },
+                  ...(report ? [{ key: 'Печат', value: printLine(report, mm, mmValid) }] : []),
+                  {
+                    key: 'Формат',
+                    value: (
+                      <View style={s.chips}>
+                        {FORMATS.map((f) => (
+                          <Text key={f.format} style={s.chip}>
+                            {f.format.toUpperCase()}
+                          </Text>
+                        ))}
+                      </View>
+                    ),
+                  },
+                ]}
+              />
+            </Card>
+          </Appear>
+        )}
+
+        {done && (
           <Appear index={1} style={s.withNote}>
             <Button
-              title="Виж в стаята"
-              icon="cube-outline"
+              title="Изтегляне · STL"
+              icon="arrow-down"
               size="lg"
-              onPress={viewAr}
-              loading={busy === 'ar'}
-              disabled={!mmValid || (!!busy && busy !== 'ar')}
+              onPress={() => exportAs('stl')}
+              loading={busy === 'stl'}
+              disabled={!model || !mmValid || (!!busy && busy !== 'stl')}
             />
+            <View style={s.buttons}>
+              {showAr && (
+                <Button
+                  title="Виж в стаята"
+                  icon="cube-outline"
+                  variant="secondary"
+                  onPress={viewAr}
+                  loading={busy === 'ar'}
+                  disabled={!mmValid || (!!busy && busy !== 'ar')}
+                  style={s.flex}
+                />
+              )}
+              <Button title="Измери" icon="resize-outline" variant="secondary" onPress={() => setMeasuring(true)} disabled={!model || !mmValid} style={s.flex} />
+            </View>
           </Appear>
         )}
 
@@ -481,11 +573,6 @@ export default function Viewer() {
                   </View>
                 </View>
                 {!mmValid && <Small style={s.danger}>Въведете размер от 1 до 2000 мм.</Small>}
-                {model && mmValid && (
-                  <View style={s.measure}>
-                    <Button title="Измери на модела" icon="resize-outline" variant="ghost" onPress={() => setMeasuring(true)} />
-                  </View>
-                )}
                 {dims && (
                   <View style={s.dims}>
                     {(['Дължина', 'Ширина', 'Височина'] as const).map((label, i) => (
@@ -506,7 +593,7 @@ export default function Viewer() {
                           value={realSize}
                           onValueChange={setRealSize}
                           trackColor={{ true: c.accentStrong, false: c.surface3 }}
-                          thumbColor="#ffffff"
+                          thumbColor={c.text2}
                           ios_backgroundColor={c.surface3}
                           accessibilityLabel="Реален размер в AR"
                         />
@@ -821,6 +908,13 @@ function EditDialog(props: EditDialogProps) {
   );
 }
 
+/* Един ред за таблицата отгоре: времето за печат с PLA и 20% пълнеж (подробностите са в раздела Размер). */
+function printLine(report: Report, mm: number, mmValid: boolean): string {
+  if (!mmValid || report.volume_mm3 == null || report.area_mm2 == null) return '—';
+  const e = estimate(report.volume_mm3, report.area_mm2, report.dimensions_mm[2], mm, 'pla', 20, 0);
+  return `~${printTime(e.seconds)} · ${MATERIALS.pla.label}`;
+}
+
 /* Колко време отнема печатът, пластмасата и цената при зададения по-горе размер (lib/printEstimate.ts). */
 function PrintCard({ report, mm }: { report: Report; mm: number }) {
   const s = useStyles();
@@ -896,10 +990,27 @@ const useStyles = makeStyles((c) => ({
     paddingHorizontal: space.lg,
     paddingTop: space.sm,
   },
-  content: { paddingTop: space.xl, gap: 20 },
+  topRight: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
+  id: { fontFamily: font.monoMedium, fontSize: 12, color: c.text2, backgroundColor: c.glass, paddingHorizontal: 6, paddingVertical: 2 },
+  frame: { position: 'absolute', left: 12, right: 12, top: 64, bottom: 12 },
+  dimBottom: { position: 'absolute', bottom: 10, left: 0, right: 0, alignItems: 'center' },
+  dimSide: { position: 'absolute', right: 10, top: 0, bottom: 0, justifyContent: 'center' },
+  kvFirst: { borderTopWidth: 0 },
+  chips: { flexDirection: 'row', gap: 4 },
+  chip: {
+    fontFamily: font.monoMedium,
+    fontSize: 10.5,
+    color: c.text2,
+    borderWidth: 1,
+    borderColor: c.lineStrong,
+    borderRadius: radius.sm,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+  },
+  content: { paddingTop: space.lg, gap: space.lg },
   titleRow: { flexDirection: 'row', alignItems: 'flex-start', gap: space.sm },
-  pencil: { marginTop: 12 },
-  metaLine: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 12, flexWrap: 'wrap' },
+  pencil: { marginTop: 10 },
+  metaLine: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: space.sm, flexWrap: 'wrap' },
   info: { ...text.mono, fontSize: 12, color: c.muted, letterSpacing: 0.2 },
   cellLine: { borderLeftWidth: 1, borderLeftColor: c.line },
   tab: { gap: space.xl },
@@ -919,7 +1030,6 @@ const useStyles = makeStyles((c) => ({
   mmInvalid: { borderColor: c.danger },
   mm: { flex: 1, minWidth: 0, textAlign: 'right', fontFamily: font.monoMedium, fontSize: 16, backgroundColor: 'transparent', borderWidth: 0, paddingRight: 6 },
   mmUnit: { fontFamily: font.mono, fontSize: 13, color: c.muted },
-  measure: { borderTopWidth: 1, borderTopColor: c.line, paddingVertical: space.xs },
   danger: { color: c.danger, paddingBottom: space.sm },
   dims: { flexDirection: 'row', borderTopWidth: 1, borderTopColor: c.line, marginHorizontal: -space.lg },
   dim: { flex: 1, alignItems: 'center', gap: space.xs, paddingVertical: space.md },
@@ -949,7 +1059,7 @@ const useStyles = makeStyles((c) => ({
   noteText: { textAlign: 'center' },
   prompt: { minHeight: 72, textAlignVertical: 'top' },
   examples: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
-  example: { borderWidth: 1, borderColor: c.lineStrong, borderRadius: 999, paddingHorizontal: 10, paddingVertical: 5 },
+  example: { borderWidth: 1, borderColor: c.lineStrong, borderRadius: radius.sm, paddingHorizontal: 8, paddingVertical: 4 },
   exampleText: { fontFamily: font.mono, fontSize: 11, color: c.text2 },
   buttons: { flexDirection: 'row', gap: space.sm },
   backdrop: { flex: 1, backgroundColor: c.backdrop, justifyContent: 'center', padding: space.xl },
