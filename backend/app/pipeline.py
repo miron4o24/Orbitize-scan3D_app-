@@ -139,6 +139,59 @@ def log_size(job: Path) -> int:
         return 0
 
 
+# Съвети към потребителя в отчета на модела ("tips"; приложението ги показва под модела), когато видеото е заснето
+# така, че моделът страда: какво се е объркало и как да се заснеме следващия път. Само по измереното в самото
+# сканиране.
+TIPS = "tips.json"
+TIP_TEXT = {
+    # SIFT не свързва кадрите в една част: еднообразна повърхност под предмета (черна кутия под фигурка: най-голямата
+    # част 13 от 50 кадъра, задача 109a; същата фигурка върху шарен поднос: 44 от 48 в една част) или резки движения.
+    # Тогава камерите се разполагат по по-бавния и по-неточен начин (4,5 мин повече; двойни очи в текстурата).
+    "plain": "Камерата трудно разбираше откъде е заснет всеки кадър. Сложете предмета върху нещо шарено (вестник, "
+             "списание, шарена кърпа) и обикаляйте бавно: моделът излиза по-точен и по-бързо.",
+    # Бели отблясъци по предмета: при същата фигурка с лампа/светлина отблизо 1,1-1,9% от предмета (до 39% в кадър),
+    # при всички добри сканирания под 0,15%. Отблясъкът се мести с камерата и разваля и формата, и цветовете.
+    "glare": "По предмета имаше силни отблясъци. Изключете светлината на телефона и не го осветявайте отблизо: "
+             "по-добре равна светлина в стаята или до прозорец.",
+}
+PLAIN_BELOW = 0.6  # най-голямата част на SIFT е под толкова от кадрите
+GLARE_ABOVE = 0.8  # медианният процент от предмета с канал >= 250 в кадрите над толкова
+GLARE_LEVEL = 250
+
+
+def tip(job: Path, key: str):
+    """Добавя съвета `key` (TIP_TEXT) към отчета на задачата."""
+    path = job / TIPS
+    try:
+        have = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+        if key not in have:
+            path.write_text(json.dumps(have + [key]), encoding="utf-8")
+    except (OSError, ValueError):
+        pass
+    note(job, f"tip for the user: {key}")
+
+
+def tips(job: Path) -> list[str]:
+    try:
+        keys = json.loads((job / TIPS).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    return [TIP_TEXT[k] for k in keys if k in TIP_TEXT]
+
+
+def glare_share(photos: Path, masks: dict[str, np.ndarray], every: int = 6) -> float | None:
+    """Медианният процент от предмета (по маските), който е преекспониран, в всеки `every`-ти кадър с маска."""
+    vals = []
+    for name in sorted(masks)[::every]:
+        m = masks[name] > 0
+        if m.sum() < 50:
+            continue
+        with Image.open(photos / name) as im:
+            a = np.asarray(im.convert("RGB").resize((m.shape[1], m.shape[0])))
+        vals.append(float((a[m].max(1) >= GLARE_LEVEL).mean() * 100))
+    return float(np.median(vals)) if vals else None
+
+
 def note(job: Path, text: str):
     """Ред в log.txt на задачата до изхода на инструментите (GET /jobs/{id}/log)."""
     try:
@@ -755,6 +808,7 @@ def solve_cameras(job: Path, work: Path, photos: Path, n_photos: int, sh: Callab
     вместо 8192 на COLMAP."""
     sparse, db = work / "sparse", work / "db.db"
     sparse.mkdir(parents=True, exist_ok=True)
+    (job / TIPS).unlink(missing_ok=True)  # съветите от предишен опит на същата задача
     ext, match = colmap_prefixes()
     sh("feature extraction", [COLMAP, "feature_extractor", "--database_path", db, "--image_path", photos,
         "--ImageReader.single_camera", "1", f"--{ext}.use_gpu", "0",
@@ -814,9 +868,18 @@ def solve_cameras(job: Path, work: Path, photos: Path, n_photos: int, sh: Callab
     sh("finding the object", [sys.executable, S.__file__, masked, photo_masks])
     with np.load(photo_masks) as npz:
         all_masks = {name: npz[name] for name in npz.files}
+    try:
+        glare = glare_share(photos, all_masks)
+        if glare is not None and glare > GLARE_ABOVE:
+            note(job, f"glare: {glare:.1f}% of the object blown out (median over frames)")
+            tip(job, "glare")
+    except Exception as e:  # само съвет: не бива да проваля сканирането
+        note(job, f"glare check failed ({e!r})")
     if not one_piece:
         biggest = max((len(read_views(d)) for d in sparse.rglob("*") if (d / "images.bin").exists()
                        and "global" not in d.parent.name), default=0)  # fmt: skip
+        if biggest < PLAIN_BELOW * n_photos:
+            tip(job, "plain")
         if biggest < LEARNED_BELOW * n_photos and has_learned_features():
             try:
                 learned_cameras(job, work, photos, names, paired, all_masks, sh)
@@ -1299,7 +1362,7 @@ def finish(job: Path, mesh: trimesh.Trimesh) -> dict:
     mesh.export(job / "model.ply")
     shutil.rmtree(job / "work", ignore_errors=True)
     (job / VIDEO).unlink(missing_ok=True)  # най-големият файл на задачата; извлечените кадри остават за отстраняване на грешки
-    return M.report(mesh)
+    return M.report(mesh) | ({"tips": t} if (t := tips(job)) else {})
 
 
 def by_motion(job: Path, work: Path, photo_masks: Path, focal: float, placed: int, n_photos: int, flat_base: bool,
