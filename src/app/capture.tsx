@@ -303,6 +303,15 @@ export default function Capture() {
                   ? 'Кръг 2 от 2: отвисоко, гледайте надолу'
                   : 'Кръг 1 от 2: ниско, на височината на предмета'; // fmt: skip
   const warn = !!message || dim || fast || (recording && orbit?.aim !== 'ok');
+  // Съвети преди записа: от тях зависи дали камерите ще се разположат и дали повърхността ще е вярна. Шарката под
+  // предмета дава особености за съпоставяне; лъскавото отразява стаята и отблясъците се местят с камерата, а
+  // светлината на телефона прави точно такива отблясъци.
+  const tip =
+    recording || checking || preparing || message
+      ? null
+      : torch
+        ? 'Светлината на телефона прави отблясъци по лъскави предмети. При тях е по-добре лампа отстрани.'
+        : 'Под предмета: нещо шарено (вестник, списание). Лъскав предмет: матов спрей или пудра.'; // fmt: skip
   const segments = Math.round(share * SECTORS);
   return (
     <View style={styles.fill}>
@@ -356,6 +365,7 @@ export default function Capture() {
         </View>
         <View style={styles.guide} pointerEvents="none">
           <Text style={[styles.guideText, warn && styles.amber]}>{guide}</Text>
+          {tip && <Text style={styles.tipText}>{tip}</Text>}
         </View>
         <View style={styles.panel}>
           <View style={styles.row}>
@@ -456,7 +466,19 @@ const styles = StyleSheet.create({
   },
   way: { color: WHITE, fontSize: 12.5, fontFamily: font.medium, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 12, backgroundColor: GLASS, overflow: 'hidden' },
   stage: { flex: 1 },
-  guide: { alignItems: 'center', paddingHorizontal: space.lg, paddingBottom: space.sm },
+  guide: { alignItems: 'center', paddingHorizontal: space.lg, paddingBottom: space.sm, gap: 6 },
+  tipText: {
+    color: dark.text2,
+    fontSize: 12.5,
+    lineHeight: 17,
+    fontFamily: font.regular,
+    textAlign: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: 12,
+    backgroundColor: GLASS,
+    overflow: 'hidden',
+  },
   guideText: {
     color: WHITE,
     fontSize: 14,

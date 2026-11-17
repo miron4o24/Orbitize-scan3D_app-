@@ -28,6 +28,17 @@ def test_pick_one_sharpest_per_slice():
     assert V.pick(scores, len(scores)) == list(range(len(scores)))
 
 
+def test_pick_keeps_frames_apart():
+    # Най-рязкият кадър често е на ръба на участъка: без EDGE два избрани кадъра идваха един до друг (0,1 с).
+    rng = np.random.default_rng(3)
+    scores = rng.random(360)
+    scores[::8] += 5  # остри върхове на ръба на всеки участък от 360 / 45 = 8 кадъра
+    picks = V.pick(scores, 45)
+    gaps = np.diff(picks)
+    assert gaps.min() >= 3 and gaps.max() <= 13, (gaps.min(), gaps.max())
+    assert len(picks) == 45
+
+
 def test_motion_measures_change_between_frames():
     a = np.zeros((V.THUMB, V.THUMB), np.uint8)
     b = np.full((V.THUMB, V.THUMB), 100, np.uint8)
