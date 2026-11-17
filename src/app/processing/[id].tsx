@@ -1,31 +1,23 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { File } from 'expo-file-system';
+import { Image } from 'expo-image';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { ScrollView, Switch, Text, View } from 'react-native';
-import Animated, {
-  cancelAnimation,
-  Easing,
-  ReduceMotion,
-  useAnimatedStyle,
-  useReducedMotion,
-  useSharedValue,
-  withRepeat,
-  withTiming,
-  ZoomIn,
-} from 'react-native-reanimated';
+import Animated, { Easing, ReduceMotion, useAnimatedStyle, useReducedMotion, useSharedValue, withTiming, ZoomIn } from 'react-native-reanimated';
 
 import { Appear, CountUp, LiveDot } from '@/components/motion';
-import { Button, Card, ErrorText, H3, Header, Mono, Row, Screen, Small } from '@/components/ui';
+import { Brackets, Button, Card, DotGrid, ErrorText, H3, Header, Label, Mono, Row, Screen, Small } from '@/components/ui';
 import { aiAvailable, PRO_INFO } from '@/lib/prefs';
 import { checkProgress } from '@/lib/progress';
 import { setUpPush } from '@/lib/push';
 import { useSession } from '@/lib/session';
-import { font, makeStyles, radius, space, text, useColors } from '@/theme';
+import { font, makeStyles, radius, space, useColors } from '@/theme';
 
 import {
   ApiError,
+  authHeaders,
   cancelJob,
   createJob,
   errorText,
@@ -34,6 +26,7 @@ import {
   getLog,
   retrying,
   startJob,
+  thumbUrl,
   uploadMotion,
   uploadPhoto,
   uploadVideo,
@@ -173,28 +166,40 @@ function planned(plan: [string, number][], name: string, elapsed: number): numbe
   return (before + Math.min(elapsed / 1000, own * 0.95)) / total;
 }
 
-/* Тънка плоска лента, която плавно приема новата си дължина, с мек отблясък, докато работата продължава. */
+/* Тънка плоска лента в цвета за акцент (напредък на сканирането), която плавно приема новата си дължина. */
 function ProgressBar({ share }: { share: number }) {
   const s = useStyles();
   const reduce = useReducedMotion();
   const width = Math.max(2, Math.min(100, share * 100));
   const shown = useSharedValue(width);
-  const shine = useSharedValue(0);
   useEffect(() => {
     shown.set(reduce ? width : withTiming(width, { duration: 400, easing: Easing.out(Easing.cubic) }));
   }, [width, reduce, shown]);
-  useEffect(() => {
-    if (reduce) return;
-    shine.set(withRepeat(withTiming(1, { duration: 1600, easing: Easing.inOut(Easing.quad) }), -1, false));
-    return () => cancelAnimation(shine);
-  }, [reduce, shine]);
   const fill = useAnimatedStyle(() => ({ width: `${shown.value}%` }));
-  const sweep = useAnimatedStyle(() => ({ left: `${-30 + 130 * shine.value}%` }));
   return (
     <View style={s.bar}>
-      <Animated.View style={[s.barFill, fill]}>
-        {!reduce && share < 1 && <Animated.View style={[s.barShine, sweep]} />}
-      </Animated.View>
+      <Animated.View style={[s.barFill, fill]} />
+    </View>
+  );
+}
+
+/* Кратък номер на модела от задачата на сървъра ("ORB-1A2B"), както в библиотеката. */
+const modelId = (jobId?: string) => (jobId ? `ORB-${jobId.slice(0, 4).toUpperCase()}` : undefined);
+
+/* Прегледът: кадърът от видеото (или рисунката на модела), щом сървърът има такъв, върху мрежа от точки със скоби. */
+function Preview({ jobId }: { jobId?: string }) {
+  const c = useColors();
+  const s = useStyles();
+  const [failed, setFailed] = useState(false);
+  return (
+    <View style={s.preview}>
+      <DotGrid />
+      {jobId && !failed ? (
+        <Image source={{ uri: thumbUrl(jobId), headers: authHeaders() }} style={s.previewImage} contentFit="contain" transition={200} onError={() => setFailed(true)} />
+      ) : (
+        <Ionicons name="cube-outline" size={40} color={c.lineStrong} />
+      )}
+      <Brackets inset={8} />
     </View>
   );
 }
@@ -397,7 +402,10 @@ export default function Processing() {
     const at = steps.findIndex(([st]) => st === scan.status);
     return (
       <Screen>
-        <Header kicker={pro ? PRO_INFO[pro].label : undefined} title={scanTitle(scan)} />
+        <Header kicker={pro ? PRO_INFO[pro].label : undefined} title={scanTitle(scan)} right={jobId ? <Mono style={s.id}>{modelId(jobId)}</Mono> : undefined} />
+        <Appear index={1}>
+          <Preview jobId={jobId} />
+        </Appear>
         <Appear index={1}>
           <Card style={s.overall}>
             <View style={s.row}>
@@ -417,7 +425,7 @@ export default function Processing() {
               const here = i === at;
               const past = i < at;
               return (
-                <View key={state} style={[s.step, i < steps.length - 1 && s.line, !here && !past && s.ahead]}>
+                <View key={state} style={[s.step, i < steps.length - 1 && s.line]}>
                   <View style={[s.dot, past && s.dotDone, here && s.dotHere]}>
                     {here ? (
                       <LiveDot color={c.accent} size={8} />
@@ -431,6 +439,9 @@ export default function Processing() {
                     <H3 style={!here && !past && s.later}>{label}</H3>
                     {here && step && SUBSTEPS[step] && <Small>{SUBSTEPS[step]}</Small>}
                   </View>
+                  <Label style={past ? s.stateDone : here ? s.stateHere : undefined}>
+                    {past ? 'Готово' : here ? (queued ? 'Чака' : `${Math.round(share * 100)}%`) : 'Чака'}
+                  </Label>
                 </View>
               );
             })}
@@ -508,7 +519,7 @@ export default function Processing() {
                 value={scan.flatBase ?? true}
                 onValueChange={(v) => update({ flatBase: v })}
                 trackColor={{ true: c.accentStrong, false: c.surface3 }}
-                thumbColor="#ffffff"
+                thumbColor={c.text2}
                 ios_backgroundColor={c.surface3}
                 accessibilityLabel="Равна основа"
               />
@@ -544,18 +555,31 @@ const useStyles = makeStyles((c) => ({
   muted: { color: c.muted },
   row: { flexDirection: 'row', alignItems: 'center', gap: space.md },
   overall: { gap: space.md },
-  percent: { ...text.display, fontSize: 64, lineHeight: 68, letterSpacing: -3, color: c.text },
-  bar: { height: 3, backgroundColor: c.lineStrong, borderRadius: 99, overflow: 'hidden' },
-  barFill: { height: 3, borderRadius: 99, backgroundColor: c.accent, overflow: 'hidden' },
-  barShine: { position: 'absolute', top: 0, bottom: 0, width: '30%', backgroundColor: c.scheme === 'dark' ? 'rgba(9,9,11,0.35)' : 'rgba(255,255,255,0.45)', borderRadius: 99 },
+  percent: { fontFamily: font.monoMedium, fontSize: 44, lineHeight: 50, color: c.text },
+  id: { color: c.muted, fontFamily: font.monoMedium, fontSize: 12 },
+  preview: {
+    height: 190,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: c.line,
+    backgroundColor: c.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  previewImage: { position: 'absolute', left: 16, right: 16, top: 16, bottom: 16 },
+  bar: { height: 3, backgroundColor: c.surface3, overflow: 'hidden' },
+  barFill: { height: 3, backgroundColor: c.accent },
   dotHere: { borderColor: c.accent, backgroundColor: c.accentSoft },
+  stateDone: { color: c.success },
+  stateHere: { color: c.accent },
   list: { paddingVertical: 0 },
   line: { borderBottomWidth: 1, borderBottomColor: c.line },
-  step: { flexDirection: 'row', alignItems: 'flex-start', gap: space.md, paddingVertical: space.md },
+  step: { flexDirection: 'row', alignItems: 'center', gap: space.md, paddingVertical: space.md },
   dot: {
     width: 22,
     height: 22,
-    borderRadius: 11,
+    borderRadius: radius.sm,
     borderWidth: 1,
     borderColor: c.lineStrong,
     alignItems: 'center',
@@ -564,7 +588,6 @@ const useStyles = makeStyles((c) => ({
   },
   dotDone: { borderColor: c.success, backgroundColor: c.successSoft },
   later: { color: c.muted },
-  ahead: { opacity: 0.45 },
   failed: { gap: space.md },
   logBox: { maxHeight: 320, backgroundColor: c.surface2, borderRadius: radius.sm, borderWidth: 1, borderColor: c.line, padding: space.sm },
   log: { fontFamily: font.mono, fontSize: 10, color: c.text2 },
