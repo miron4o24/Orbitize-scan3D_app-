@@ -5,6 +5,21 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { photoTexturePlugin } from './photoTexture';
 
 /**
+ * Освобождава геометрията, материалите и текстурите на модел, който вече не се показва (при излизане от прегледа):
+ * големите масиви иначе чакат събирача на боклук и той спира приложението по-късно, в случаен момент.
+ */
+export function disposeModel(model: Object3D) {
+  model.traverse((o) => {
+    if (!(o instanceof Mesh)) return;
+    o.geometry?.dispose();
+    for (const m of [o.material].flat()) {
+      if (m instanceof MeshStandardMaterial) m.map?.dispose();
+      m?.dispose();
+    }
+  });
+}
+
+/**
  * GLB от сървъра като сцена на three.js. textureKey: именува файла на текстурата от снимките (lib/photoTexture.ts).
  */
 export async function parseGlb(file: File, textureKey: string): Promise<Object3D> {

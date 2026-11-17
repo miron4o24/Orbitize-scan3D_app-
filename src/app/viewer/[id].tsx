@@ -3,7 +3,7 @@ import { File, Paths } from 'expo-file-system';
 import { router, useFocusEffect, useLocalSearchParams, type ErrorBoundaryProps } from 'expo-router';
 import * as Sharing from 'expo-sharing';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Modal, Pressable, Share, Switch, Text, useWindowDimensions, View } from 'react-native';
+import { ActivityIndicator, Modal, Pressable, Share, Switch, Text, useWindowDimensions, View } from 'react-native';
 import Animated from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import type { Object3D } from 'three';
@@ -56,7 +56,7 @@ import { arAvailable, arSupport, viewInRoom, type ArSupport } from '@/lib/ar';
 import { duration, shortDate } from '@/lib/dates';
 import { exportForPrint } from '@/lib/exportModel';
 import { badgeOf, deleteEntry } from '@/lib/library';
-import { parseGlb } from '@/lib/model';
+import { disposeModel, parseGlb } from '@/lib/model';
 import { aiAvailable, madeWith } from '@/lib/prefs';
 import { estimate, euro, getPrices, printTime, setPrice } from '@/lib/printEstimate';
 import { checkProgress } from '@/lib/progress';
@@ -64,6 +64,7 @@ import { createScan, getScan, modelFile, scanTitle, updateScan } from '@/lib/sca
 import { currentUserId, useSession } from '@/lib/session';
 import { INFILLS, MATERIALS, type Infill, type Material } from '@/lib/stress';
 import { font, makeStyles, radius, space, text, useColors } from '@/theme';
+import { showDialog } from '@/lib/dialog';
 
 async function loadModel(id: string, jobId: string | undefined, cad: boolean): Promise<Object3D> {
   const file = modelFile(id, cad);
@@ -198,6 +199,14 @@ export default function Viewer() {
       cancelled = true;
     };
   }, [id, jobId, attempt, isCad]);
+  // Моделът (и изгледите на целия екран, измерването и посочването, които го споделят) се освобождава при смяна или
+  // излизане от екрана.
+  useEffect(
+    () => () => {
+      if (model) disposeModel(model);
+    },
+    [model],
+  );
 
   const mm = Number(mmInput.replace(',', '.'));
   const mmValid = Number.isFinite(mm) && mm >= 1 && mm <= 2000;
@@ -276,7 +285,7 @@ export default function Viewer() {
     });
 
   const extend = () =>
-    Alert.alert('Добавяне на липсваща страна', 'Заснемете само това, което липсва. Предметът трябва да е на същото място. Този модел остава.', [
+    showDialog('Добавяне на липсваща страна', 'Заснемете само това, което липсва. Предметът трябва да е на същото място. Този модел остава.', [
       { text: 'Отказ', style: 'cancel' },
       {
         text: 'Заснеми',
@@ -304,7 +313,7 @@ export default function Viewer() {
     });
 
   const publish = () =>
-    Alert.alert('Публикуване в общността?', 'Всички ще виждат модела и името ви.', [
+    showDialog('Публикуване в общността?', 'Всички ще виждат модела и името ви.', [
       { text: 'Отказ', style: 'cancel' },
       {
         text: 'Публикувай',
@@ -318,7 +327,7 @@ export default function Viewer() {
     ]);
 
   const unpublish = () =>
-    Alert.alert('Махане от общността?', 'Моделът остава при вас. Харесванията се изтриват.', [
+    showDialog('Махане от общността?', 'Моделът остава при вас. Харесванията се изтриват.', [
       { text: 'Отказ', style: 'cancel' },
       {
         text: 'Махни',
@@ -341,7 +350,7 @@ export default function Viewer() {
     });
 
   const unshare = () =>
-    Alert.alert('Спиране на споделянето?', 'Линкът спира да работи.', [
+    showDialog('Спиране на споделянето?', 'Линкът спира да работи.', [
       { text: 'Отказ', style: 'cancel' },
       {
         text: 'Спри',
@@ -355,7 +364,7 @@ export default function Viewer() {
     ]);
 
   const remove = () =>
-    Alert.alert('Изтриване на сканирането?', 'Това не може да се върне.', [
+    showDialog('Изтриване на сканирането?', 'Това не може да се върне.', [
       { text: 'Отказ', style: 'cancel' },
       {
         text: 'Изтрий',

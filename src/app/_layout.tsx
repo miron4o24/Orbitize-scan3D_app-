@@ -9,6 +9,7 @@ import { useEffect } from 'react';
 import { Appearance, AppState } from 'react-native';
 
 import { Celebrations } from '@/components/Celebration';
+import { DialogHost } from '@/components/DialogHost';
 import { refreshProfile } from '@/lib/auth';
 import { checkProgress } from '@/lib/progress';
 import { listenToPush, setUpPush } from '@/lib/push';
@@ -92,6 +93,7 @@ export default function RootLayout() {
         </Stack.Protected>
       </Stack>
       <Celebrations />
+      <DialogHost />
     </>
   );
 }

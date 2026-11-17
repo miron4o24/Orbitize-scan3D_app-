@@ -94,13 +94,34 @@ export function importScan(server: ServerScan, userId: string): Scan {
 /* Показваното заглавие на сканиране: неговото или датата. */
 export const scanTitle = (scan: { title?: string; createdAt: number }) => scan.title || `Сканиране ${dayMonth(scan.createdAt)}`;
 
+// Записите в паметта: дискът се чете веднъж при първото искане, а после само се записва. Иначе всяко връщане към
+// началния екран или списъка четеше и разчиташе файла на всяко сканиране (десетки синхронни четения на основната
+// нишка, точно по време на анимацията на връщане).
+let cache: Map<string, Scan> | null = null;
+
+function loaded(): Map<string, Scan> {
+  if (cache) return cache;
+  cache = new Map();
+  if (!root.exists) return cache;
+  for (const d of root.list()) {
+    if (!(d instanceof Directory)) continue;
+    const f = metaFile(d.name);
+    if (!f.exists) continue;
+    try {
+      const scan = JSON.parse(f.textSync()) as Scan;
+      cache.set(scan.id, scan);
+    } catch {} // повреден запис: пропуска се, както и преди
+  }
+  return cache;
+}
+
 export function saveScan(scan: Scan) {
   metaFile(scan.id).writeSync(JSON.stringify(scan));
+  loaded().set(scan.id, scan);
 }
 
 export function getScan(id: string): Scan | null {
-  const f = metaFile(id);
-  return f.exists ? (JSON.parse(f.textSync()) as Scan) : null;
+  return loaded().get(id) ?? null;
 }
 
 export function updateScan(id: string, patch: Partial<Scan>): Scan {
@@ -110,16 +131,11 @@ export function updateScan(id: string, patch: Partial<Scan>): Scan {
 }
 
 export function listScans(): Scan[] {
-  if (!root.exists) return [];
-  return root
-    .list()
-    .filter((e): e is Directory => e instanceof Directory)
-    .map((d) => getScan(d.name))
-    .filter((s): s is Scan => s !== null)
-    .sort((a, b) => b.createdAt - a.createdAt);
+  return [...loaded().values()].sort((a, b) => b.createdAt - a.createdAt);
 }
 
 export function deleteScan(id: string) {
   const d = scanDir(id);
   if (d.exists) d.delete();
+  loaded().delete(id);
 }

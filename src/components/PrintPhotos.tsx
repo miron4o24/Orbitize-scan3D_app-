@@ -3,12 +3,13 @@ import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import { File } from 'expo-file-system';
 import * as ImagePicker from 'expo-image-picker';
 import { useCallback, useEffect, useState } from 'react';
-import { Alert, Pressable, ScrollView, Text, View } from 'react-native';
+import { Pressable, ScrollView, Text, View } from 'react-native';
 
 import { Button, ErrorText, Section } from '@/components/ui';
 import { authHeaders, errorText, listPrintPhotos, printPhotoUrl, removePrintPhoto, reportPrintPhoto, uploadPrintPhoto, type PrintPhoto } from '@/lib/api';
 import { checkProgress } from '@/lib/progress';
 import { font, makeStyles, radius, space } from '@/theme';
+import { showDialog } from '@/lib/dialog';
 
 const SIDE = 1600;
 
@@ -61,10 +62,10 @@ export function PrintPhotos({ postId, mine }: { postId: string; mine: boolean })
     if (!photo.mine)
       buttons.push({
         text: 'Докладвай',
-        onPress: () => reportPrintPhoto(photo.id).then(() => Alert.alert('Благодарим', 'Ще прегледаме снимката.'), (e) => setError(errorText(e))),
+        onPress: () => reportPrintPhoto(photo.id).then(() => showDialog('Благодарим', 'Ще прегледаме снимката.'), (e) => setError(errorText(e))),
       });
     buttons.push({ text: 'Отказ', style: 'cancel' });
-    Alert.alert(photo.name, undefined, buttons);
+    showDialog(photo.name, undefined, buttons);
   }
 
   if (photos === null) return null;

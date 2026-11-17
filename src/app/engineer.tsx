@@ -3,7 +3,7 @@ import { Directory, File, Paths } from 'expo-file-system';
 import { useKeepAwake } from 'expo-keep-awake';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Text, View } from 'react-native';
+import { ActivityIndicator, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Measure, mmText } from '@/components/cad/Measure';
@@ -35,6 +35,7 @@ import { CAD_INFO } from '@/lib/prefs';
 import { createScan, getScan, modelFile, updateScan } from '@/lib/scans';
 import { currentUserId } from '@/lib/session';
 import { font, makeStyles, palettes, space } from '@/theme';
+import { showDialog } from '@/lib/dialog';
 
 // Инженерният режим: мерене по указания (сървър app/cad). Снимките казват какво има (очертания, стъпала, отвори),
 // шублерът казва колко е голямо, а моделът се строи само от числата.
@@ -289,7 +290,7 @@ export default function Engineer() {
     const q = plan.overall[oi];
     const guess = photoGuess(q);
     if (guess && Math.abs(Math.log(value / guess)) > Math.log(GUESS_ASK)) {
-      Alert.alert(
+      showDialog(
         'Проверете мярката',
         `По снимката ${q.name.toLowerCase()} е около ${mmText(guess)} мм, а въведохте ${mmText(value)} мм. Ако сте измерили друга страна, моделът няма да прилича на предмета.`,
         [

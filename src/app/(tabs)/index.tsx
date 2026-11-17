@@ -1,6 +1,6 @@
 import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
-import { Alert, Text, View } from 'react-native';
+import { Text, View } from 'react-native';
 import Animated from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -19,7 +19,9 @@ import { badgeOf, openEntry, useLibrary } from '@/lib/library';
 import { checkProgress, useProgress } from '@/lib/progress';
 import { useSession } from '@/lib/session';
 import { startScan } from '@/lib/startScan';
+import { afterTransition } from '@/lib/afterTransition';
 import { font, makeStyles, radius, space, useColors } from '@/theme';
+import { showDialog } from '@/lib/dialog';
 
 // Начален екран (библиотеката): марката с връзката до сървъра, моделите с броячите им, новото сканиране (AI модел
 // или инженерният режим, startScan) и последните модели като редове. До първото сканиране сцената с куба минава през
@@ -50,8 +52,11 @@ export default function Home() {
 
   useFocusEffect(
     useCallback(() => {
-      checkProgress();
-      refreshProfile().catch(() => {}); // AI моделът, включен или изключен на сървъра
+      // След анимацията на прехода (връщане от модела), за да не я накъса.
+      return afterTransition(() => {
+        checkProgress();
+        refreshProfile().catch(() => {}); // AI моделът, включен или изключен на сървъра
+      });
     }, []),
   );
 
@@ -61,7 +66,7 @@ export default function Home() {
     try {
       await importVideo();
     } catch (e) {
-      Alert.alert('Видеото не може да се използва', errorText(e));
+      showDialog('Видеото не може да се използва', errorText(e));
     } finally {
       setImporting(false);
     }
@@ -70,7 +75,7 @@ export default function Home() {
   // Без AI модел: вход или съобщение (сървърът го е изключил).
   const needAi = () => {
     if (!user) return router.push('/sign-in');
-    Alert.alert('AI моделът временно не е достъпен', 'Опитайте по-късно или използвайте инженерния режим.');
+    showDialog('AI моделът временно не е достъпен', 'Опитайте по-късно или използвайте инженерния режим.');
   };
   const upload = () => (canAi ? pickVideo() : needAi()); // видео, заснето по-рано
 

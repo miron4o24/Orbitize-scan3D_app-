@@ -66,8 +66,12 @@ export async function signedIn(token: string, user: Profile) {
 /* Нов профил от сървъра (променени име, снимка или статистика). */
 export function updateProfile(user: Profile) {
   if (current?.kind !== 'account') return;
+  // Непроменен профил (обичайното при опресняване) не се записва и не се съобщава: всяко съобщение прерисува
+  // цялото приложение (подредбата в app/_layout.tsx следи сесията).
+  const text = JSON.stringify(user);
+  if (text === JSON.stringify(current.user)) return;
   if (user.has_avatar !== current.user.has_avatar) avatarVersion = Date.now();
-  profileFile().writeSync(JSON.stringify(user));
+  profileFile().writeSync(text);
   emit({ ...current, user });
 }
 

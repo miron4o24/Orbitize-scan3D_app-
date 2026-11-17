@@ -1,17 +1,24 @@
 import { router } from 'expo-router';
-import { Alert } from 'react-native';
 
 import { aiAvailable, CAD_INFO, PRO_INFO } from './prefs';
+import { showDialog } from './dialog';
 
 /**
  * Нов модел от всяко място освен бутоните на началния екран: потребителят казва кой начин (AI модел, ако е наличен,
  * или инженерният режим за детайл 1:1 от снимки и шублер).
  */
 export function startScan() {
-  const engineer = { text: `${CAD_INFO.label} · ${CAD_INFO.time}`, onPress: () => router.push('/engineer') };
-  Alert.alert('Какъв модел?', undefined, [
-    { text: 'Отказ', style: 'cancel' },
-    ...(aiAvailable() ? [{ text: `${PRO_INFO.single.label} · ${PRO_INFO.single.time}`, onPress: () => router.push('/capture') }] : []),
+  const engineer = {
+    text: CAD_INFO.label,
+    sub: `${CAD_INFO.time} · детайл 1:1 от снимки и шублер`,
+    icon: 'construct-outline',
+    onPress: () => router.push('/engineer'),
+  };
+  showDialog('Какъв модел?', undefined, [
+    ...(aiAvailable()
+      ? [{ text: PRO_INFO.single.label, sub: `${PRO_INFO.single.time} · видео около предмета`, icon: 'sparkles-outline', onPress: () => router.push('/capture') }]
+      : []),
     engineer,
+    { text: 'Отказ', style: 'cancel' as const },
   ]);
 }
