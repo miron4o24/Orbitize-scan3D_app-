@@ -14,7 +14,7 @@
     "android": {
       "package": "com.miron4o.scan3d",
       "adaptiveIcon": {
-        "backgroundColor": "#09090b",
+        "backgroundColor": "#080b10",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
@@ -76,7 +76,7 @@
           "image": "./assets/splash-icon.png",
           "imageWidth": 200,
           "resizeMode": "contain",
-          "backgroundColor": "#09090b"
+          "backgroundColor": "#080b10"
         }
       ],
       "expo-notifications",
