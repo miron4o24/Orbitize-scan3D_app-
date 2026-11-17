@@ -89,7 +89,7 @@ export default function SignIn() {
             <RiseLines
               key={mode}
               lines={register ? ['Създайте', { soft: 'профил.' }] : ['Добре дошли', { soft: 'отново.' }]}
-              style={{ ...text.display, color: c.text }}
+              style={{ ...text.title, color: c.text }}
               softColor={c.muted}
               delay={120}
             />
@@ -99,16 +99,7 @@ export default function SignIn() {
           </View>
 
           <Appear index={1} style={s.form}>
-            {server !== null && server !== 'unreachable' && !!server.google_client_id && (
-              <>
-                <Button title="Продължи с Google" icon="logo-google" variant="secondary" onPress={google} disabled={busy} />
-                <View style={s.or}>
-                  <View style={s.orLine} />
-                  <Label>или с имейл</Label>
-                  <View style={s.orLine} />
-                </View>
-              </>
-            )}
+            {register && <Label>Вашето име</Label>}
             {register && (
               <Field
                 value={name}
@@ -122,6 +113,7 @@ export default function SignIn() {
                 accessibilityLabel="Вашето име"
               />
             )}
+            <Label>Имейл</Label>
             <Field
               ref={emailRef}
               value={email}
@@ -137,6 +129,7 @@ export default function SignIn() {
               maxLength={320}
               accessibilityLabel="Имейл"
             />
+            <Label>Парола</Label>
             <View>
               <Field
                 ref={passwordRef}
@@ -180,6 +173,16 @@ export default function SignIn() {
                 disabled={!ready}
               />
             )}
+            {server !== null && server !== 'unreachable' && !!server.google_client_id && (
+              <>
+                <View style={s.or}>
+                  <View style={s.orLine} />
+                  <Label>или</Label>
+                  <View style={s.orLine} />
+                </View>
+                <Button title="Продължи с Google" icon="logo-google" variant="secondary" onPress={google} disabled={busy} />
+              </>
+            )}
             <Pressable onPress={switchMode} accessibilityRole="button" style={s.switch} hitSlop={6}>
               <Text style={s.switchText}>
                 {register ? 'Имате профил? ' : 'Нямате профил? '}
@@ -197,12 +200,12 @@ const useStyles = makeStyles((c) => ({
   fill: { flex: 1, backgroundColor: c.bg },
   content: { flexGrow: 1, justifyContent: 'center', padding: 18, paddingVertical: space.xl, gap: space.xl },
   top: { gap: space.lg },
-  form: { gap: space.md },
+  form: { gap: space.sm },
   password: { paddingRight: 44 },
   eye: { position: 'absolute', right: space.md, top: 0, bottom: 0, justifyContent: 'center' },
   switch: { paddingVertical: space.xs, alignSelf: 'center' },
   switchText: { fontFamily: font.regular, fontSize: 13.5, color: c.muted },
-  link: { color: c.text, fontFamily: font.medium },
-  or: { flexDirection: 'row', alignItems: 'center', gap: space.md, marginVertical: space.xs },
+  link: { color: c.accent, fontFamily: font.medium },
+  or: { flexDirection: 'row', alignItems: 'center', gap: space.md, marginVertical: space.sm },
   orLine: { flex: 1, height: 1, backgroundColor: c.line },
 }));
