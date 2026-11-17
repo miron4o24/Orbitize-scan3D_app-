@@ -1,7 +1,6 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { File, Paths } from 'expo-file-system';
 import * as Haptics from 'expo-haptics';
-import { LinearGradient } from 'expo-linear-gradient';
 import { router, useLocalSearchParams, type ErrorBoundaryProps } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { Pressable, ScrollView, Text, View } from 'react-native';
@@ -36,7 +35,6 @@ import {
   CASES,
   HEIGHTS,
   INFILLS,
-  LEGEND,
   limitText,
   loadText,
   MATERIALS,
@@ -47,7 +45,7 @@ import {
   type Material,
   type Verdict,
 } from '@/lib/stress';
-import { font, makeStyles, radius, space, useColors } from '@/theme';
+import { font, makeStyles, radius, space, useColors, type Palette } from '@/theme';
 
 // Тестът за здравина: ще издържи ли отпечатаният предмет? Сървърът изчислява напреженията за всеки вид натоварване
 // веднъж за модел (сървър app/stress.py); тук те се мащабират към избраните тегло или височина, пластмаса и реален
@@ -77,8 +75,9 @@ function arrow(length: number, size: number, color: string) {
   return g;
 }
 
-/* Основата, за която е закрепен, стрелката на силата и най-слабата точка около модела. */
-function addGuides(group: Group, model: Object3D, s: StressSummary, accent: string) {
+/* Основата, за която е закрепен, стрелката на силата и най-слабата точка около модела (в цветовете на темата). */
+function addGuides(group: Group, model: Object3D, s: StressSummary, c: Palette) {
+  const accent = c.accent;
   const box = new Box3().setFromObject(model);
   const dims = box.getSize(new Vector3());
   const size = Math.max(dims.x, dims.y, dims.z);
@@ -87,7 +86,7 @@ function addGuides(group: Group, model: Object3D, s: StressSummary, accent: stri
   const plateH = 0.015 * size;
   const plate = new Mesh(
     new BoxGeometry(dims.x * 1.15, plateH, dims.z * 1.15),
-    new MeshStandardMaterial({ color: '#6b7280', roughness: 0.9, metalness: 0, transparent: true, opacity: 0.85 }),
+    new MeshStandardMaterial({ color: c.lineStrong, roughness: 0.9, metalness: 0, transparent: true, opacity: 0.85 }),
   );
   plate.position.set(centre.x, box.min.y - plateH / 2, centre.z);
   group.add(plate);
@@ -114,8 +113,8 @@ function addGuides(group: Group, model: Object3D, s: StressSummary, accent: stri
   // Най-слабата точка, видима през модела.
   const weak = new Vector3(...(s.weak as Vec3));
   const r = 0.022 * size;
-  const halo = new Mesh(new SphereGeometry(r * 1.9, 20, 14), new MeshBasicMaterial({ color: '#ef4444', transparent: true, opacity: 0.35, depthTest: false }));
-  const dot = new Mesh(new SphereGeometry(r, 16, 12), new MeshBasicMaterial({ color: '#ffffff', depthTest: false }));
+  const halo = new Mesh(new SphereGeometry(r * 1.9, 20, 14), new MeshBasicMaterial({ color: c.danger, transparent: true, opacity: 0.35, depthTest: false }));
+  const dot = new Mesh(new SphereGeometry(r, 16, 12), new MeshBasicMaterial({ color: c.text, depthTest: false }));
   for (const m of [halo, dot]) {
     m.position.copy(weak);
     m.renderOrder = 10;
@@ -123,7 +122,7 @@ function addGuides(group: Group, model: Object3D, s: StressSummary, accent: stri
   }
 }
 
-async function loadCase(id: string, source: StressSource, kind: StressCase, accent: string): Promise<Loaded> {
+async function loadCase(id: string, source: StressSource, kind: StressCase, c: Palette): Promise<Loaded> {
   const summary = await stressSummary(id, source, kind);
   // Именува се и по резултата: повторно обработено сканиране получава нови напрежения.
   const file = new File(Paths.cache, `stress-${source}-${id}-${kind}-${summary.elements}-${Math.round(summary.max_mpa * 1e6)}.glb`);
@@ -147,7 +146,7 @@ async function loadCase(id: string, source: StressSource, kind: StressCase, acce
   (mesh as Mesh).material = new MeshStandardMaterial({ vertexColors: true, roughness: 0.6, metalness: 0 });
   const group = new Group();
   group.add(scene);
-  addGuides(group, scene, summary, accent);
+  addGuides(group, scene, summary, c);
   return { summary, model: group, values: values.array as ArrayLike<number>, colors };
 }
 
@@ -195,6 +194,7 @@ function Waiting() {
   );
 }
 
+const LEGEND_CELLS = 20; // легендата на стъпки (без градиент), в същите цветове като модела
 const gramText = (g: number) => (g >= 1000 ? `${(g / 1000).toFixed(1)} кг` : `${Math.max(1, Math.round(g))} г`);
 
 export default function StressTest() {
@@ -221,7 +221,7 @@ export default function StressTest() {
     if (results[kind] || started.current.has(key)) return;
     started.current.add(key);
     setErrors((e) => ({ ...e, [kind]: undefined }));
-    loadCase(id, source, kind, c.accent).then(
+    loadCase(id, source, kind, c).then(
       (l) => {
         setResults((r) => ({ ...r, [kind]: l }));
         checkProgress(true); // първи тест от този вид носи точки
@@ -229,7 +229,7 @@ export default function StressTest() {
       },
       (e) => setErrors((er) => ({ ...er, [kind]: errorText(e) })),
     );
-  }, [id, source, kind, attempt, results, c.accent]);
+  }, [id, source, kind, attempt, results, c]);
 
   const mm = Number(mmInput.replace(',', '.'));
   const mmValid = Number.isFinite(mm) && mm >= 5 && mm <= 2000;
@@ -273,13 +273,12 @@ export default function StressTest() {
         </SafeAreaView>
         {current && (
           <Animated.View entering={fade} style={s.legend} pointerEvents="none">
-            <LinearGradient
-              colors={LEGEND.map((l) => l.color) as [string, string, ...string[]]}
-              locations={LEGEND.map((l) => l.at) as [number, number, ...number[]]}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 0 }}
-              style={s.legendBar}
-            />
+            <View style={s.legendBar}>
+              {Array.from({ length: LEGEND_CELLS }, (_, i) => {
+                const [r, g, b] = stressColor((i + 0.5) / LEGEND_CELLS);
+                return <View key={i} style={[s.legendCell, { backgroundColor: `rgb(${Math.round(r * 255)},${Math.round(g * 255)},${Math.round(b * 255)})` }]} />;
+              })}
+            </View>
             <View style={s.legendEnds}>
               <Text style={s.legendLabel}>Спокойно</Text>
               <View style={s.weakKey}>
@@ -385,7 +384,7 @@ export default function StressTest() {
           <Note warn>Сивите части са твърде тънки и не са тествани.</Note>
         )}
 
-        <Small>Приблизителна оценка.</Small>
+        <Small>Приблизително изчисление.</Small>
       </ScrollView>
     </View>
   );
@@ -407,30 +406,31 @@ const useStyles = makeStyles((c) => ({
     backgroundColor: c.glass,
     borderWidth: 1,
     borderColor: c.line,
-    borderRadius: 10,
+    borderRadius: radius.sm,
     paddingHorizontal: 12,
     paddingVertical: 8,
   },
   legendLabel: { fontFamily: font.mono, fontSize: 10.5, color: c.muted },
-  legendBar: { height: 6, borderRadius: 3 },
+  legendBar: { height: 6, flexDirection: 'row', gap: 1 },
+  legendCell: { flex: 1 },
   legendEnds: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   weakKey: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  weakDot: { width: 9, height: 9, borderRadius: 4.5, backgroundColor: '#ffffff', borderWidth: 2.5, borderColor: 'rgba(239,68,68,0.6)' },
-  content: { padding: 18, paddingTop: space.xl, paddingBottom: 48, gap: 20 },
+  weakDot: { width: 9, height: 9, borderRadius: radius.pill, backgroundColor: c.text, borderWidth: 2.5, borderColor: c.danger },
+  content: { padding: 16, paddingTop: space.lg, paddingBottom: 48, gap: space.lg },
   title: { marginTop: space.sm },
   about: { flexDirection: 'row', gap: space.md, alignItems: 'flex-start' },
   verdict: { gap: space.md, borderWidth: 1 },
   verdictHead: { flexDirection: 'row', alignItems: 'center', gap: space.md },
-  verdictIcon: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center' },
-  verdictTitle: { fontFamily: font.semibold, fontSize: 19, lineHeight: 24, letterSpacing: -0.4 },
+  verdictIcon: { width: 40, height: 40, borderRadius: radius.sm, alignItems: 'center', justifyContent: 'center' },
+  verdictTitle: { fontFamily: font.semibold, fontSize: 18, lineHeight: 24 },
   facts: { flexDirection: 'row', borderTopWidth: 1, borderTopColor: c.line, marginHorizontal: -space.lg },
   fact: { flex: 1, gap: 6, paddingVertical: 12, paddingHorizontal: space.lg },
   factLine: { borderLeftWidth: 1, borderLeftColor: c.line },
   factValue: { fontFamily: font.monoMedium, fontSize: 16, lineHeight: 22, color: c.text },
   bleed: { marginHorizontal: -18 },
   chips: { flexDirection: 'row', gap: 8, paddingHorizontal: 18 },
-  chip: { borderWidth: 1, borderColor: c.lineStrong, borderRadius: radius.pill, paddingHorizontal: 14, height: 38, justifyContent: 'center' },
-  chipOn: { backgroundColor: c.primary, borderColor: c.primary },
+  chip: { borderWidth: 1, borderColor: c.lineStrong, borderRadius: radius.sm, paddingHorizontal: 12, height: 36, justifyContent: 'center' },
+  chipOn: { backgroundColor: c.accent, borderColor: c.accent },
   chipText: { fontFamily: font.monoMedium, fontSize: 13.5, color: c.text },
   chipTextOn: { color: c.onPrimary },
   mmRow: { flexDirection: 'row', alignItems: 'center', gap: space.md },
