@@ -1,5 +1,4 @@
 import * as Haptics from 'expo-haptics';
-import { LinearGradient } from 'expo-linear-gradient';
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   Pressable,
@@ -29,7 +28,7 @@ import Animated, {
   type SharedValue,
 } from 'react-native-reanimated';
 
-import { useColors } from '@/theme';
+import { radius, useColors } from '@/theme';
 
 // Движението от сайта (assets/style.css): една спокойна крива, елементите се вдигат с 12px, докато се появяват,
 // заглавията излизат ред по ред, по-долните части се появяват при превъртане, числата се броят нагоре. Всичко следва
@@ -183,7 +182,7 @@ export function PressScale({
 // --- Зареждане и живи състояния
 // -------------------------------------------------------------------------------------
 
-/* Заместител при зареждане с преминаваща светла лента (неподвижен при намалено движение). */
+/* Заместител при зареждане с преминаваща плътна по-светла лента (без градиент; неподвижен при намалено движение). */
 export function Skeleton({ style }: { style?: StyleProp<ViewStyle> }) {
   const c = useColors();
   const reduce = useReducedMotion();
@@ -196,11 +195,9 @@ export function Skeleton({ style }: { style?: StyleProp<ViewStyle> }) {
   }, [reduce, t]);
   const band = useAnimatedStyle(() => ({ transform: [{ translateX: -w + 2 * w * t.value }] }));
   return (
-    <View style={[{ borderRadius: 6, overflow: 'hidden', backgroundColor: c.surface2 }, style]} onLayout={(e) => setW(e.nativeEvent.layout.width)}>
+    <View style={[{ borderRadius: radius.sm, overflow: 'hidden', backgroundColor: c.surface2 }, style]} onLayout={(e) => setW(e.nativeEvent.layout.width)}>
       {!reduce && w > 0 && (
-        <Animated.View style={[{ position: 'absolute', top: 0, bottom: 0, width: w }, band]}>
-          <LinearGradient colors={[c.surface2, c.surface3, c.surface2]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={{ flex: 1 }} />
-        </Animated.View>
+        <Animated.View style={[{ position: 'absolute', top: 0, bottom: 0, width: w / 3, backgroundColor: c.surface3 }, band]} />
       )}
     </View>
   );

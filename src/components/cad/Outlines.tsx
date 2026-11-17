@@ -184,6 +184,6 @@ const useStyles = makeStyles((c) => ({
   caption: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: space.md, paddingVertical: space.sm },
   title: { color: c.text, fontFamily: font.medium, fontSize: 14 },
   fill: { width: '100%', height: '100%' },
-  busy: { ...absolute, alignItems: 'center', justifyContent: 'center', gap: space.sm, borderRadius: radius.md, backgroundColor: 'rgba(0,0,0,0.45)' },
-  busyText: { color: '#fff', fontFamily: font.medium, fontSize: 15 },
+  busy: { ...absolute, alignItems: 'center', justifyContent: 'center', gap: space.sm, borderRadius: radius.md, backgroundColor: c.glass },
+  busyText: { color: c.text, fontFamily: font.medium, fontSize: 15 },
 }));

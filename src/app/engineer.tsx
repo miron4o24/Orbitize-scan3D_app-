@@ -34,7 +34,7 @@ import {
 import { CAD_INFO } from '@/lib/prefs';
 import { createScan, getScan, modelFile, updateScan } from '@/lib/scans';
 import { currentUserId } from '@/lib/session';
-import { font, makeStyles, space } from '@/theme';
+import { font, makeStyles, palettes, space } from '@/theme';
 
 // Инженерният режим: мерене по указания (сървър app/cad). Снимките казват какво има (очертания, стъпала, отвори),
 // шублерът казва колко е голямо, а моделът се строи само от числата.
@@ -567,7 +567,7 @@ const STEPS: [string, string][] = [
 
 const useStyles = makeStyles((c) => ({
   safe: { flex: 1, backgroundColor: c.bg },
-  black: { flex: 1, backgroundColor: '#000' },
+  black: { flex: 1, backgroundColor: palettes.dark.bg }, // зад камерата: винаги тъмно
   flex: { flex: 1 },
   card: { gap: space.lg },
   label: { fontFamily: font.medium, fontSize: 15, color: c.text },
@@ -575,7 +575,7 @@ const useStyles = makeStyles((c) => ({
   stepNum: {
     width: 22,
     color: c.accent,
-    fontFamily: font.semibold,
+    fontFamily: font.monoMedium,
     fontSize: 15,
   },
   wait: {

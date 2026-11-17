@@ -7,7 +7,7 @@ import type { Object3D } from 'three';
 import { ModelView, type Spot } from '@/components/ModelView';
 import { fade } from '@/components/motion';
 import { Button, IconButton } from '@/components/ui';
-import { font, makeStyles, space, useColors } from '@/theme';
+import { font, makeStyles, radius, space, useColors } from '@/theme';
 
 type Props = {
   visible: boolean;
@@ -68,14 +68,14 @@ const useStyles = makeStyles((c) => ({
     paddingHorizontal: space.lg,
     paddingTop: space.sm,
   },
-  title: { flex: 1, textAlign: 'center', fontFamily: font.semibold, fontSize: 15, letterSpacing: -0.2, color: c.text },
+  title: { flex: 1, textAlign: 'center', fontFamily: font.semibold, fontSize: 15, color: c.text },
   side: { width: 44 },
   bottom: { position: 'absolute', left: 0, right: 0, bottom: 0, alignItems: 'center', gap: space.md, paddingHorizontal: space.lg, paddingBottom: space.lg },
   hint: {
     backgroundColor: c.glass,
     borderWidth: 1,
     borderColor: c.line,
-    borderRadius: 999,
+    borderRadius: radius.pill,
     paddingHorizontal: 12,
     paddingVertical: 7,
   },
