@@ -5,35 +5,43 @@ import { useKeepAwake } from 'expo-keep-awake';
 import { router, useLocalSearchParams } from 'expo-router';
 import { DeviceMotion, LightSensor } from 'expo-sensors';
 import { useEffect, useRef, useState } from 'react';
-import { Alert, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, Platform, Pressable, StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { HUD, ScanStage } from '@/components/ScanHud';
 import { Button, Header, Small } from '@/components/ui';
 import { errorText } from '@/lib/api';
-import { viewDir } from '@/lib/coverage';
+import { elevation, viewDir } from '@/lib/coverage';
 import { motionSamples, type RawMotion } from '@/lib/motion';
-import { OrbitTracker, type OrbitState } from '@/lib/orbit';
+import { GOOD_DEG_PER_S, OrbitTracker, SECTORS, type OrbitState } from '@/lib/orbit';
 import { PRO_INFO } from '@/lib/prefs';
+import { coverage, DARK_LUX, LEVEL_TEXT, lightPercent, sharpLevel, sharpness, TARGET_VIEWS, ViewCounter } from '@/lib/scanHud';
 import { createScan, deleteScan, motionFile, updateScan, videoFile } from '@/lib/scans';
 import { currentUserId } from '@/lib/session';
 import { checkVideo } from '@/lib/videoCheck';
-import { font, makeStyles, palettes, radius, space } from '@/theme';
+import { font, makeStyles, palettes, space } from '@/theme';
 
-// Заснемане за AI модела: точка в средата, около която потребителят обикаля предмета. Стандартното сканиране (с
-// водача от два кръга) е премахнато.
+// Заснемане за AI модела: предметът в рамката, два кръга около него (ниско, после отвисоко). Всичко на екрана е
+// измерено от сензорите на телефона (lib/scanHud.ts) и казва на потребителя какво още трябва на модела: кои страни
+// липсват, дали кадрите ще са размазани, дали е достатъчно светло и на каква височина е телефонът. Записът спира сам,
+// когато и двата кръга са заснети.
 
 // Обиколката отнема около минута; границата само пази от забравен запис (около 320 MB).
 const MAX_SECONDS = 180;
 const MIN_SECONDS = 10; // по-кратко видео не може да обиколи предмета
 const MIN_ROUND = 0.75; // дял от първия кръг, под който ще липсват страни
-const DARK_LUX = 10; // сензорът за светлина на телефона: стая, твърде тъмна за заснемане
 // 4K: сървърът нанася кадрите върху модела като текстура, а дребният текст се чете само ако има достатъчно пиксели
 // (при 1080p етикетът на батерия на дрелка едва се четеше). 14 Mbit/s: около 105 MB в минута за качване, двойно
 // спрямо 1080p при 6 Mbit/s; при бавна обиколка кадрите се променят малко, затова кодекът запазва детайла при тази
 // скорост. Телефони без 4K записват с най-високото си качество.
 const BITRATE = 14_000_000;
 
-const fmt = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+const fmt = (s: number) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+const LIVE_MS = 160; // колко често се обновяват числата на екрана
+
+// Това, което сензорите казват в момента, за числата на екрана.
+type Live = { angle: number; speed: number; tilt: number; sharp: number; views: number };
+const NO_LIVE: Live = { angle: 0, speed: 0, tilt: 0, sharp: 100, views: 0 };
 
 export default function Capture() {
   useKeepAwake(); // екранът не бива да се заключва по средата на кръга
@@ -51,7 +59,9 @@ export default function Capture() {
   const [seconds, setSeconds] = useState(0);
   const [orbit, setOrbit] = useState<OrbitState | null>(null);
   const [message, setMessage] = useState<string | null>(null);
-  const [dim, setDim] = useState(false); // стаята е твърде тъмна според сензора за светлина (ако телефонът има такъв)
+  const [lux, setLux] = useState<number | null>(null); // сензорът за светлина (ако телефонът има такъв)
+  const [live, setLive] = useState<Live>(NO_LIVE);
+  const [stage, setStage] = useState<{ w: number; h: number } | null>(null);
   const [checking, setChecking] = useState(false); // проверка на току-що заснетото видео
 
   // Променливи копия на състоянието за извикванията от сензора с 20 Hz.
@@ -60,6 +70,8 @@ export default function Capture() {
   const stopReason = useRef<'user' | 'done' | null>(null);
   const startedAt = useRef(0);
   const motion = useRef<RawMotion[]>([]); // положението на телефона по време на записа, изпраща се с видеото
+  const views = useRef(new ViewCounter());
+  const now = useRef<Live>(NO_LIVE);
   const finished = useRef(false);
   const unmounted = useRef(false);
 
@@ -73,15 +85,28 @@ export default function Capture() {
     DeviceMotion.requestPermissionsAsync();
     DeviceMotion.setUpdateInterval(50);
     const sub = DeviceMotion.addListener((e) => {
-      if (!e.rotation || !recordingRef.current) return;
-      const { alpha, beta, gamma, timestamp } = e.rotation;
-      motion.current.push([Date.now(), timestamp, alpha, beta, gamma]);
+      if (!e.rotation) return;
       const r = e.rotationRate;
       const turnRate = r ? Math.hypot(r.alpha, r.beta, r.gamma) : 0;
+      const view = viewDir(e.rotation);
+      const sharp = sharpness(turnRate);
       const t = tracker.current;
-      if (t.update(viewDir(e.rotation), turnRate, Date.now() / 1000)) setOrbit(t.state);
+      // Наклонът и рязкостта се показват и преди записа: потребителят вижда височината и колко спокойно държи.
+      now.current = { ...now.current, tilt: elevation(view), sharp: Math.round(0.7 * now.current.sharp + 0.3 * sharp) };
+      if (!recordingRef.current) return;
+      const { alpha, beta, gamma, timestamp } = e.rotation;
+      motion.current.push([Date.now(), timestamp, alpha, beta, gamma]);
+      if (t.update(view, turnRate, Date.now() / 1000)) setOrbit(t.state);
+      views.current.add(view, sharp);
+      now.current = { ...now.current, angle: t.angle, speed: t.orbitSpeed, views: views.current.count };
+      if (t.done && !extending) stop('done'); // и двата кръга са заснети
     });
     return () => sub.remove();
+  }, [extending]);
+
+  useEffect(() => {
+    const timer = setInterval(() => setLive(now.current), LIVE_MS);
+    return () => clearInterval(timer);
   }, []);
 
   useEffect(() => {
@@ -91,7 +116,7 @@ export default function Capture() {
       .then((has) => {
         if (!has || cancelled) return;
         LightSensor.setUpdateInterval(1000);
-        sub = LightSensor.addListener(({ illuminance }) => setDim(illuminance < DARK_LUX));
+        sub = LightSensor.addListener(({ illuminance }) => setLux(illuminance));
       })
       .catch(() => {});
     return () => {
@@ -143,6 +168,8 @@ export default function Capture() {
   async function record() {
     if (!camera.current || recordingRef.current) return;
     tracker.current = new OrbitTracker();
+    views.current = new ViewCounter();
+    now.current = { ...now.current, angle: 0, speed: 0, views: 0 };
     stopReason.current = null;
     setOrbit(tracker.current.state);
     setMessage(null);
@@ -179,15 +206,42 @@ export default function Capture() {
 
   function onShutter() {
     if (!recording) return record();
-    stop('user'); // не се броят кръгове: потребителят знае кога е обиколил
+    stop('user');
   }
 
   if (!permission) return <View style={styles.fill} />;
   if (!permission.granted) return <CameraPermission canAsk={permission.canAskAgain} onAllow={requestPermission} />;
 
-  const pace = orbit?.pace;
   const way = PRO_INFO.single;
-  const noPanel = recording && !message;
+  const dim = lux != null && lux < DARK_LUX;
+  const level = sharpLevel(live.sharp);
+  const share = coverage(orbit);
+  const fast = recording && orbit?.pace === 'fast';
+  const slowOk = live.speed >= GOOD_DEG_PER_S[0] && live.speed <= GOOD_DEG_PER_S[1];
+  // Какво да направи потребителят сега: най-важното първо.
+  const guide = checking
+    ? 'Проверка на видеото…'
+    : message
+      ? message
+      : dim
+        ? 'Твърде тъмно: добавете светлина'
+        : !recording
+          ? extending
+            ? 'Заснемете само липсващата страна. Предметът да не е местен.'
+            : 'Предметът в рамката. Обиколете го бавно: първо ниско, после отвисоко.'
+          : fast
+            ? 'Твърде бързо: забавете'
+            : orbit?.aim === 'lower'
+              ? orbit.loop === 0
+                ? 'Свалете телефона до височината на предмета'
+                : 'Не толкова отгоре'
+              : orbit?.aim === 'higher'
+                ? 'Вдигнете телефона и гледайте надолу'
+                : orbit?.loop === 1
+                  ? 'Кръг 2 от 2: отвисоко, гледайте надолу'
+                  : 'Кръг 1 от 2: ниско, на височината на предмета'; // fmt: skip
+  const warn = !!message || dim || fast || (recording && orbit?.aim !== 'ok');
+  const segments = Math.round(share * SECTORS);
   return (
     <View style={styles.fill}>
       <CameraView
@@ -202,68 +256,78 @@ export default function Capture() {
         videoStabilizationMode="off"
         onCameraReady={() => setReady(true)}
       />
-      <View style={[StyleSheet.absoluteFill, styles.middle]} pointerEvents="none">
-        <View style={styles.point} />
-      </View>
-      <SafeAreaView style={[StyleSheet.absoluteFill, styles.overlay]} pointerEvents="box-none">
-        <View style={styles.top}>
+      <SafeAreaView style={StyleSheet.absoluteFill} pointerEvents="box-none">
+        <View style={styles.top} pointerEvents="box-none">
+          <View style={styles.readout}>
+            <Text style={styles.mono}>
+              <Text style={{ color: recording ? HUD.cyan : HUD.dim }}>● </Text>
+              {recording ? `REC ${fmt(seconds)}` : 'ГОТОВ'}
+            </Text>
+            <Text style={styles.mono}>
+              КАДРИ <Text style={styles.value}>{live.views}</Text>
+              <Text style={styles.soft}> / {TARGET_VIEWS}</Text>
+            </Text>
+            <Text style={styles.mono}>
+              РЯЗКОСТ <Text style={level === 'low' ? styles.amber : styles.value}>{LEVEL_TEXT[level]}</Text>
+            </Text>
+            <Text style={styles.mono}>
+              СВЕТЛИНА <Text style={dim ? styles.amber : styles.value}>{lux == null ? '—' : `${lightPercent(lux)}%`}</Text>
+            </Text>
+          </View>
           {!recording && (
-            <View style={styles.topRow}>
-              <Pressable
-                style={styles.close}
-                onPress={() => router.back()}
-                accessibilityRole="button"
-                accessibilityLabel="Затвори"
-              >
+            <View style={styles.topRight}>
+              <Pressable style={styles.close} onPress={() => router.back()} accessibilityRole="button" accessibilityLabel="Затвори">
                 <Ionicons name="close" size={20} color={WHITE} />
               </Pressable>
-              <View style={styles.tipsToggle}>
-                <Text style={styles.tipsToggleText}>
-                  {way.label} · {way.time}
-                </Text>
-              </View>
-            </View>
-          )}
-          <View style={[styles.panel, noPanel && styles.hidden]}>
-          {!recording && (
-            <Text style={styles.hint}>
-              {extending
-                ? 'Заснемете само липсващата страна. Предметът да не е местен.'
-                : 'Дръжте предмета на точката и го обиколете бавно, отблизо.'}
-            </Text>
-          )}
-          {message && <Text style={styles.warn}>{message}</Text>}
-          </View>
-          {dim && !checking && (
-            <View style={styles.darkPill}>
-              <Ionicons name="moon-outline" size={15} color={dark.warning} />
-              <Text style={styles.darkText}>Твърде тъмно: добавете светлина</Text>
-            </View>
-          )}
-          {checking && (
-            <View style={styles.darkPill}>
-              <Text style={styles.checkText}>Проверка на видеото…</Text>
+              <Text style={styles.way}>
+                {way.label} · {way.time}
+              </Text>
             </View>
           )}
         </View>
-        <View style={styles.bottom}>
-          <View style={styles.side}>
-            {recording && <Text style={styles.time}>● {fmt(seconds)}</Text>}
+        <View style={styles.stage} pointerEvents="none" onLayout={(e: LayoutChangeEvent) => setStage({ w: e.nativeEvent.layout.width, h: e.nativeEvent.layout.height })}>
+          {stage && <ScanStage w={stage.w} h={stage.h} orbit={orbit} angle={live.angle} recording={recording} />}
+        </View>
+        <View style={styles.guide} pointerEvents="none">
+          <Text style={[styles.guideText, warn && styles.amber]}>{guide}</Text>
+        </View>
+        <View style={styles.panel}>
+          <View style={styles.row}>
+            <Text style={styles.label}>ПОКРИТИЕ</Text>
+            <Text style={styles.big}>{Math.round(share * 100)}%</Text>
           </View>
-          <Pressable
-            style={[styles.shutter, recording && styles.stop, !ready && styles.disabled]}
-            accessibilityRole="button"
-            accessibilityLabel={recording ? 'Спри записа' : 'Започни запис'}
-            disabled={!ready || checking}
-            onPress={onShutter}
-          >
-            <View style={recording ? styles.stopIcon : styles.recIcon} />
-          </Pressable>
-          <View style={styles.side}>
-            {recording && pace === 'fast' && <Text style={[styles.pace, styles.fast]}>{'Твърде бързо!\nЗабавете'}</Text>}
+          <View style={styles.bar}>
+            {Array.from({ length: SECTORS }, (_, i) => (
+              <View key={i} style={[styles.cell, i < segments && styles.cellOn]} />
+            ))}
+          </View>
+          <View style={styles.stats}>
+            <Stat label="СКОРОСТ" value={recording ? `${Math.round(live.speed)}°/с` : '—'} warn={recording && !slowOk && seconds >= 3} />
+            <Stat label="РЯЗКОСТ" value={String(live.sharp)} warn={level === 'low'} />
+            <Stat label="НАКЛОН" value={`${Math.round(live.tilt)}°`} warn={recording && orbit?.aim !== 'ok'} />
+          </View>
+          <View style={styles.controls}>
+            <Pressable
+              style={[styles.shutter, recording && styles.stop, !ready && styles.disabled]}
+              accessibilityRole="button"
+              accessibilityLabel={recording ? 'Спри записа' : 'Започни запис'}
+              disabled={!ready || checking}
+              onPress={onShutter}
+            >
+              <View style={recording ? styles.stopIcon : styles.recIcon} />
+            </Pressable>
           </View>
         </View>
       </SafeAreaView>
+    </View>
+  );
+}
+
+function Stat({ label, value, warn }: { label: string; value: string; warn?: boolean }) {
+  return (
+    <View style={styles.stat}>
+      <Text style={styles.label}>{label}</Text>
+      <Text style={[styles.statValue, warn && styles.amber]}>{value}</Text>
     </View>
   );
 }
@@ -290,19 +354,20 @@ const usePermissionStyles = makeStyles((c) => ({
   content: { flex: 1, justifyContent: 'center', padding: space.xl, gap: space.lg },
 }));
 
-// Върху изображението от камерата: винаги цветовете на тъмната тема.
+// Върху изображението от камерата: винаги тъмни цветове.
 const dark = palettes.dark;
 const WHITE = '#ffffff';
-const GLASS = 'rgba(9,9,11,0.72)';
+const GLASS = 'rgba(9,9,11,0.6)';
 
 const styles = StyleSheet.create({
   fill: { flex: 1, backgroundColor: '#000' },
-  middle: { alignItems: 'center', justifyContent: 'center' },
-  point: { width: 14, height: 14, borderRadius: 7, backgroundColor: WHITE, borderWidth: 2, borderColor: 'rgba(0,0,0,0.55)' },
-  overlay: { justifyContent: 'space-between' },
-  flex: { flex: 1 },
-  top: { padding: space.md, gap: space.sm },
-  topRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  top: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', paddingHorizontal: space.lg, paddingTop: space.sm },
+  readout: { gap: 2, paddingVertical: 6, paddingHorizontal: 10, borderRadius: 10, backgroundColor: GLASS },
+  mono: { color: dark.text2, fontFamily: font.mono, fontSize: 12.5, lineHeight: 18, letterSpacing: 0.6 },
+  value: { color: WHITE, fontFamily: font.monoMedium },
+  soft: { color: HUD.dim },
+  amber: { color: HUD.amber },
+  topRight: { alignItems: 'flex-end', gap: space.sm },
   close: {
     width: 40,
     height: 40,
@@ -313,63 +378,43 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  tipsToggle: {
-    height: 36,
-    justifyContent: 'center',
-    paddingHorizontal: 14,
-    borderRadius: 18,
-    backgroundColor: GLASS,
-    borderWidth: 1,
-    borderColor: dark.line,
-  },
-  tipsToggleText: { color: WHITE, fontSize: 13.5, fontFamily: font.medium },
-  darkPill: {
-    alignSelf: 'center',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 18,
-    backgroundColor: GLASS,
-    borderWidth: 1,
-    borderColor: dark.line,
-  },
-  darkText: { color: dark.warning, fontSize: 13, fontFamily: font.medium },
-  checkText: { color: WHITE, fontSize: 13, fontFamily: font.medium },
-  panel: { padding: space.lg, gap: space.sm, borderRadius: radius.md, backgroundColor: GLASS, borderWidth: 1, borderColor: dark.line },
-  hidden: { display: 'none' },
-  hint: { color: dark.text2, fontSize: 13, lineHeight: 18, fontFamily: font.regular },
-  warn: { color: dark.warning, fontSize: 14.5, lineHeight: 20, fontFamily: font.medium },
-  bottom: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    margin: space.md,
-    paddingVertical: space.md,
-    paddingHorizontal: space.sm,
-    borderRadius: 24,
-    backgroundColor: GLASS,
-    borderWidth: 1,
-    borderColor: dark.line,
-  },
-  side: { width: 96, alignItems: 'center' },
-  time: { color: WHITE, fontSize: 17, fontFamily: font.monoMedium },
-  pace: {
-    fontSize: 13,
-    lineHeight: 17,
+  way: { color: WHITE, fontSize: 12.5, fontFamily: font.medium, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 12, backgroundColor: GLASS, overflow: 'hidden' },
+  stage: { flex: 1 },
+  guide: { alignItems: 'center', paddingHorizontal: space.lg, paddingBottom: space.sm },
+  guideText: {
+    color: WHITE,
+    fontSize: 14,
+    lineHeight: 19,
     fontFamily: font.medium,
     textAlign: 'center',
+    paddingHorizontal: 12,
     paddingVertical: 6,
-    paddingHorizontal: 10,
-    borderRadius: radius.sm,
+    borderRadius: 14,
+    backgroundColor: GLASS,
     overflow: 'hidden',
   },
-  fast: { color: dark.danger, backgroundColor: dark.dangerSoft },
+  panel: {
+    backgroundColor: HUD.panel,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(255,255,255,0.12)',
+    paddingHorizontal: space.lg,
+    paddingTop: space.md,
+    gap: space.sm,
+  },
+  row: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline' },
+  label: { color: dark.muted, fontFamily: font.mono, fontSize: 11, letterSpacing: 1.2 },
+  big: { color: WHITE, fontFamily: font.monoMedium, fontSize: 15 },
+  bar: { flexDirection: 'row', gap: 3, height: 9 },
+  cell: { flex: 1, borderRadius: 1.5, backgroundColor: 'rgba(255,255,255,0.12)' },
+  cellOn: { backgroundColor: HUD.cyan },
+  stats: { flexDirection: 'row', marginTop: 4 },
+  stat: { flex: 1, gap: 2 },
+  statValue: { color: WHITE, fontFamily: font.monoMedium, fontSize: 17 },
+  controls: { alignItems: 'center', paddingVertical: space.sm },
   shutter: {
-    width: 76,
-    height: 76,
-    borderRadius: 38,
+    width: 68,
+    height: 68,
+    borderRadius: 34,
     borderWidth: 4,
     borderColor: '#fff',
     alignItems: 'center',
@@ -377,6 +422,6 @@ const styles = StyleSheet.create({
   },
   stop: { borderColor: '#e53935' },
   disabled: { opacity: 0.4 },
-  recIcon: { width: 56, height: 56, borderRadius: 28, backgroundColor: '#e53935' },
-  stopIcon: { width: 28, height: 28, borderRadius: 4, backgroundColor: '#e53935' },
+  recIcon: { width: 50, height: 50, borderRadius: 25, backgroundColor: '#e53935' },
+  stopIcon: { width: 24, height: 24, borderRadius: 4, backgroundColor: '#e53935' },
 });
