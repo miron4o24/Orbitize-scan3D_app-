@@ -56,6 +56,12 @@ EXPRESS_VOXEL = 0.004
 # Един инкрементален модел с този дял от кадрите: глобалният алгоритъм не се изпълнява допълнително (помага само
 # когато инкременталният раздели сканирането на части).
 ONE_PIECE = 0.95
+# Разположени (съгласни с очертанията) под този дял от кадрите с маска: инкременталният алгоритъм още веднъж, от
+# друго начало (RETRY_SEED, по-малък ъгъл за първата двойка). Той не е детерминиран: същото видео (задача 62d7) на
+# сървъра даде модел от един кадър, а на лаптопа 25 от 48 разположени. Повтаря се само решаването (около 10-40 с на
+# сървъра); особеностите, съпоставянето и маските остават.
+RETRY_BELOW = 0.75
+RETRY_SEED = "7"
 # Ако инкременталният алгоритъм със SIFT разположи по-малко от толкова от кадрите в една част, кадрите се разполагат
 # и с научени особености (ALIKED) и съпоставяне (LightGlue), но само за да се съединят частите на SIFT (вижте
 # bridge_pieces). Метална колонка върху поднос с повтарящи се сладкиши: SIFT я раздели на ниския кръг (28 кадъра) и
@@ -817,18 +823,36 @@ def solve_cameras(job: Path, work: Path, photos: Path, n_photos: int, sh: Callab
             except Exception as e:  # каквото и да се обърка там, частите на SIFT остават и сканирането продължава
                 shutil.rmtree(sparse / "bridged", ignore_errors=True)
                 note(job, f"camera solving: joining the pieces failed ({e!r}); keeping the pieces")
-    models = []
-    for d in sorted(p for p in sparse.rglob("*") if (p / "images.bin").exists()):
-        views = read_views(d)
-        has = np.array([n in all_masks for n in views.names])
-        ok = np.zeros(len(views), bool)
-        if has.sum() >= 3:
-            ok[has] = M.consistent_frames(M.subset(views, has), [all_masks[n] for n in views.names if n in all_masks],
-                                          S.MASK_SCALE)  # fmt: skip
-        models.append((d, int(ok.sum()), [n for n, good in zip(views.names, ok) if not good]))
-        note(job, f"camera solving: {d.parent.name} model {d.name}: {len(views)} frames, {ok.sum()} of "
-             f"{int(has.sum())} with the object cut out consistent with its outline")  # fmt: skip
+    def judged(dirs) -> list:
+        out = []
+        for d in dirs:
+            views = read_views(d)
+            has = np.array([n in all_masks for n in views.names])
+            ok = np.zeros(len(views), bool)
+            if has.sum() >= 3:
+                ok[has] = M.consistent_frames(M.subset(views, has),
+                                              [all_masks[n] for n in views.names if n in all_masks], S.MASK_SCALE)  # fmt: skip
+            out.append((d, int(ok.sum()), [n for n, good in zip(views.names, ok) if not good]))
+            note(job, f"camera solving: {d.parent.name} model {d.name}: {len(views)} frames, {ok.sum()} of "
+                 f"{int(has.sum())} with the object cut out consistent with its outline")  # fmt: skip
+        return out
+
+    models = judged(sorted(p for p in sparse.rglob("*") if (p / "images.bin").exists()))
     best, placed, stray = max(models, key=lambda m: m[1], default=(None, 0, []))
+    if not one_piece and placed < RETRY_BELOW * len(all_masks):
+        note(job, f"camera solving: only {placed} of {len(all_masks)} frames placed; solving again from another start")
+        retry = sparse / "retry"
+        retry.mkdir(exist_ok=True)
+        try:
+            sh("camera solving", [COLMAP, "mapper", "--database_path", db, "--image_path", photos,
+                "--output_path", retry, "--Mapper.num_threads", THREADS, "--Mapper.random_seed", RETRY_SEED,
+                "--Mapper.init_min_tri_angle", "4", "--Mapper.abs_pose_min_num_inliers", "15"])  # fmt: skip
+            merge_pieces(job, work, sparse, "retry", sh)
+            again = [p for p in [*retry.iterdir(), sparse / "merged-retry" / "0"] if (p / "images.bin").exists()]
+            models += judged(sorted(again))
+            best, placed, stray = max(models, key=lambda m: m[1])
+        except Failed:
+            note(job, "camera solving: solving again failed; keeping the first models")
     return best, placed, stray, all_masks, photo_masks
 
 
