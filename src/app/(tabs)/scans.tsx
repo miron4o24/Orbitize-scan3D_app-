@@ -3,14 +3,14 @@ import { Alert, RefreshControl, View } from 'react-native';
 import Animated from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { Appear } from '@/components/motion';
-import { ScanCard, ScanCardSkeleton } from '@/components/ScanCard';
+import { Appear, Skeleton } from '@/components/motion';
+import { ScanRow } from '@/components/ScanCard';
 import { Stage } from '@/components/Stage';
 import { Button, ErrorText, ScrollBar, Segmented, Title, useScrollY } from '@/components/ui';
 import { errorText } from '@/lib/api';
 import { deleteEntry, isAi, openEntry, useLibrary, type Entry } from '@/lib/library';
 import { startScan } from '@/lib/startScan';
-import { makeStyles, space, useColors } from '@/theme';
+import { makeStyles, radius, space, useColors } from '@/theme';
 
 type Group = 'ai' | 'other';
 
@@ -57,8 +57,6 @@ export default function MyScans() {
         scrollEventThrottle={16}
         data={shown}
         keyExtractor={(e) => e.key}
-        numColumns={2}
-        columnWrapperStyle={s.columns}
         contentContainerStyle={s.list}
         showsVerticalScrollIndicator={false}
         refreshControl={<RefreshControl refreshing={loading && !skeleton} onRefresh={refresh} colors={[c.text]} progressBackgroundColor={c.surface} tintColor={c.muted} />}
@@ -86,15 +84,8 @@ export default function MyScans() {
         ListEmptyComponent={
           skeleton ? (
             <View style={s.skeletons}>
-              {[0, 1].map((row) => (
-                <View key={row} style={s.columns}>
-                  <View style={s.cell}>
-                    <ScanCardSkeleton />
-                  </View>
-                  <View style={s.cell}>
-                    <ScanCardSkeleton />
-                  </View>
-                </View>
+              {[0, 1, 2].map((row) => (
+                <Skeleton key={row} style={s.skeletonRow} />
               ))}
             </View>
           ) : (
@@ -112,8 +103,8 @@ export default function MyScans() {
           )
         }
         renderItem={({ item, index }: { item: Entry; index: number }) => (
-          <Appear index={index + 2} style={[s.cell, shown.length % 2 === 1 && index === shown.length - 1 && s.lastOdd]}>
-            <ScanCard entry={item} onPress={() => openEntry(item)} onLongPress={() => confirmDelete(item)} />
+          <Appear index={Math.min(index, 8) + 2}>
+            <ScanRow entry={item} index={index} onPress={() => openEntry(item)} onLongPress={() => confirmDelete(item)} />
           </Appear>
         )}
       />
@@ -123,14 +114,12 @@ export default function MyScans() {
 
 const useStyles = makeStyles((c) => ({
   fill: { flex: 1, backgroundColor: c.bg },
-  list: { paddingHorizontal: 18, paddingBottom: 48, gap: 14, flexGrow: 1 },
-  columns: { flexDirection: 'row', gap: 14 },
-  cell: { flex: 1 },
-  lastOdd: { maxWidth: '50%', paddingRight: 7 },
-  header: { gap: space.md, paddingTop: space.xl, paddingBottom: space.lg },
-  title: { fontSize: 38, lineHeight: 42, letterSpacing: -1.7, marginTop: space.sm },
-  groups: { marginTop: space.sm },
-  skeletons: { gap: 14 },
+  list: { paddingHorizontal: 16, paddingBottom: 48, gap: space.sm, flexGrow: 1 },
+  header: { gap: space.md, paddingTop: space.xl, paddingBottom: space.md },
+  title: { marginTop: space.sm, marginBottom: space.xs },
+  groups: { marginTop: space.xs },
+  skeletons: { gap: space.sm },
+  skeletonRow: { height: 66, borderRadius: radius.md },
   empty: { gap: space.xl, paddingTop: space.sm },
-  emptyTitle: { fontSize: 28, lineHeight: 32 },
+  emptyTitle: { fontSize: 22, lineHeight: 28 },
 }));

@@ -1,28 +1,29 @@
 import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
-import { Alert, ScrollView, View } from 'react-native';
+import { Alert, Text, View } from 'react-native';
 import Animated from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Avatar } from '@/components/Avatar';
 import { Brand } from '@/components/Logo';
-import { Appear, enter, PressScale, Reveal, RevealScroll, RiseLines } from '@/components/motion';
+import { Appear, enter, PressScale, Reveal, RevealScroll } from '@/components/motion';
 import { LevelStrip } from '@/components/Progress';
-import { ScanCard, ScanCardSkeleton } from '@/components/ScanCard';
+import { ScanRow } from '@/components/ScanCard';
 import { Stage, type Journey } from '@/components/Stage';
-import { ScanChoice } from '@/components/ScanChoice';
-import { ArrowLink, IconButton, Kicker, ScrollBar, Section, useScrollY } from '@/components/ui';
+import { ArrowLink, Button, IconButton, Kicker, Label, ScrollBar, Section, Title, useScrollY } from '@/components/ui';
 import { errorText } from '@/lib/api';
 import { refreshProfile } from '@/lib/auth';
 import { importVideo } from '@/lib/importVideo';
-import { aiAvailable, CAD_INFO, PRO_INFO } from '@/lib/prefs';
-import { openEntry, useLibrary } from '@/lib/library';
+import { aiAvailable } from '@/lib/prefs';
+import { badgeOf, openEntry, useLibrary } from '@/lib/library';
 import { checkProgress, useProgress } from '@/lib/progress';
 import { useSession } from '@/lib/session';
-import { makeStyles, space, text, useColors } from '@/theme';
+import { startScan } from '@/lib/startScan';
+import { font, makeStyles, radius, space, useColors } from '@/theme';
 
-// Начален екран: заглавие, двата начина за модел (AI модел от видео и инженерният режим) и моделите. До първото
-// сканиране сцената с куба минава през трите стъпки.
+// Начален екран (библиотеката): марката с връзката до сървъра, моделите с броячите им, новото сканиране (AI модел
+// или инженерният режим, startScan) и последните модели като редове. До първото сканиране сцената с куба минава през
+// трите стъпки.
 
 const JOURNEY: Journey = [
   { title: 'Обиколете предмета', icon: 'phone-portrait-outline' },
@@ -33,18 +34,19 @@ const JOURNEY: Journey = [
 export default function Home() {
   const session = useSession();
   const user = session?.kind === 'account' ? session.user : null;
-  const { entries, loading } = useLibrary();
+  const { entries, loading, error } = useLibrary();
   const c = useColors();
   const s = useStyles();
   const [importing, setImporting] = useState(false);
-  const recent = entries.slice(0, 8);
+  const recent = entries.slice(0, 5);
+  const ready = entries.filter((e) => badgeOf(e.status) === 'done').length;
+  const working = entries.filter((e) => badgeOf(e.status) === 'working').length;
   const scrollY = useScrollY();
   const hasScans = entries.length > 0;
   const firstTime = !loading && !hasScans;
   const progress = useProgress();
 
   const canAi = !!user && aiAvailable(); // прочита се отново при всяка промяна на сесията (профила)
-  const aiSub = canAi ? 'Най-бързият начин' : user ? 'Временно не е достъпен' : 'Влезте в профила си';
 
   useFocusEffect(
     useCallback(() => {
@@ -70,15 +72,23 @@ export default function Home() {
     if (!user) return router.push('/sign-in');
     Alert.alert('AI моделът временно не е достъпен', 'Опитайте по-късно или използвайте инженерния режим.');
   };
-  const filmAi = () => (canAi ? router.push('/capture') : needAi());
-  const engineer = () => router.push('/engineer');
   const upload = () => (canAi ? pickVideo() : needAi()); // видео, заснето по-рано
 
   return (
     <SafeAreaView style={s.fill} edges={['top']}>
       <ScrollBar
         y={scrollY.y}
-        left={<Brand />}
+        left={
+          <View style={s.brandRow}>
+            <Brand />
+            {!loading && (
+              <View style={[s.chip, { borderColor: error ? c.danger : c.success }]}>
+                <View style={[s.chipDot, { backgroundColor: error ? c.danger : c.success }]} />
+                <Text style={[s.chipText, { color: error ? c.danger : c.success }]}>{error ? 'ОФЛАЙН' : 'ОНЛАЙН'}</Text>
+              </View>
+            )}
+          </View>
+        }
         right={
           user ? (
             <PressScale onPress={() => router.push('/profile')} accessibilityRole="button" accessibilityLabel="Профил">
@@ -97,16 +107,25 @@ export default function Home() {
                 <Kicker>{`Здравейте, ${user.name.split(' ')[0]}`}</Kicker>
               </Appear>
             )}
-            <RiseLines
-              key={hasScans ? 'back' : 'new'}
-              lines={hasScans ? ['Какво ще', { soft: 'сканирате?' }] : ['Сканирайте предмет.', 'Отпечатайте го', { soft: 'в реален размер.' }]}
-              style={{ ...text.display, color: c.text }}
-              softColor={c.muted}
-              delay={60}
-            />
-            <Appear index={5} style={s.cta}>
-              <ScanChoice highlight title={PRO_INFO.single.label} time={PRO_INFO.single.time} sub={aiSub} icon="sparkles" onPress={filmAi} />
-              <ScanChoice title={CAD_INFO.label} time={CAD_INFO.time} sub="Детайл 1:1 от снимки и шублер: STEP за CAD" icon="construct-outline" onPress={engineer} />
+            <Appear index={1}>
+              <Title>Моите модели</Title>
+            </Appear>
+            <Appear index={2} style={s.stats}>
+              {(
+                [
+                  ['Модели', entries.length, c.text],
+                  ['Готови', ready, c.text],
+                  ['В работа', working, c.signal],
+                ] as const
+              ).map(([label, value, color], i) => (
+                <View key={label} style={[s.stat, i < 2 && s.statLine]}>
+                  <Label numberOfLines={1}>{label}</Label>
+                  <Text style={[s.statValue, { color }]}>{loading && !entries.length ? '—' : value}</Text>
+                </View>
+              ))}
+            </Appear>
+            <Appear index={3} style={s.cta}>
+              <Button title="Нов скан" icon="add" size="lg" onPress={startScan} />
               <ArrowLink label={importing ? 'Отваряне…' : 'Качи готово видео'} onPress={upload} style={s.ctaLink} />
             </Appear>
             {progress && (
@@ -122,28 +141,19 @@ export default function Home() {
             </Appear>
           )}
 
-          {hasScans ? (
+          {hasScans && (
             <Reveal>
-              <Section title="Вашите модели" action={{ label: 'Всички', onPress: () => router.push('/scans') }}>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.bleed} contentContainerStyle={s.recent}>
+              <Section label="Последни" action={{ label: 'Всички', onPress: () => router.push('/scans') }}>
+                <View style={s.recent}>
                   {recent.map((e, i) => (
-                    <Animated.View key={e.key} entering={enter(i)} style={s.recentCard}>
-                      <ScanCard entry={e} onPress={() => openEntry(e)} />
+                    <Animated.View key={e.key} entering={enter(i)}>
+                      <ScanRow entry={e} index={i} onPress={() => openEntry(e)} />
                     </Animated.View>
                   ))}
-                </ScrollView>
+                </View>
               </Section>
             </Reveal>
-          ) : loading ? (
-            <View style={[s.recent, s.bleed]}>
-              <View style={s.recentCard}>
-                <ScanCardSkeleton />
-              </View>
-              <View style={s.recentCard}>
-                <ScanCardSkeleton />
-              </View>
-            </View>
-          ) : null}
+          )}
         </RevealScroll>
       </Animated.ScrollView>
     </SafeAreaView>
@@ -152,11 +162,17 @@ export default function Home() {
 
 const useStyles = makeStyles((c) => ({
   fill: { flex: 1, backgroundColor: c.bg },
-  content: { paddingHorizontal: 18, paddingBottom: 48, gap: 44 },
-  hero: { paddingTop: space.lg, gap: 22 },
-  cta: { gap: 12, marginTop: 4 },
-  ctaLink: { alignSelf: 'center', marginTop: 6 },
-  bleed: { marginHorizontal: -18 },
-  recent: { flexDirection: 'row', gap: space.md, paddingHorizontal: 18 },
-  recentCard: { width: 168 },
+  content: { paddingHorizontal: 16, paddingBottom: 48, gap: space.xl },
+  hero: { paddingTop: space.md, gap: space.lg },
+  brandRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
+  chip: { flexDirection: 'row', alignItems: 'center', gap: 5, borderWidth: 1, borderRadius: radius.pill, paddingHorizontal: 7, paddingVertical: 2 },
+  chipDot: { width: 5, height: 5, borderRadius: radius.pill },
+  chipText: { fontFamily: font.monoMedium, fontSize: 10, letterSpacing: 0.6 },
+  stats: { flexDirection: 'row', borderWidth: 1, borderColor: c.line, borderRadius: radius.md, backgroundColor: c.surface },
+  stat: { flex: 1, paddingVertical: space.md, paddingHorizontal: space.md, gap: 4 },
+  statLine: { borderRightWidth: 1, borderRightColor: c.line },
+  statValue: { fontFamily: font.monoMedium, fontSize: 20, lineHeight: 26 },
+  cta: { gap: space.md },
+  ctaLink: { alignSelf: 'center' },
+  recent: { gap: space.sm },
 }));
