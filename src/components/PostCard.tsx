@@ -16,7 +16,6 @@ import { shortDate } from '@/lib/dates';
 import { font, makeStyles, radius, useColors } from '@/theme';
 import { Avatar } from './Avatar';
 import { ease, easeOut, haptic, Skeleton } from './motion';
-import { ViewerGround } from './ScanCard';
 
 /* Авторът на публикация в общността: снимка (или инициали), име и ниво. */
 export function AuthorLine({ post, size = 18, date }: { post: Post; size?: number; date?: boolean }) {
@@ -71,14 +70,13 @@ export function LikeButton({ liked, likes, onPress, big }: { liked: boolean; lik
   );
 }
 
-function PostThumb({ post, zoom }: { post: Post; zoom: SharedValue<number> }) {
+function PostThumb({ post, zoom, index }: { post: Post; zoom: SharedValue<number>; index: number }) {
   const c = useColors();
   const s = useStyles();
   const [failed, setFailed] = useState(false);
   const scaled = useAnimatedStyle(() => ({ transform: [{ scale: zoom.value }] }));
   return (
-    <View style={s.thumb}>
-      <ViewerGround id={`p-${post.id}`} />
+    <View style={[s.thumb, { backgroundColor: c.tint[index % 3] }]}>
       {failed ? (
         <Ionicons name="cube-outline" size={36} color={c.lineStrong} />
       ) : (
@@ -101,7 +99,7 @@ function PostThumb({ post, zoom }: { post: Post; zoom: SharedValue<number> }) {
  * Публикация в мрежата на общността: изображение на модела с харесванията, после името и авторът. При натискане
  * хлътва и изображението се навежда, както при картите на сканирания.
  */
-export function PostCard({ post, onPress }: { post: Post; onPress: () => void }) {
+export function PostCard({ post, onPress, index = 0 }: { post: Post; onPress: () => void; index?: number }) {
   const c = useColors();
   const s = useStyles();
   const reduce = useReducedMotion();
@@ -116,7 +114,7 @@ export function PostCard({ post, onPress }: { post: Post; onPress: () => void })
   return (
     <Pressable onPress={onPress} onPressIn={() => to(1)} onPressOut={() => to(0)} accessibilityRole="button" accessibilityLabel={`${post.title}, от ${post.author.name}`}>
       <Animated.View style={[s.card, card]}>
-        <PostThumb post={post} zoom={zoom} />
+        <PostThumb post={post} zoom={zoom} index={index} />
         <View style={s.count} pointerEvents="none">
           <Ionicons name={post.liked ? 'heart' : 'heart-outline'} size={12} color={post.liked ? c.danger : c.text} />
           <Text style={s.countText}>{post.likes}</Text>
@@ -157,24 +155,25 @@ const useStyles = makeStyles((c) => ({
     gap: 4,
     backgroundColor: c.glass,
     borderWidth: 1,
-    borderColor: c.line,
-    borderRadius: 999,
+    borderColor: c.lineStrong,
+    borderRadius: radius.pill,
     paddingHorizontal: 8,
-    paddingVertical: 4,
+    paddingVertical: 3,
   },
   countText: { fontFamily: font.monoMedium, fontSize: 11, color: c.text },
   meta: { paddingTop: 12, paddingHorizontal: 14, paddingBottom: 14, gap: 8, borderTopWidth: 1, borderTopColor: c.line },
-  title: { fontFamily: font.semibold, fontSize: 15, letterSpacing: -0.2, color: c.text },
+  title: { fontFamily: font.semibold, fontSize: 15, color: c.text },
   author: { flexDirection: 'row', alignItems: 'center', gap: 7, minWidth: 0 },
-  authorName: { flexShrink: 1, fontFamily: font.regular, fontSize: 12.5, color: c.muted },
+  authorName: { flexShrink: 1, fontFamily: font.mono, fontSize: 12, color: c.muted },
   authorBig: { fontFamily: font.medium, fontSize: 14.5, color: c.text },
   date: { fontFamily: font.mono, fontSize: 12, color: c.muted },
   level: {
     fontFamily: font.monoMedium,
     fontSize: 10,
     color: c.accent,
-    backgroundColor: c.accentSoft,
-    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: c.accentLine,
+    borderRadius: radius.pill,
     paddingHorizontal: 6,
     paddingVertical: 1,
     overflow: 'hidden',
@@ -185,7 +184,7 @@ const useStyles = makeStyles((c) => ({
     gap: 6,
     borderWidth: 1,
     borderColor: c.lineStrong,
-    borderRadius: 999,
+    borderRadius: radius.sm,
     paddingHorizontal: 12,
     height: 34,
   },
