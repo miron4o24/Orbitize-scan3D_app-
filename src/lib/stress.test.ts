@@ -45,7 +45,7 @@ test('a drop: higher is worse, and the limit is the height where it breaks', () 
   close(outcome(s, low.limit, 'pla', 100, 100).factor, 1, 1e-6);
 });
 
-test('colours run from blue to red; untested pieces are grey', () => {
+test('colours run from green to red; untested pieces are grey', () => {
   assert.deepEqual(stressColor(-1), UNTESTED);
   const [r0, , b0] = stressColor(0);
   const [r1, , b1] = stressColor(1);
