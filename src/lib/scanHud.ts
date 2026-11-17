@@ -60,3 +60,15 @@ export class ViewCounter {
     return true;
   }
 }
+
+/* Секторите от сегашния кръг, които още липсват и са най-близо до телефона: тях да заснеме след това. */
+export function nextSectors(state: OrbitState | null, n = 2): number[] {
+  if (!state || state.loop >= LOOPS) return [];
+  const row = state.covered[state.loop];
+  const gap = (i: number) => Math.min(Math.abs(i - state.sector), SECTORS - Math.abs(i - state.sector));
+  return row
+    .map((on, i) => (on ? -1 : i))
+    .filter((i) => i >= 0)
+    .sort((a, b) => gap(a) - gap(b))
+    .slice(0, n);
+}

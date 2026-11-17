@@ -210,3 +210,30 @@ def test_read_views(tmp_path):
     np.testing.assert_allclose(views.centers, [[0, 0, -5]])
     np.testing.assert_allclose(views.dirs, [[0, 0, 1]])
     np.testing.assert_allclose(views.ups, [[0, -1, 0]])
+
+
+def test_outline_of_the_object_before_an_ai_scan(client):
+    """Снимката преди запис за AI модел: очертанието на предмета за точките на екрана (app/silhouette.py)."""
+    import io
+
+    from PIL import Image, ImageDraw
+
+    from app import segment
+
+    assert client.post("/outline", content=b"not a photo").status_code == 400
+    if not segment.MODEL.exists():
+        return  # без модела за изрязване: {"found": False}, проверено по-горе само формата
+    # Тъмна бутилка (тясно гърло, широко тяло) на светъл фон, изправена: по-висока, отколкото широка.
+    im = Image.new("RGB", (600, 800), (235, 232, 228))
+    d = ImageDraw.Draw(im)
+    d.rounded_rectangle([210, 330, 390, 640], radius=30, fill=(40, 60, 120))
+    d.rectangle([275, 200, 325, 340], fill=(40, 60, 120))
+    buf = io.BytesIO()
+    im.save(buf, "JPEG")
+    r = client.post("/outline", content=buf.getvalue()).json()
+    assert r["found"], r
+    assert 2.0 < r["aspect"] < 2.8, r["aspect"]  # 440 / 180
+    rows = r["rows"]
+    body = rows[len(rows) // 4]
+    neck = rows[-2]
+    assert body[1] - body[0] > 0.9 and neck[1] - neck[0] < 0.4, (body, neck)

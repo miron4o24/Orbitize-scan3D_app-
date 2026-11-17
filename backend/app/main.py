@@ -14,6 +14,7 @@ from typing import Annotated, Literal
 
 import trimesh
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
 from . import accounts as A
@@ -28,6 +29,7 @@ from . import pipeline as PI
 from . import printing as PR
 from . import progress
 from . import render as RE
+from . import silhouette as SIL
 from . import stress as ST
 from . import texture as TX
 from .accounts import Principal, admin_only, principal
@@ -240,6 +242,28 @@ class StartParams(BaseModel):
     method: Literal["scan", "express", "single", "claude", "photo"] = "scan"
     tune: Tune | None = None
     extend: str | None = Field(None, pattern=r"^[0-9a-f]{32}$")  # това видео добавя липсваща страна към този модел
+
+
+@app.post("/outline")
+async def outline(request: Request, p: Principal = Depends(principal)):
+    """Очертанието на предмета от снимката преди запис за AI модел, за точките на екрана за заснемане
+    (app/silhouette.py). Нищо не се пази. {"found": False}, когато предметът не се намира или моделът липсва."""
+    if int(request.headers.get("content-length") or 0) > MAX_PHOTO_BYTES:
+        raise HTTPException(413, "Снимката е твърде голяма.")
+    data = await request.body()
+    if len(data) > MAX_PHOTO_BYTES:
+        raise HTTPException(413, "Снимката е твърде голяма.")
+    if data[:3] != b"\xff\xd8\xff":
+        raise HTTPException(400, "Файлът не е снимка (JPEG).")
+
+    def work() -> dict:
+        with CAD._busy:  # същият модел и същото ограничение като четенето на снимки в инженерния режим
+            try:
+                return SIL.profile(CAD.session(), data)
+            except (SystemExit, OSError, ValueError):  # липсващ модел, повредена снимка
+                return {"found": False}
+
+    return await run_in_threadpool(work)
 
 
 NO_SCAN = "Стандартното сканиране вече го няма. Използвайте AI модел или инженерния режим (обновете приложението)."

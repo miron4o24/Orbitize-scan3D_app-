@@ -10,7 +10,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { HUD, ScanStage } from '@/components/ScanHud';
 import { Button, Header, Small } from '@/components/ui';
-import { errorText } from '@/lib/api';
+import { errorText, objectShape, type ObjectShape } from '@/lib/api';
 import { elevation, viewDir } from '@/lib/coverage';
 import { motionSamples, type RawMotion } from '@/lib/motion';
 import { GOOD_DEG_PER_S, OrbitTracker, SECTORS, type OrbitState } from '@/lib/orbit';
@@ -24,7 +24,8 @@ import { font, makeStyles, palettes, space } from '@/theme';
 // Заснемане за AI модела: предметът в рамката, два кръга около него (ниско, после отвисоко). Всичко на екрана е
 // измерено от сензорите на телефона (lib/scanHud.ts) и казва на потребителя какво още трябва на модела: кои страни
 // липсват, дали кадрите ще са размазани, дали е достатъчно светло и на каква височина е телефонът. Записът спира сам,
-// когато и двата кръга са заснети.
+// когато и двата кръга са заснети. Преди записа камерата прави една снимка (в режим за снимки: във видео режим не може),
+// от която сървърът намира очертанието на предмета (app/silhouette.py), и точките на екрана приемат формата му.
 
 // Обиколката отнема около минута; границата само пази от забравен запис (около 320 MB).
 const MAX_SECONDS = 180;
@@ -38,6 +39,9 @@ const BITRATE = 14_000_000;
 
 const fmt = (s: number) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
 const LIVE_MS = 160; // колко често се обновяват числата на екрана
+const SWITCH_MS = 2500; // най-много толкова се чака камерата да мине от снимки към видео
+const RETRY_MS = 700; // запис, отказан веднага след смяната (камерата още не е готова): още един опит след толкова
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // Това, което сензорите казват в момента, за числата на екрана.
 type Live = { angle: number; speed: number; tilt: number; sharp: number; views: number };
@@ -55,6 +59,12 @@ export default function Capture() {
   const extending = !!params.extend;
   const camera = useRef<CameraView>(null);
   const [ready, setReady] = useState(false);
+  const [camMode, setCamMode] = useState<'picture' | 'video'>('picture'); // снимката за очертанието, после видео
+  const [preparing, setPreparing] = useState(false);
+  const [shape, setShape] = useState<ObjectShape | null>(null);
+  // Светлината на телефона, непрекъснато (при видео светкавицата свети, не мига): за предмет на сянка или в тъмно.
+  const [torch, setTorch] = useState(false);
+  const readyWaiter = useRef<(() => void) | null>(null);
   const [recording, setRecording] = useState(false);
   const [seconds, setSeconds] = useState(0);
   const [orbit, setOrbit] = useState<OrbitState | null>(null);
@@ -165,25 +175,74 @@ export default function Capture() {
     ]);
   }
 
-  async function record() {
-    if (!camera.current || recordingRef.current) return;
+  /* Снимка за очертанието на предмета, после камерата минава във видео. Снимката е само за точките на екрана: без
+   нея (грешка, няма връзка) записът тръгва както и да е, а точките остават цилиндър. */
+  async function photoThenVideo() {
+    if (camMode === 'video' || !camera.current) return;
+    try {
+      const pic = await camera.current.takePictureAsync({ quality: 0.6, shutterSound: false });
+      if (pic?.uri) {
+        const file = new File(pic.uri);
+        objectShape(file).then((found) => {
+          if (found && !unmounted.current) setShape(found);
+          try {
+            file.delete();
+          } catch {}
+        });
+      }
+    } catch {}
+    const switched = new Promise<void>((resolve) => {
+      readyWaiter.current = resolve;
+      setTimeout(resolve, SWITCH_MS);
+    });
+    setCamMode('video');
+    await switched;
+    readyWaiter.current = null;
+    setReady(true);
+  }
+
+  // Началото на записа: положението на телефона и обиколката се броят от тук.
+  function restart() {
     tracker.current = new OrbitTracker();
     views.current = new ViewCounter();
     now.current = { ...now.current, angle: 0, speed: 0, views: 0 };
-    stopReason.current = null;
     setOrbit(tracker.current.state);
-    setMessage(null);
-    setSeconds(0);
     motion.current = [];
     startedAt.current = Date.now();
+  }
+
+  async function record() {
+    if (!camera.current || recordingRef.current || preparing) return;
+    setMessage(null);
+    setPreparing(true);
+    try {
+      await photoThenVideo();
+    } finally {
+      setPreparing(false);
+    }
+    if (!camera.current || unmounted.current) return;
+    stopReason.current = null;
+    setSeconds(0);
+    restart();
     recordingRef.current = true;
     setRecording(true);
     try {
       // Завършва при извикване на stopRecording() или при достигане на MAX_SECONDS.
-      const video = await camera.current.recordAsync({
+      const options = {
         maxDuration: MAX_SECONDS,
         ...(Platform.OS === 'ios' && { codec: 'avc1' as const }), // iOS прилага videoBitrate само при зададен кодек
-      });
+      };
+      let video;
+      try {
+        video = await camera.current.recordAsync(options);
+      } catch (e) {
+        // Отказан веднага: камерата още довършва смяната към видео. Още веднъж, малко по-късно.
+        if (Date.now() - startedAt.current > 1500 || !camera.current || unmounted.current) throw e;
+        await sleep(RETRY_MS);
+        if (!camera.current || stopReason.current) throw e;
+        restart();
+        video = await camera.current.recordAsync(options);
+      }
       const secs = Math.round((Date.now() - startedAt.current) / 1000);
       if (unmounted.current) {
         if (video) new File(video.uri).delete();
@@ -213,7 +272,8 @@ export default function Capture() {
   if (!permission.granted) return <CameraPermission canAsk={permission.canAskAgain} onAllow={requestPermission} />;
 
   const way = PRO_INFO.single;
-  const dim = lux != null && lux < DARK_LUX;
+  // Сензорът е отпред, до екрана: светлината на телефона не стига до него, затова с нея предупреждението спира.
+  const dim = lux != null && lux < DARK_LUX && !torch;
   const level = sharpLevel(live.sharp);
   const share = coverage(orbit);
   const fast = recording && orbit?.pace === 'fast';
@@ -221,10 +281,12 @@ export default function Capture() {
   // Какво да направи потребителят сега: най-важното първо.
   const guide = checking
     ? 'Проверка на видеото…'
+    : preparing
+      ? 'Снимка на предмета, после запис…'
     : message
       ? message
       : dim
-        ? 'Твърде тъмно: добавете светлина'
+        ? 'Твърде тъмно: включете светлината (долу вляво)'
         : !recording
           ? extending
             ? 'Заснемете само липсващата страна. Предметът да не е местен.'
@@ -247,14 +309,18 @@ export default function Capture() {
       <CameraView
         ref={camera}
         style={StyleSheet.absoluteFill}
-        mode="video"
+        mode={camMode}
         mute
         videoQuality="2160p"
         videoBitrate={BITRATE}
         // Стабилизацията изрязва и изкривява всеки кадър различно, което разваля модела на обектива с постоянни
         // параметри, който напасва COLMAP.
         videoStabilizationMode="off"
-        onCameraReady={() => setReady(true)}
+        enableTorch={torch}
+        onCameraReady={() => {
+          setReady(true);
+          readyWaiter.current?.();
+        }}
       />
       <SafeAreaView style={StyleSheet.absoluteFill} pointerEvents="box-none">
         <View style={styles.top} pointerEvents="box-none">
@@ -286,7 +352,7 @@ export default function Capture() {
           )}
         </View>
         <View style={styles.stage} pointerEvents="none" onLayout={(e: LayoutChangeEvent) => setStage({ w: e.nativeEvent.layout.width, h: e.nativeEvent.layout.height })}>
-          {stage && <ScanStage w={stage.w} h={stage.h} orbit={orbit} angle={live.angle} recording={recording} />}
+          {stage && <ScanStage w={stage.w} h={stage.h} orbit={orbit} angle={live.angle} recording={recording} shape={shape} />}
         </View>
         <View style={styles.guide} pointerEvents="none">
           <Text style={[styles.guideText, warn && styles.amber]}>{guide}</Text>
@@ -308,14 +374,24 @@ export default function Capture() {
           </View>
           <View style={styles.controls}>
             <Pressable
+              style={[styles.side, torch && styles.sideOn]}
+              onPress={() => setTorch((t) => !t)}
+              accessibilityRole="switch"
+              accessibilityState={{ checked: torch }}
+              accessibilityLabel="Светкавица"
+            >
+              <Ionicons name={torch ? 'flash' : 'flash-off'} size={22} color={torch ? '#000' : WHITE} />
+            </Pressable>
+            <Pressable
               style={[styles.shutter, recording && styles.stop, !ready && styles.disabled]}
               accessibilityRole="button"
               accessibilityLabel={recording ? 'Спри записа' : 'Започни запис'}
-              disabled={!ready || checking}
+              disabled={!ready || checking || preparing}
               onPress={onShutter}
             >
               <View style={recording ? styles.stopIcon : styles.recIcon} />
             </Pressable>
+            <View style={styles.sideSpace} />
           </View>
         </View>
       </SafeAreaView>
@@ -410,7 +486,19 @@ const styles = StyleSheet.create({
   stats: { flexDirection: 'row', marginTop: 4 },
   stat: { flex: 1, gap: 2 },
   statValue: { color: WHITE, fontFamily: font.monoMedium, fontSize: 17 },
-  controls: { alignItems: 'center', paddingVertical: space.sm },
+  controls: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: space.sm },
+  side: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.18)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sideOn: { backgroundColor: HUD.amber, borderColor: HUD.amber },
+  sideSpace: { width: 48 },
   shutter: {
     width: 68,
     height: 68,
