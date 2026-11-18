@@ -67,12 +67,21 @@ RETRY_SEED = "7"
 # bridge_pieces). Метална колонка върху поднос с повтарящи се сладкиши: SIFT я раздели на ниския кръг (28 кадъра) и
 # високия (15), без общи кадри; ALIKED + LightGlue разположи всичките 48 в една част, но десетина от високите - на
 # грешно място (повтарящата се шарка), различно при всяко пускане, а очертанията на кръгъл предмет не го издават:
-# гъстите точки след това минаваха през 81% от формата. Затова неговият модел не се използва сам. Само тогава, защото
-# е няколко пъти по-бавно на процесор.
+# гъстите точки след това минаваха през 81% от формата. Затова неговият модел се използва сам само когато частите на
+# SIFT го потвърждават (LEARNED_CONFIRMED). Само тогава, защото е няколко пъти по-бавно на процесор.
 LEARNED_BELOW = 0.95
+# Моделът с научените особености се използва сам (без съединяване), когато всяка част на SIFT с поне BRIDGE_MIN
+# кадъра има поне толкова от кадрите си на едно и също място в него (same_place): там, където SIFT знае, той го
+# потвърждава. The Rock върху черна кутия (задача 109a68, 17.11.2026): части на SIFT от 13 и 7 кадъра, и двете изцяло
+# на мястото си в научения модел на всичките 50 кадъра. Съединени, кадрите на частта от 7 (лицето) останаха решени с
+# нейното фокусно разстояние (1388 px), а се използваха с това на основата (1480): очертанията им се съгласяваха
+# 78-83% вместо 90%, а моделът излезе с двойни очи и размазано лице. Наученият модел сам: 91,5% срещу 87,1% съединен,
+# без съединяването (1,5 мин на сървъра). Колонката от LEARNED_BELOW: 6 от 15-те кадъра на високия кръг на мястото
+# си, затова там се съединява както преди.
+LEARNED_CONFIRMED = 0.9
 LEARNED_FEATURES = 2048  # на кадър: при 4096 съпоставянето е 3 пъти по-бавно, а кадрите - същите
 # Двойките за него (вижте match_pairs): по-малко от тези за SIFT, защото LightGlue е около 1 с на двойка на процесор, а
-# моделът му само съединява частите.
+# моделът му е само резервен (при неуспех на SIFT).
 LEARNED_NEAR, LEARNED_EVERY = 3, 3
 # Кадър е на едно и също място в два модела, когато след напасването им центърът му е до толкова от размаха на
 # камерите, а посоката му - до толкова градуса; за съединяване трябват поне толкова такива кадъра.
@@ -885,6 +894,7 @@ def solve_cameras(job: Path, work: Path, photos: Path, n_photos: int, sh: Callab
                 learned_cameras(job, work, photos, names, paired, all_masks, sh)
             except Exception as e:  # каквото и да се обърка там, частите на SIFT остават и сканирането продължава
                 shutil.rmtree(sparse / "bridged", ignore_errors=True)
+                shutil.rmtree(sparse / "learned", ignore_errors=True)
                 note(job, f"camera solving: joining the pieces failed ({e!r}); keeping the pieces")
     def judged(dirs) -> list:
         out = []
@@ -1285,7 +1295,33 @@ def learned_cameras(job: Path, work: Path, photos: Path, names: list[str], paire
         return
     sizes = [len(read_views(d)) for d in sorted(out.iterdir()) if (d / "images.bin").exists()]
     note(job, f"camera solving: learned features placed {' + '.join(map(str, sizes)) or 'no'} frames")
-    bridge_pieces(job, work, photos, out, masks, sh)
+    if not confirmed(job, work, out):
+        bridge_pieces(job, work, photos, out, masks, sh)
+
+
+def confirmed(job: Path, work: Path, learned: Path) -> bool:
+    """Дали най-големият модел с научени особености се потвърждава от частите на SIFT (вижте LEARNED_CONFIRMED); ако
+    да, той е в sparse/learned/0 и се оценява сам заедно с останалите модели."""
+    sparse = work / "sparse"
+    pieces = [read_views(d) for d in (sparse / "incremental").iterdir() if (d / "images.bin").exists()]
+    pieces = [p for p in pieces if len(p) >= BRIDGE_MIN]
+    models = sorted((d for d in learned.iterdir() if (d / "images.bin").exists()), key=lambda d: -len(read_views(d)))
+    if not pieces or not models:
+        return False
+    mid = read_views(models[0])
+    if len(mid) <= max(len(p) for p in pieces):
+        return False
+    found = []
+    for piece in pieces:
+        same = same_place(piece, mid)
+        found.append((len(same[3]) if same else 0, len(piece)))
+    text = ", ".join(f"{a} of {b}" for a, b in found)
+    if any(a < LEARNED_CONFIRMED * b for a, b in found):
+        note(job, f"camera solving: the SIFT pieces' frames in the same place in the learned model: {text}; joining")
+        return False
+    note(job, f"camera solving: the SIFT pieces' frames in the same place in the learned model: {text}; using it alone")
+    shutil.copytree(models[0], sparse / "learned" / "0")
+    return True
 
 
 def refine_cameras(job: Path, work: Path, model: Path, sh: Callable[[str, list], None]) -> Path:

@@ -158,3 +158,50 @@ def test_outline_join_fits_a_misplaced_piece_and_leaves_out_a_wrong_one():
     agreed = join.agreement()
     ok, _, _ = join.add(wrong, wide=True)
     assert not ok and set(wrong).isdisjoint(join.poses) and join.agreement() == agreed
+
+
+def write_model(d, views: M.Views, focal: float = 500.0):
+    """Модел на COLMAP (cameras.bin, images.bin, без точки) с камерите `views` и една камера SIMPLE_RADIAL."""
+    import struct
+
+    d.mkdir(parents=True)
+    with open(d / "cameras.bin", "wb") as f:
+        f.write(struct.pack("<Q", 1) + struct.pack("<iiQQ", 1, 2, 640, 480) + struct.pack("<4d", focal, 320, 240, 0))
+    with open(d / "images.bin", "wb") as f:
+        f.write(struct.pack("<Q", len(views)))
+        for i, (name, R, t) in enumerate(zip(views.names, views.R, views.t)):
+            x, y, z, w = Rotation.from_matrix(R).as_quat()
+            f.write(struct.pack("<I7dI", i + 1, w, x, y, z, *t, 1) + name.encode() + b"\0" + struct.pack("<Q", 0))
+
+
+def solved(tmp_path, wrong: range = range(0)):
+    """Части на SIFT от 13 и 7 кадъра (всяка в свой мащаб и посока) и научен модел на всичките 24; кадрите `wrong`
+    от втората част са на грешно място в научения (повтаряща се шарка)."""
+    work, learned = tmp_path / "work", tmp_path / "work" / "learned"
+    all24 = ring(24, Rotation.from_euler("xyz", [5, -10, 30], degrees=True).as_matrix(), 1.7, np.array([0.3, 0, -1]))
+    flip = Rotation.from_euler("z", 90, degrees=True).as_matrix()
+    for k in wrong:
+        all24.R[13 + k] = all24.R[13 + k] @ flip
+        all24.t[13 + k] = all24.t[13] + 0.01 * k
+    write_model(work / "sparse" / "incremental" / "0", ring(13, np.eye(3), 1.0, np.zeros(3)))
+    piece = ring(20, Rotation.from_euler("z", 40, degrees=True).as_matrix(), 0.6, np.array([2.0, 1, 0]))
+    write_model(work / "sparse" / "incremental" / "1", M.subset(piece, np.arange(20) >= 13), focal=470.0)
+    write_model(learned / "0", all24)
+    return work, learned
+
+
+def test_the_learned_model_is_used_alone_when_every_sift_piece_has_its_frames_in_the_same_place_there(tmp_path):
+    """The Rock върху черна кутия: частите на SIFT (13 и 7 кадъра, с различно фокусно разстояние) са изцяло на
+    мястото си в научения модел на всички кадри. Съединени, кадрите на по-малката част се използваха с фокусното
+    разстояние на основата (двойни очи); сам, научения модел е съгласуван."""
+    work, learned = solved(tmp_path)
+    assert P.confirmed(tmp_path, work, learned)
+    assert P.read_views(work / "sparse" / "learned" / "0").names == P.read_views(learned / "0").names
+
+
+def test_the_pieces_are_joined_when_the_learned_model_misplaces_frames_of_one(tmp_path):
+    """Колонката върху подноса: 6 от 15-те кадъра на високия кръг на мястото си в научения модел. Той не се използва
+    сам; частите се съединяват през него (bridge_pieces)."""
+    work, learned = solved(tmp_path, wrong=range(2, 7))
+    assert not P.confirmed(tmp_path, work, learned)
+    assert not (work / "sparse" / "learned").exists()
