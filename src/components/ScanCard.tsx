@@ -29,8 +29,9 @@ export function ViewerGround({ id }: { id: string }) {
 }
 
 /* Изображението на сканирането от сървъра (рисунка на модела, щом е готов) или икона, докато няма такова. plain: без
-   основата на 3D изгледа (миниатюра в ред върху c.tint). */
-export function ScanThumb({ entry, zoom, plain, size = 36 }: { entry: Entry; zoom?: SharedValue<number>; plain?: boolean; size?: number }) {
+   основата на 3D изгледа (миниатюра в ред върху c.tint). fill: запълва родителя с каквато и да е форма, с целия модел
+   видим (голямата карта на началния екран). */
+export function ScanThumb({ entry, zoom, plain, fill, size = 36 }: { entry: Entry; zoom?: SharedValue<number>; plain?: boolean; fill?: boolean; size?: number }) {
   const c = useColors();
   const s = useStyles();
   const [failed, setFailed] = useState(false);
@@ -41,14 +42,14 @@ export function ScanThumb({ entry, zoom, plain, size = 36 }: { entry: Entry; zoo
   const working = entry.status !== 'done' && entry.status !== 'failed';
   const scaled = useAnimatedStyle(() => ({ transform: [{ scale: zoom ? zoom.value : 1 }] }));
   return (
-    <View style={[s.thumb, plain && s.thumbPlain]}>
+    <View style={[s.thumb, (plain || fill) && s.thumbPlain]}>
       {!plain && <ViewerGround id={`g-${entry.key}`} />}
       {show ? (
         <Animated.View style={[StyleSheet.absoluteFill, scaled]}>
           <Image
             source={{ uri, headers: authHeaders() }}
             style={StyleSheet.absoluteFill}
-            contentFit="cover"
+            contentFit={fill ? 'contain' : 'cover'}
             transition={300}
             recyclingKey={entry.key}
             onError={() => setFailed(true)}
@@ -171,7 +172,7 @@ export function ScanCardSkeleton() {
 const useStyles = makeStyles((c) => ({
   card: { backgroundColor: c.surface, borderRadius: radius.md, borderWidth: 1, borderColor: c.line, overflow: 'hidden' },
   thumb: { aspectRatio: 1, alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
-  thumbPlain: { width: '100%', height: '100%' },
+  thumbPlain: { width: '100%', height: '100%', aspectRatio: undefined },
   meta: { paddingTop: 12, paddingHorizontal: 14, paddingBottom: 14, gap: 4, borderTopWidth: 1, borderTopColor: c.line },
   aiChip: {
     position: 'absolute',
