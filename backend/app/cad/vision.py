@@ -157,13 +157,13 @@ def sam():
         return _sam
 
 
-def sam_candidates(models, image: Image.Image, points: list, box=None) -> list[tuple[np.ndarray, float]]:
+def sam_candidates(models, image: Image.Image, points: list, box=None, emb=None) -> list[tuple[np.ndarray, float]]:
     """Кандидатите на MobileSAM (логити с размера на изображението, оценка) за точки върху предмета (пиксели) и
-    кутия около него, ако е известна."""
+    кутия около него, ако е известна. emb: вграждането на изображението, ако вече е изчислено (RF.embedding)."""
     from .. import refine as RF
 
     enc, dec = models
-    emb = RF.embedding(enc, image)
+    emb = RF.embedding(enc, image) if emb is None else emb
     W, H = image.size
     k = RF.SIZE / max(W, H)
     coords = [tuple(p[:2]) for p in points]
@@ -219,14 +219,35 @@ def holds(m: np.ndarray, points: list) -> bool:
     return True
 
 
+def joined_taps(models, image: Image.Image, points: list) -> np.ndarray | None:
+    """Когато нито един кандидат на MobileSAM не съдържа всички точки "това е детайлът" (две различни на вид части,
+    отблясък на ръба): всяка такава точка изрязана отделно, с точките "не е детайлът", и всичко заедно. None, ако
+    някоя точка не дава кандидат."""
+    from .. import refine as RF
+
+    emb = RF.embedding(models[0], image)
+    off = [p for p in points if len(p) >= 3 and not p[2]]
+    out = None
+    for p in points:
+        if len(p) >= 3 and not p[2]:
+            continue
+        cands = [(lg > 0, sc) for lg, sc in sam_candidates(models, image, [p, *off], emb=emb)]
+        cands = [(m, sc) for m, sc in cands if m.any() and holds(m, [p, *off])]
+        if not cands:
+            return None
+        m = choose(cands)
+        out = m if out is None else out | m
+    return out if out is not None and holds(out, points) else None
+
+
 def sam_cutout(models, im: Image.Image, points: list):
     """Детайлът под точките (пиксели на снимката), изрязан с MobileSAM: първо в цялата снимка (къде е), после
     отблизо около него, за точен ръб. Като cutout: (поле, твърда маска, изрязване). ValueError("no object")."""
     whole = [(lg > 0, sc) for lg, sc in sam_candidates(models, im, points)]
     whole = [(m, sc) for m, sc in whole if m.any() and holds(m, points)]
-    if not whole:
+    coarse = choose(whole) if whole else joined_taps(models, im, points)
+    if coarse is None:
         raise ValueError("no object")
-    coarse = choose(whole)
     W, H = im.size
     ys, xs = np.nonzero(coarse)
     x0, x1, y0, y1 = xs.min(), xs.max() + 1, ys.min(), ys.max() + 1
@@ -245,9 +266,11 @@ def sam_cutout(models, im: Image.Image, points: list):
         iou = float((m & first).sum() / max(1, (m | first).sum()))
         if iou + 0.1 * sc > fit:
             best, fit = lg, iou + 0.1 * sc
-    if best is None:
-        raise ValueError("no object")
-    soft = 1.0 / (1.0 + np.exp(-np.clip(best, -30, 30)))
+    if best is not None:
+        soft = 1.0 / (1.0 + np.exp(-np.clip(best, -30, 30)))
+    else:  # и отблизо никой кандидат не съдържа всички точки: всяка поотделно, иначе грубото от цялата снимка
+        joined = joined_taps(models, crop, local)
+        soft = (joined if joined is not None else first).astype(np.float32)
     seed = next((p for p in local if len(p) < 3 or p[2]), local[0])
     keep = [(p[0], p[1]) for p in local if len(p) < 3 or p[2]]
     field_, solid = finish(soft.astype(np.float32), crop, (seed[0], seed[1]), keep)
