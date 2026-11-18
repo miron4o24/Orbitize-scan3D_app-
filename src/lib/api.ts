@@ -185,9 +185,10 @@ export const uploadPhoto = (jobId: string, file: File) =>
   });
 
 // Очертанието на предмета от снимката точно преди записа за AI модел (сървър app/silhouette.py): по него се рисуват
-// точките на екрана за заснемане. rows: отдолу нагоре, ляво и дясно като дял от ширината (null: празен ред). null при
-// какъвто и да е проблем (по-стар сървър, няма предмет, няма връзка): тогава точките остават общ цилиндър.
-export type ObjectShape = { aspect: number; rows: ([number, number] | null)[] };
+// точките на екрана за заснемане. rows: отдолу нагоре, ляво и дясно като дял от ширината (null: празен ред). plain:
+// повърхността под предмета е без шарка (по-стар сървър: false). null при какъвто и да е проблем (по-стар сървър,
+// няма предмет, няма връзка): тогава точките остават общ цилиндър.
+export type ObjectShape = { aspect: number; rows: ([number, number] | null)[]; plain: boolean };
 
 export async function objectShape(photo: File): Promise<ObjectShape | null> {
   try {
@@ -198,7 +199,7 @@ export async function objectShape(photo: File): Promise<ObjectShape | null> {
     });
     if (!res.ok) return null;
     const r = (await res.json()) as { found: boolean } & Partial<ObjectShape>;
-    return r.found && r.aspect && r.rows?.some(Boolean) ? { aspect: r.aspect, rows: r.rows } : null;
+    return r.found && r.aspect && r.rows?.some(Boolean) ? { aspect: r.aspect, rows: r.rows, plain: r.plain === true } : null;
   } catch {
     return null;
   }
