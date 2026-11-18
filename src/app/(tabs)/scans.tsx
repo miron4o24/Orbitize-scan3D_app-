@@ -1,6 +1,6 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useState } from 'react';
-import { Pressable, RefreshControl, ScrollView, Text, View } from 'react-native';
+import { Pressable, RefreshControl, ScrollView, Text, useWindowDimensions, View } from 'react-native';
 import Animated from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -37,6 +37,8 @@ export default function MyScans() {
   const [filter, setFilter] = useState<Filter>('all');
   const [query, setQuery] = useState('');
   const scrollY = useScrollY();
+  // Точно половината от реда: сама карта в последния ред не се разтяга на цялата ширина.
+  const cellWidth = (useWindowDimensions().width - 2 * 16 - space.sm) / 2;
 
   const q = query.trim().toLowerCase();
   const shown = entries.filter((e) => MATCH[filter](e) && (!q || e.title.toLowerCase().includes(q)));
@@ -136,10 +138,10 @@ export default function MyScans() {
             <View style={s.skeletons}>
               {[0, 1].map((row) => (
                 <View key={row} style={s.row}>
-                  <View style={s.cell}>
+                  <View style={{ width: cellWidth }}>
                     <ScanCardSkeleton />
                   </View>
-                  <View style={s.cell}>
+                  <View style={{ width: cellWidth }}>
                     <ScanCardSkeleton />
                   </View>
                 </View>
@@ -173,7 +175,7 @@ export default function MyScans() {
           )
         }
         renderItem={({ item, index }: { item: Entry; index: number }) => (
-          <Appear index={Math.min(index, 8) + 2} style={s.cell}>
+          <Appear index={Math.min(index, 8) + 2} style={{ width: cellWidth }}>
             <ScanCard entry={item} onPress={() => openEntry(item)} onLongPress={() => confirmDelete(item)} />
           </Appear>
         )}
@@ -185,8 +187,7 @@ export default function MyScans() {
 const useStyles = makeStyles((c) => ({
   fill: { flex: 1, backgroundColor: c.bg },
   list: { paddingHorizontal: 16, paddingBottom: 48, gap: space.sm, flexGrow: 1 },
-  row: { gap: space.sm },
-  cell: { flex: 1 },
+  row: { flexDirection: 'row', gap: space.sm },
   header: { gap: space.md, paddingTop: space.xl, paddingBottom: space.sm },
   titleRow: { flexDirection: 'row', alignItems: 'baseline', gap: space.sm, marginTop: space.sm },
   title: { marginBottom: space.xs },
