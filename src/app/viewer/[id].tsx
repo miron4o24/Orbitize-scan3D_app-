@@ -2,7 +2,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { File, Paths } from 'expo-file-system';
 import { router, useFocusEffect, useLocalSearchParams, type ErrorBoundaryProps } from 'expo-router';
 import * as Sharing from 'expo-sharing';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ComponentProps } from 'react';
 import { ActivityIndicator, Modal, Pressable, Share, Switch, Text, useWindowDimensions, View } from 'react-native';
 import Animated from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -26,7 +26,6 @@ import {
   H2,
   H3,
   IconButton,
-  KeyValue,
   Label,
   Mono,
   Note,
@@ -98,7 +97,9 @@ const SMOOTH_PASSES = 2;
 // разстояние на ръка, заема 18%).
 const SMALL_OBJECT = 0.5;
 
-type Tab = 'size' | 'files' | 'share';
+type Tab = 'overview' | 'files' | 'tools' | 'share';
+// Как се показва моделът: в цвета си, без него (сива глина: само формата) или като мрежа от триъгълници.
+type Look = 'color' | 'plain' | 'mesh';
 
 const FRAMES_KEPT_MS = 7 * 86_400_000; // сървърът пази кадрите на модела толкова дълго (сървър JOB_TTL_DAYS)
 
@@ -125,7 +126,8 @@ export default function Viewer() {
   const [model, setModel] = useState<Object3D | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [wireframe, setWireframe] = useState(false);
+  const [look, setLook] = useState<Look>('color');
+  const wireframe = look === 'mesh';
   const [full, setFull] = useState(false); // моделът на целия екран
   const [mmInput, setMmInput] = useState(String(scan?.longestMm ?? 100));
   const [busy, setBusy] = useState<string | null>(null);
@@ -146,7 +148,7 @@ export default function Viewer() {
       setAttempt((a) => a + 1);
     }, [id]),
   );
-  const [tab, setTab] = useState<Tab>('size');
+  const [tab, setTab] = useState<Tab>('overview');
   const [surface, setSurface] = useState<Surface>('smooth');
   const [support, setSupport] = useState<ArSupport | null>(null); // AR на този телефон; null, докато се пита
   const [editing, setEditing] = useState(false); // диалогът за текстова промяна
@@ -391,8 +393,9 @@ export default function Viewer() {
   // Как е създаден (AI модел или инженерният режим); старите стандартни сканирания нямат етикет.
   const way = report?.ai ? madeWith(report.ai) : null;
   const tabs: { value: Tab; label: string }[] = [
-    { value: 'size', label: 'Размер' },
+    { value: 'overview', label: 'Преглед' },
     { value: 'files', label: 'Файлове' },
+    { value: 'tools', label: 'Още' },
   ];
   if (account && done) tabs.push({ value: 'share', label: 'Споделяне' });
 
@@ -401,7 +404,7 @@ export default function Viewer() {
       <View style={s.preview}>
         {model ? (
           <Animated.View entering={fade} style={s.flex}>
-            {!full && !picking && <ModelView model={model} wireframe={wireframe} background={c.viewer} />}
+            {!full && !picking && <ModelView model={model} wireframe={wireframe} plain={look === 'plain'} background={c.viewer} />}
           </Animated.View>
         ) : loadError ? (
           <View style={s.center}>
@@ -457,17 +460,19 @@ export default function Viewer() {
             <Text style={s.info}>
               {way ? `${way} · ` : ''}
               {shortDate(scan.createdAt)}
+              {dims ? ` · ${dims.map(mmText).join(' × ')} мм` : ''}
             </Text>
           </View>
         </Appear>
 
         {model && (
           <Appear index={1}>
-            <Segmented<'texture' | 'mesh'>
-              value={wireframe ? 'mesh' : 'texture'}
-              onChange={(v) => setWireframe(v === 'mesh')}
+            <Segmented<Look>
+              value={look}
+              onChange={setLook}
               options={[
-                { value: 'texture', label: 'Текстура' },
+                { value: 'color', label: 'Цвят' },
+                { value: 'plain', label: 'Без цвят' },
                 { value: 'mesh', label: 'Мрежа' },
               ]}
             />
@@ -475,146 +480,113 @@ export default function Viewer() {
         )}
 
         {done && (
-          <Appear index={1}>
-            <Card style={s.list}>
-              <KeyValue
-                style={s.kvFirst}
-                rows={[
-                  { key: 'Размер', value: dims ? `${dims.map(mmText).join(' × ')} мм` : '—' },
-                  ...(report ? [{ key: 'Печат', value: printLine(report, mm, mmValid) }] : []),
-                  {
-                    key: 'Формат',
-                    value: (
-                      <View style={s.chips}>
-                        {FORMATS.map((f) => (
-                          <Text key={f.format} style={s.chip}>
-                            {f.format.toUpperCase()}
-                          </Text>
-                        ))}
-                      </View>
-                    ),
-                  },
-                ]}
-              />
-            </Card>
-          </Appear>
-        )}
-
-        {done && (
-          <Appear index={1} style={s.withNote}>
-            <Button
-              title="Изтегляне · STL"
+          <Appear index={1} style={s.actions}>
+            <ActionTile
               icon="arrow-down"
-              size="lg"
+              label="STL"
+              primary
               onPress={() => exportAs('stl')}
               loading={busy === 'stl'}
               disabled={!model || !mmValid || (!!busy && busy !== 'stl')}
             />
-            <View style={s.buttons}>
-              {showAr && (
-                <Button
-                  title="Виж в стаята"
-                  icon="cube-outline"
-                  variant="secondary"
-                  onPress={viewAr}
-                  loading={busy === 'ar'}
-                  disabled={!mmValid || (!!busy && busy !== 'ar')}
-                  style={s.flex}
-                />
-              )}
-              <Button title="Измери" icon="resize-outline" variant="secondary" onPress={() => setMeasuring(true)} disabled={!model || !mmValid} style={s.flex} />
-            </View>
+            <ActionTile icon="resize-outline" label="Измери" onPress={() => setMeasuring(true)} disabled={!model || !mmValid} />
+            {showAr && <ActionTile icon="cube-outline" label="В стаята" onPress={viewAr} loading={busy === 'ar'} disabled={!mmValid || (!!busy && busy !== 'ar')} />}
+            {account && <ActionTile icon="videocam-outline" label="Видео" onPress={shareVideo} loading={busy === 'spin'} disabled={!!busy && busy !== 'spin'} />}
           </Appear>
         )}
-
-        {done && !!jobId && (
-          <Appear index={2} style={s.withNote}>
-            <Button title="Тест за здравина" icon="barbell-outline" variant="secondary" size="lg" disabled={!mmValid} onPress={stressTest} />
-          </Appear>
-        )}
-
-        {canEdit && (
-          <Appear index={2}>
-            <Button title="Промени с AI" icon="color-wand-outline" variant="secondary" size="lg" onPress={() => setEditing(true)} disabled={!mmValid || !!busy} />
-          </Appear>
-        )}
-
-        {canEdit && (
-          <Appear index={2}>
-            <Button title="Табелка с име" icon="pricetag-outline" variant="secondary" size="lg" onPress={() => setPlating(true)} disabled={!mmValid || !!busy} />
-          </Appear>
-        )}
-
-        {canExtend && (
-          <Appear index={2}>
-            <Button title="Добави липсваща страна" icon="add-circle-outline" variant="secondary" size="lg" onPress={extend} disabled={!!busy} />
-          </Appear>
-        )}
+        {busy === 'spin' && <Small>Видеото се подготвя…</Small>}
 
         {error && <ErrorText>{error}</ErrorText>}
 
-        {report?.cad && !!jobId && done && (
-          <Appear index={3}>
-            <CadPanel scanId={id} jobId={jobId} cad={report.cad} stamp={String(report.cad.volume_mm3)} />
-          </Appear>
-        )}
-
-        <Appear index={3}>
+        <Appear index={2}>
           <Segmented<Tab> value={tab} onChange={setTab} options={tabs} />
         </Appear>
 
         <Animated.View key={tab} entering={swap} style={s.tab}>
-          {tab === 'size' && (
-            <Section label="Реален размер">
-              <Card style={s.list}>
-                <View style={s.mmRow}>
-                  <H3 style={s.flex}>Най-дълга страна</H3>
-                  <View style={[s.mmBox, !mmValid && s.mmInvalid]}>
-                    <Field
-                      style={s.mm}
-                      value={mmInput}
-                      onChangeText={setMmInput}
-                      keyboardType="decimal-pad"
-                      accessibilityLabel="Най-дълга страна в милиметри"
-                      selectTextOnFocus
-                    />
-                    <Text style={s.mmUnit}>мм</Text>
-                  </View>
-                </View>
-                {!mmValid && <Small style={s.danger}>Въведете размер от 1 до 2000 мм.</Small>}
-                {dims && (
-                  <View style={s.dims}>
-                    {(['Дължина', 'Ширина', 'Височина'] as const).map((label, i) => (
-                      <View key={label} style={[s.dim, i > 0 && s.cellLine]}>
-                        <Text style={s.dimValue}>{mmText(dims[i])}</Text>
-                        <Label>{label}</Label>
-                      </View>
-                    ))}
-                  </View>
-                )}
-                {showAr && (
-                  <View style={s.lineTop}>
-                    <Row
-                      label="Реален размер в стаята"
-                      last
-                      right={
-                        <Switch
-                          value={realSize}
-                          onValueChange={setRealSize}
-                          trackColor={{ true: c.accentStrong, false: c.surface3 }}
-                          thumbColor={c.text2}
-                          ios_backgroundColor={c.surface3}
-                          accessibilityLabel="Реален размер в AR"
-                        />
-                      }
-                    />
-                  </View>
-                )}
-              </Card>
-            </Section>
-          )}
+          {tab === 'overview' && (
+            <>
+              {report?.object_width != null && report.object_width < SMALL_OBJECT && (
+                <Note warn>Предметът беше далеч от камерата. Следващия път се приближете.</Note>
+              )}
+              {report?.tips?.map((tip) => (
+                <Note key={tip} warn>
+                  {tip}
+                </Note>
+              ))}
 
-          {tab === 'size' && report && mmValid && <PrintCard report={report} mm={mm} />}
+              {report?.cad && !!jobId && done && <CadPanel scanId={id} jobId={jobId} cad={report.cad} stamp={String(report.cad.volume_mm3)} />}
+
+              <Section label="Реален размер">
+                <Card style={s.list}>
+                  <View style={s.mmRow}>
+                    <H3 style={s.flex}>Най-дълга страна</H3>
+                    <View style={[s.mmBox, !mmValid && s.mmInvalid]}>
+                      <Field
+                        style={s.mm}
+                        value={mmInput}
+                        onChangeText={setMmInput}
+                        keyboardType="decimal-pad"
+                        accessibilityLabel="Най-дълга страна в милиметри"
+                        selectTextOnFocus
+                      />
+                      <Text style={s.mmUnit}>мм</Text>
+                    </View>
+                  </View>
+                  {!mmValid && <Small style={s.danger}>Въведете размер от 1 до 2000 мм.</Small>}
+                  {dims && (
+                    <View style={s.dims}>
+                      {(['Дължина', 'Ширина', 'Височина'] as const).map((label, i) => (
+                        <View key={label} style={[s.dim, i > 0 && s.cellLine]}>
+                          <Text style={s.dimValue}>{mmText(dims[i])}</Text>
+                          <Label>{label}</Label>
+                        </View>
+                      ))}
+                    </View>
+                  )}
+                  {showAr && (
+                    <View style={s.lineTop}>
+                      <Row
+                        label="Реален размер в стаята"
+                        last
+                        right={
+                          <Switch
+                            value={realSize}
+                            onValueChange={setRealSize}
+                            trackColor={{ true: c.accentStrong, false: c.surface3 }}
+                            thumbColor={c.text2}
+                            ios_backgroundColor={c.surface3}
+                            accessibilityLabel="Реален размер в AR"
+                          />
+                        }
+                      />
+                    </View>
+                  )}
+                </Card>
+              </Section>
+
+              {report && mmValid && <PrintCard report={report} mm={mm} />}
+
+              {!!report?.edit?.changes.length && (
+                <Section label="Направени промени">
+                  <Card style={s.share}>
+                    {report.edit.changes.map((line) => (
+                      <Small key={line}>• {line}</Small>
+                    ))}
+                  </Card>
+                </Section>
+              )}
+
+              {/* Само за собственика на приложението: как е създаден моделът и колко време е отнело. */}
+              {!!user?.owner && !!report && (
+                <Section label="Собственик">
+                  <Card style={s.list}>
+                    <Row label="Начин" value={report.ai ? madeWith(report.ai) : report.edit ? 'Промяна с AI' : 'Сканиране'} last={report.seconds == null} />
+                    {report.seconds != null && <Row label="Време за обработка" value={duration(report.seconds)} last />}
+                  </Card>
+                </Section>
+              )}
+            </>
+          )}
 
           {tab === 'files' && (
             <>
@@ -665,11 +637,28 @@ export default function Viewer() {
             </>
           )}
 
+          {tab === 'tools' && (
+            <View style={s.toolList}>
+              {done && !!jobId && (
+                <ToolRow icon="barbell-outline" title="Тест за здравина" sub="Къде моделът би се счупил при натоварване" onPress={stressTest} disabled={!mmValid} />
+              )}
+              {canEdit && (
+                <ToolRow icon="color-wand-outline" title="Промени с AI" sub="Опишете с думи какво да се промени" onPress={() => setEditing(true)} disabled={!mmValid || !!busy} />
+              )}
+              {canEdit && (
+                <ToolRow icon="pricetag-outline" title="Табелка с име" sub="Основа с надпис под модела" onPress={() => setPlating(true)} disabled={!mmValid || !!busy} />
+              )}
+              {canExtend && (
+                <ToolRow icon="add-circle-outline" title="Добави липсваща страна" sub="Заснемете само страната, която липсва" onPress={extend} disabled={!!busy} />
+              )}
+              <ToolRow icon="trash-outline" title="Изтрий сканирането" sub="Не може да се върне" danger onPress={remove} disabled={busy === 'delete'} />
+            </View>
+          )}
+
           {tab === 'share' && (
             <>
               <Section label="Видео">
                 <Button title="Видео за споделяне" icon="videocam-outline" variant="secondary" onPress={shareVideo} loading={busy === 'spin'} disabled={!!busy && busy !== 'spin'} />
-                {busy === 'spin' && <Small>Подготвя се, около 2 минути.</Small>}
               </Section>
 
               <Section label="Линк">
@@ -708,37 +697,6 @@ export default function Viewer() {
             </>
           )}
         </Animated.View>
-
-        {!!report?.edit?.changes.length && (
-          <Section label="Направени промени">
-            <Card style={s.share}>
-              {report.edit.changes.map((line) => (
-                <Small key={line}>• {line}</Small>
-              ))}
-            </Card>
-          </Section>
-        )}
-
-        {report?.object_width != null && report.object_width < SMALL_OBJECT && (
-          <Note warn>Предметът беше далеч от камерата. Следващия път се приближете.</Note>
-        )}
-        {report?.tips?.map((tip) => (
-          <Note key={tip} warn>
-            {tip}
-          </Note>
-        ))}
-
-        {/* Само за собственика на приложението: как е създаден моделът и колко време е отнело. */}
-        {!!user?.owner && !!report && (
-          <Section label="Собственик">
-            <Card style={s.list}>
-              <Row label="Начин" value={report.ai ? madeWith(report.ai) : report.edit ? 'Промяна с AI' : 'Сканиране'} last={report.seconds == null} />
-              {report.seconds != null && <Row label="Време за обработка" value={duration(report.seconds)} last />}
-            </Card>
-          </Section>
-        )}
-
-        <Button title="Изтрий сканирането" variant="danger" icon="trash-outline" onPress={remove} loading={busy === 'delete'} />
       </Screen>
 
       {model && (
@@ -747,7 +705,9 @@ export default function Viewer() {
           model={model}
           title={title}
           wireframe={wireframe}
-          onWireframe={() => setWireframe((w) => !w)}
+          onWireframe={() => setLook((l) => (l === 'mesh' ? 'color' : 'mesh'))}
+          plain={look === 'plain'}
+          onPlain={() => setLook((l) => (l === 'plain' ? 'color' : 'plain'))}
           onClose={() => setFull(false)}
         />
       )}
@@ -923,12 +883,6 @@ function EditDialog(props: EditDialogProps) {
 }
 
 /* Един ред за таблицата отгоре: времето за печат с PLA и 20% пълнеж (подробностите са в раздела Размер). */
-function printLine(report: Report, mm: number, mmValid: boolean): string {
-  if (!mmValid || report.volume_mm3 == null || report.area_mm2 == null) return '—';
-  const e = estimate(report.volume_mm3, report.area_mm2, report.dimensions_mm[2], mm, 'pla', 20, 0);
-  return `~${printTime(e.seconds)} · ${MATERIALS.pla.label}`;
-}
-
 /* Колко време отнема печатът, пластмасата и цената при зададения по-горе размер (lib/printEstimate.ts). */
 function PrintCard({ report, mm }: { report: Report; mm: number }) {
   const s = useStyles();
@@ -987,8 +941,80 @@ function PrintCard({ report, mm }: { report: Report; mm: number }) {
   );
 }
 
+type IconName = ComponentProps<typeof Ionicons>['name'];
+
+/* Плочка с бързо действие под модела: икона и кратък надпис. primary: основното действие (изтеглянето за печат). */
+function ActionTile(props: { icon: IconName; label: string; onPress: () => void; primary?: boolean; loading?: boolean; disabled?: boolean }) {
+  const c = useColors();
+  const s = useStyles();
+  return (
+    <PressScale
+      onPress={props.onPress}
+      disabled={props.disabled || props.loading}
+      style={[s.tile, props.primary && s.tilePrimary, props.disabled && s.dim40]}
+      accessibilityRole="button"
+      accessibilityLabel={props.label}
+    >
+      {props.loading ? (
+        <ActivityIndicator size="small" color={props.primary ? c.onPrimary : c.text} />
+      ) : (
+        <Ionicons name={props.icon} size={20} color={props.primary ? c.onPrimary : c.text} />
+      )}
+      <Text style={[s.tileText, props.primary && { color: c.onPrimary }]} numberOfLines={1}>
+        {props.label}
+      </Text>
+    </PressScale>
+  );
+}
+
+/* Ред в "Още": икона, какво прави и стрелка. */
+function ToolRow(props: { icon: IconName; title: string; sub: string; onPress: () => void; disabled?: boolean; danger?: boolean }) {
+  const c = useColors();
+  const s = useStyles();
+  const color = props.danger ? c.danger : c.text;
+  return (
+    <PressScale onPress={props.onPress} disabled={props.disabled} style={[s.toolRow, props.disabled && s.dim40]} accessibilityRole="button" accessibilityLabel={props.title}>
+      <View style={[s.toolIcon, props.danger && { borderColor: c.danger }]}>
+        <Ionicons name={props.icon} size={18} color={props.danger ? c.danger : c.accent} />
+      </View>
+      <View style={s.flex}>
+        <Text style={[s.toolTitle, { color }]}>{props.title}</Text>
+        <Small>{props.sub}</Small>
+      </View>
+      <Ionicons name="chevron-forward" size={16} color={c.muted} />
+    </PressScale>
+  );
+}
+
 const useStyles = makeStyles((c) => ({
   fill: { flex: 1, backgroundColor: c.bg },
+  actions: { flexDirection: 'row', gap: space.sm },
+  tile: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 12,
+    borderWidth: 1,
+    borderColor: c.line,
+    borderRadius: radius.md,
+    backgroundColor: c.surface,
+  },
+  tilePrimary: { backgroundColor: c.primary, borderColor: c.primary },
+  tileText: { fontFamily: font.monoMedium, fontSize: 11.5, letterSpacing: 0.4, color: c.text },
+  toolList: { gap: space.sm },
+  toolRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.md,
+    padding: space.md,
+    borderWidth: 1,
+    borderColor: c.line,
+    borderRadius: radius.md,
+    backgroundColor: c.surface,
+  },
+  toolIcon: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: c.accentLine, borderRadius: radius.sm },
+  toolTitle: { fontFamily: font.semibold, fontSize: 15 },
   flex: { flex: 1 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: space.md, padding: space.xl },
   preview: { height: '42%', backgroundColor: c.viewer[1], borderBottomWidth: 1, borderBottomColor: c.line },
