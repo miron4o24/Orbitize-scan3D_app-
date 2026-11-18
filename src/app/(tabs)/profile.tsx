@@ -2,7 +2,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { File } from 'expo-file-system';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import * as ImagePicker from 'expo-image-picker';
-import { useFocusEffect } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { ActivityIndicator, Modal, View } from 'react-native';
 import type { SharedValue } from 'react-native-reanimated';
@@ -33,6 +33,7 @@ import { deleteAccount, errorText, removeAvatar, renameMe, uploadAvatar } from '
 import { afterTransition } from '@/lib/afterTransition';
 import { refreshProfile, signOut } from '@/lib/auth';
 import { checkProgress, useProgress } from '@/lib/progress';
+import { restartTour } from '@/lib/tour';
 import { deleteScan, listScans } from '@/lib/scans';
 import { avatarChanged, clearSession, updateProfile, useSession, type Profile } from '@/lib/session';
 import { makeStyles, radius, setScheme, space, useColors, useScheme, type Scheme } from '@/theme';
@@ -260,6 +261,24 @@ function Account({ user }: { user: Profile }) {
             </Card>
           </Section>
         </Appear>
+
+        {/* Само за собственика на приложението: обиколката за първи път отново, за проба (lib/tour.ts). */}
+        {!!user.owner && (
+          <Appear index={2}>
+            <Section label="Собственик">
+              <Card style={s.list}>
+                <Row
+                  label="Покажи обиколката отново"
+                  onPress={() => {
+                    router.navigate('/');
+                    setTimeout(restartTour, 600);
+                  }}
+                  last
+                />
+              </Card>
+            </Section>
+          </Appear>
+        )}
 
         <Appear index={3}>
           <Section>

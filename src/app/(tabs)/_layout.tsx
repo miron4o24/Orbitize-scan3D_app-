@@ -6,8 +6,10 @@ import Animated, { useAnimatedStyle, useReducedMotion, useSharedValue, withSeque
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { easeOut, haptic, PressScale } from '@/components/motion';
+import { TourOverlay, TourTarget } from '@/components/Tour';
 import type { IconName } from '@/components/ui';
 import { startScan } from '@/lib/startScan';
+import { startTour, tourSeen } from '@/lib/tour';
 import { font, makeStyles, radius, space, useColors } from '@/theme';
 
 // По два раздела от двете страни на бутона за сканиране, който е на позиция 2.
@@ -63,22 +65,23 @@ function TabBar({ state, navigateToTab }: BarProps) {
     const it = ITEMS[name];
     const on = current === name;
     return (
-      <Pressable
-        key={name}
-        style={s.item}
-        onPress={() => {
-          if (on) return;
-          haptic();
-          const route = state.routes.find((r) => r.name === name);
-          if (route) navigateToTab(route.key);
-        }}
-        accessibilityRole="tab"
-        accessibilityState={{ selected: on }}
-        accessibilityLabel={it.label}
-      >
-        <TabIcon name={on ? it.active : it.icon} on={on} color={on ? c.accent : c.muted} />
-        <Text style={[s.label, on && s.labelOn]}>{it.label}</Text>
-      </Pressable>
+      <TourTarget key={name} id={`tab-${name}`} style={s.item}>
+        <Pressable
+          style={s.itemFill}
+          onPress={() => {
+            if (on) return;
+            haptic();
+            const route = state.routes.find((r) => r.name === name);
+            if (route) navigateToTab(route.key);
+          }}
+          accessibilityRole="tab"
+          accessibilityState={{ selected: on }}
+          accessibilityLabel={it.label}
+        >
+          <TabIcon name={on ? it.active : it.icon} on={on} color={on ? c.accent : c.muted} />
+          <Text style={[s.label, on && s.labelOn]}>{it.label}</Text>
+        </Pressable>
+      </TourTarget>
     );
   };
   return (
@@ -87,9 +90,11 @@ function TabBar({ state, navigateToTab }: BarProps) {
       {item('index')}
       {item('community')}
       <View style={s.item}>
-        <PressScale onPress={startScan} feedback style={s.scan} accessibilityRole="button" accessibilityLabel="Ново сканиране">
-          <Ionicons name="add" size={26} color={c.onPrimary} />
-        </PressScale>
+        <TourTarget id="tab-scan">
+          <PressScale onPress={startScan} feedback style={s.scan} accessibilityRole="button" accessibilityLabel="Ново сканиране">
+            <Ionicons name="add" size={26} color={c.onPrimary} />
+          </PressScale>
+        </TourTarget>
       </View>
       {item('scans')}
       {item('profile')}
@@ -99,16 +104,25 @@ function TabBar({ state, navigateToTab }: BarProps) {
 
 export default function TabsLayout() {
   const c = useColors();
+  // Обиколката при първото отваряне, щом началният екран и лентата са премерени (lib/tour.ts).
+  useEffect(() => {
+    if (tourSeen()) return;
+    const t = setTimeout(startTour, 900);
+    return () => clearTimeout(t);
+  }, []);
   return (
-    <Tabs
-      tabBar={(props) => <TabBar {...props} />}
-      screenOptions={{ headerShown: false, sceneStyle: { backgroundColor: c.bg }, animation: 'fade' }}
-    >
-      <Tabs.Screen name="index" />
-      <Tabs.Screen name="community" />
-      <Tabs.Screen name="scans" />
-      <Tabs.Screen name="profile" />
-    </Tabs>
+    <>
+      <Tabs
+        tabBar={(props) => <TabBar {...props} />}
+        screenOptions={{ headerShown: false, sceneStyle: { backgroundColor: c.bg }, animation: 'fade' }}
+      >
+        <Tabs.Screen name="index" />
+        <Tabs.Screen name="community" />
+        <Tabs.Screen name="scans" />
+        <Tabs.Screen name="profile" />
+      </Tabs>
+      <TourOverlay />
+    </>
   );
 }
 
@@ -116,6 +130,7 @@ const useStyles = makeStyles((c) => ({
   bar: { flexDirection: 'row', backgroundColor: c.surface, paddingTop: space.sm, borderTopWidth: 1, borderTopColor: c.line },
   mark: { position: 'absolute', top: -1, left: 0, height: 2, backgroundColor: c.accent },
   item: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 3, minHeight: 48 },
+  itemFill: { flex: 1, alignSelf: 'stretch', alignItems: 'center', justifyContent: 'center', gap: 3 },
   label: { fontFamily: font.monoMedium, fontSize: 11, letterSpacing: 0.4, textTransform: 'uppercase', color: c.muted },
   labelOn: { color: c.accent },
   scan: { width: 52, height: 40, borderRadius: radius.sm, backgroundColor: c.primary, alignItems: 'center', justifyContent: 'center' },
