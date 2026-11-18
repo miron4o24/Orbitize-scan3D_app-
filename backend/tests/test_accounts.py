@@ -237,3 +237,51 @@ def test_accounts_turned_off(client, monkeypatch):
     assert client.post("/auth/google", json={"id_token": "g1:a@example.com"}).status_code == 503
     assert client.post("/jobs", headers=ADMIN).status_code == 200  # споделеният ключ работи както преди
     assert client.get("/me", headers={"Authorization": "Bearer whatever"}).status_code == 401
+
+
+def test_new_email_account_is_confirmed_with_a_code_from_the_mail(client, monkeypatch):
+    """Регистрация с имейл и парола, когато сървърът има пощенска кутия: без вход до кода от писмото."""
+    from app import accounts, mail
+
+    sent = []
+    monkeypatch.setattr(mail, "configured", lambda: True)
+    monkeypatch.setattr(mail, "verification_code", lambda to, code, minutes: sent.append((to, code)))
+    r = client.post("/auth/register", json={"email": "ana@example.com", "password": "secret1", "name": "Ана"})
+    assert r.status_code == 200 and r.json() == {"verify": True, "email": "ana@example.com"} and "token" not in r.json()
+    assert len(sent) == 1 and sent[0][0] == "ana@example.com" and len(sent[0][1]) == 6
+    # Вход преди потвърждението: пак кодът (писмото не се праща отново веднага), без сесия.
+    r = client.post("/auth/login", json={"email": "ana@example.com", "password": "secret1"})
+    assert r.json() == {"verify": True, "email": "ana@example.com"} and len(sent) == 1
+    wrong = "000000" if sent[0][1] != "000000" else "111111"
+    r = client.post("/auth/verify", json={"email": "ana@example.com", "code": wrong})
+    assert r.status_code == 400
+    # Ново писмо: не по-рано от RESEND_S.
+    assert client.post("/auth/resend", json={"email": "ana@example.com"}).status_code == 429
+    r = client.post("/auth/verify", json={"email": "ana@example.com", "code": f" {sent[0][1][:3]} {sent[0][1][3:]} "})
+    assert r.status_code == 200, r.text
+    token = r.json()["token"]
+    assert client.get("/me", headers={"Authorization": f"Bearer {token}"}).status_code == 200
+    # Вече потвърден: входът дава сесия, а кодът не важи втори път.
+    r = client.post("/auth/login", json={"email": "ana@example.com", "password": "secret1"})
+    assert "token" in r.json()
+    assert client.post("/auth/verify", json={"email": "ana@example.com", "code": sent[0][1]}).status_code == 400
+    assert accounts.CODE_TRIES >= 3
+
+
+def test_the_code_stops_working_after_too_many_wrong_tries(client, monkeypatch):
+    from app import accounts, mail
+
+    sent = []
+    monkeypatch.setattr(mail, "configured", lambda: True)
+    monkeypatch.setattr(mail, "verification_code", lambda to, code, minutes: sent.append(code))
+    client.post("/auth/register", json={"email": "bob@example.com", "password": "secret1"})
+    wrong = "000000" if sent[0] != "000000" else "111111"
+    for _ in range(accounts.CODE_TRIES):
+        assert client.post("/auth/verify", json={"email": "bob@example.com", "code": wrong}).status_code == 400
+    assert client.post("/auth/verify", json={"email": "bob@example.com", "code": sent[0]}).status_code == 429
+
+
+def test_without_a_mailbox_registration_signs_in_right_away(client):
+    """Сървър без SMTP: както преди, профилът е готов веднага (иначе никой не би могъл да се регистрира)."""
+    r = client.post("/auth/register", json={"email": "cid@example.com", "password": "secret1"})
+    assert r.status_code == 200 and "token" in r.json()

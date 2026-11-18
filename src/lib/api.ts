@@ -330,10 +330,12 @@ export const shareUrl = (slug: string) => `${API_URL}/s/${slug}`;
 
 export const signInWithIdToken = (idToken: string) =>
   call<{ token: string; user: Profile }>('POST', '/auth/google', { id_token: idToken });
-export const register = (email: string, password: string, name: string) =>
-  call<{ token: string; user: Profile }>('POST', '/auth/register', { email, password, name });
-export const login = (email: string, password: string) =>
-  call<{ token: string; user: Profile }>('POST', '/auth/login', { email, password });
+// Вход или регистрация: сесия, или (профил, чийто имейл още не е потвърден) кодът е изпратен на имейла.
+export type AuthResult = { token: string; user: Profile } | { verify: true; email: string };
+export const register = (email: string, password: string, name: string) => call<AuthResult>('POST', '/auth/register', { email, password, name });
+export const login = (email: string, password: string) => call<AuthResult>('POST', '/auth/login', { email, password });
+export const verifyEmail = (email: string, code: string) => call<{ token: string; user: Profile }>('POST', '/auth/verify', { email, code });
+export const resendCode = (email: string) => call<{ ok: boolean }>('POST', '/auth/resend', { email });
 export const endSession = () => call<{ ok: boolean }>('POST', '/auth/logout');
 export const getMe = () => call<Profile>('GET', '/me');
 export const renameMe = (name: string) => call<Profile>('PATCH', '/me', { name });

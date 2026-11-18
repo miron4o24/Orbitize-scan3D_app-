@@ -33,12 +33,18 @@ users = sa.Table(
     sa.Column("pro", sa.Boolean, nullable=False, default=False, server_default=sa.false()),
     sa.Column("pro_until", sa.BigInteger),  # Pro чрез плащане: докога важи според Google (app/billing.py)
     sa.Column("pro_token", sa.String(512)),  # ключът за покупка на абонамента, за да се пита Google отново в края му
+    # Потвърждение на имейла (accounts.register): докато verify_code го има, профилът чака кода от писмото. Профилите
+    # отпреди потвърждението и тези с Google нямат код и са потвърдени.
+    sa.Column("verify_code", sa.String(64)),  # SHA-256 на кода и профила
+    sa.Column("verify_expires", sa.BigInteger),
+    sa.Column("verify_sent", sa.BigInteger),  # кога е изпратено последното писмо (не по-често от RESEND_S)
 )
 
 # Колони, добавени след първото пускане на таблиците: create_all създава само липсващи таблици, а не липсващи колони.
 LATER_COLUMNS = {
     "users": {"password_hash": "VARCHAR(200)", "pro": "BOOLEAN NOT NULL DEFAULT 0", "pro_until": "BIGINT",
-              "pro_token": "VARCHAR(512)"},
+              "pro_token": "VARCHAR(512)", "verify_code": "VARCHAR(64)", "verify_expires": "BIGINT",
+              "verify_sent": "BIGINT"},
     "scans": {"published": "BIGINT", "longest_mm": "FLOAT"},
 }
 
