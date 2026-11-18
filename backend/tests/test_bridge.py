@@ -205,3 +205,24 @@ def test_the_pieces_are_joined_when_the_learned_model_misplaces_frames_of_one(tm
     work, learned = solved(tmp_path, wrong=range(2, 7))
     assert not P.confirmed(tmp_path, work, learned)
     assert not (work / "sparse" / "learned").exists()
+
+
+def test_a_sift_piece_with_misplaced_frames_does_not_overrule_a_better_learned_model(tmp_path):
+    """Фродо върху черна кутия: частта на SIFT с кадрите на лицето на грешно място (очертанията ѝ 60%), наученият
+    модел вярно (93%). Частта се пренебрегва и наученият модел се използва сам; без маските, които да го покажат - не."""
+    views, bool_masks = outline_scene()
+    masks = {n: m.astype(np.uint8) * 255 for n, m in bool_masks.items()}
+    work, learned = tmp_path / "work", tmp_path / "work" / "learned"
+    write_model(learned / "0", views)
+    piece = M.subset(views, np.arange(24) < 14)
+    turn = Rotation.from_euler("y", 70, degrees=True).as_matrix()
+    for k in range(4, 9):  # пет кадъра от частта: обърнати и изместени
+        piece.R[k] = piece.R[k] @ turn
+        piece.t[k] = piece.t[k] + np.array([0.8, -0.4, 0.5])
+    write_model(work / "sparse" / "incremental" / "0", piece)
+    write_model(work / "sparse" / "incremental" / "1", M.subset(views, np.arange(24) >= 16))
+    assert P.outline_agreement(views, masks) > P.outline_agreement(piece, masks) + P.LEARNED_BETTER
+    assert not P.confirmed(tmp_path, work, learned)  # без маски частта решава: съединяване
+    assert P.confirmed(tmp_path, work, learned, masks)
+    log = (tmp_path / "log.txt").read_text(encoding="utf-8")
+    assert "with the pieces that disagree" in log
