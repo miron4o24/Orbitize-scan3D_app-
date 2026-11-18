@@ -1,9 +1,9 @@
-import { claimScans, endSession, getMe, health, login, register, signInWithIdToken } from './api';
+import { claimScans, endSession, getMe, health, login, register, resendCode, signInWithIdToken, verifyEmail, type AuthResult } from './api';
 import { stopPush } from './push';
 import { listScans, updateScan } from './scans';
 import { clearSession, currentUserId, signedIn, updateProfile } from './session';
 
-// Два начина за влизане, един профил на имейл: имейл и парола (без код за потвърждение) или Google (телефонът
+// Два начина за влизане, един профил на имейл: имейл и парола (нов профил: код за потвърждение по имейла) или Google (телефонът
 // получава ID токен за уеб клиента, който сървърът посочва в /health; сървърът го проверява). И в двата случая
 // сървърът отговаря със собствен сесиен ключ. Вход с Google с адреса на имейл профил отваря този профил.
 
@@ -23,17 +23,28 @@ function loadGoogle(): GoogleModule | null {
   return google;
 }
 
+/* Влиза със сесията от отговора; 'verify', ако профилът чака кода от имейла (тогава confirmEmail). */
+async function finish(result: AuthResult): Promise<'done' | 'verify'> {
+  if ('verify' in result) return 'verify';
+  await signedIn(result.token, result.user);
+  await adoptLocalScans(result.user.id);
+  return 'done';
+}
+
 export async function signInWithPassword(email: string, password: string) {
-  const { token, user } = await login(email.trim(), password);
-  await signedIn(token, user);
-  await adoptLocalScans(user.id);
+  return finish(await login(email.trim(), password));
 }
 
 export async function createAccount(email: string, password: string, name: string) {
-  const { token, user } = await register(email.trim(), password, name.trim());
-  await signedIn(token, user);
-  await adoptLocalScans(user.id);
+  return finish(await register(email.trim(), password, name.trim()));
 }
+
+/* Кодът от писмото: потвърждава имейла и влиза в профила. */
+export async function confirmEmail(email: string, code: string) {
+  return finish(await verifyEmail(email.trim(), code.trim()));
+}
+
+export const sendCodeAgain = (email: string) => resendCode(email.trim());
 
 /* Влиза в профила; false, когато потребителят затвори избора на профил в Google. */
 export async function signInWithGoogle(): Promise<boolean> {

@@ -5,6 +5,7 @@
 (администраторският ключ)."""
 
 import hashlib
+import logging
 import hmac
 import html
 import os
@@ -20,7 +21,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, R
 from pydantic import BaseModel, Field
 
 from . import ai as AI
-from . import db, jobs, notify
+from . import db, jobs, mail, notify
 
 API_TOKEN = os.environ.get("API_TOKEN", "")
 # Собственикът на приложението: включва и изключва Pro за потребители от страница в приложението (докато Pro не стане
@@ -164,14 +165,22 @@ def sign_in_google(body: GoogleSignIn):
     return {"token": token, "user": profile(user_id)}
 
 
-# --- Имейл и парола --- Без проверка на имейла (избор на потребителя): профилът е имейл и парола. Паролите се пазят
-# като хешове със scrypt.
+# --- Имейл и парола --- Профилът е имейл и парола, а имейлът се потвърждава с код по пощата (send_code), щом сървърът
+# има пощенска кутия (app/mail.py). Паролите се пазят като хешове със scrypt.
 
+log = logging.getLogger(__name__)
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 PASSWORD_MIN = 6
 MAX_FAILED = 10  # грешни пароли за имейл в рамките на FAILED_WINDOW_S, след което има пауза
 FAILED_WINDOW_S = 15 * 60
 _failed: dict[str, list[float]] = {}
+# Потвърждение на имейла при регистрация: 6-цифрен код по имейл (app/mail.py), валиден CODE_MINUTES, най-много
+# CODE_TRIES грешни опита, ново писмо не по-често от RESEND_S. Без настроен SMTP профилите се създават потвърдени, както
+# преди (иначе никой не би могъл да се регистрира).
+CODE_MINUTES = 30
+CODE_TRIES = 5
+RESEND_S = 60
+_code_tries: dict[str, int] = {}
 
 
 def hash_password(password: str) -> str:
@@ -212,6 +221,38 @@ class Login(BaseModel):
     password: str = Field(max_length=200)
 
 
+class Verify(BaseModel):
+    email: str = Field(max_length=320)
+    code: str = Field(max_length=12)
+
+
+class Resend(BaseModel):
+    email: str = Field(max_length=320)
+
+
+def code_hash(user_id: str, code: str) -> str:
+    return hashlib.sha256(f"{user_id}:{code}".encode()).hexdigest()
+
+
+def send_code(c, user_id: str, email: str) -> None:
+    """Нов код за профила (в същата транзакция `c`) и писмото с него. HTTPException 503, ако писмото не тръгне."""
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    now = int(time.time())
+    c.execute(sa.update(db.users).where(db.users.c.id == user_id).values(
+        verify_code=code_hash(user_id, code), verify_expires=now + CODE_MINUTES * 60, verify_sent=now))  # fmt: skip
+    _code_tries.pop(user_id, None)
+    try:
+        mail.verification_code(email, code, CODE_MINUTES)
+    except Exception as e:  # noqa: BLE001 - SMTP, мрежа, грешна парола
+        log.error("verification mail to %s failed: %r", email, e)
+        raise HTTPException(503, "Писмото с кода не можа да се изпрати. Опитайте отново след малко.") from e
+
+
+def waiting(user) -> bool:
+    """Профилът чака потвърждение на имейла."""
+    return bool(getattr(user, "verify_code", None))
+
+
 @router.post("/auth/register")
 def register(body: Register):
     email = body.email.strip()
@@ -229,6 +270,9 @@ def register(body: Register):
         c.execute(sa.insert(db.users).values(id=user_id, google_sub=email_key(email), email=email, name=name[:100],
                                              avatar=False, created=int(time.time()),
                                              password_hash=hash_password(body.password)))  # fmt: skip
+        if mail.configured():
+            send_code(c, user_id, email)
+            return {"verify": True, "email": email}
         token = new_session(c, user_id)
     return {"token": token, "user": profile(user_id)}
 
@@ -246,8 +290,48 @@ def login(body: Login):
             _failed[key] = recent + [now]
             raise HTTPException(401, "Грешен имейл или парола.")
         _failed.pop(key, None)
+        if waiting(user):  # паролата е вярна, но имейлът още не е потвърден: ново писмо, ако старото е отдавна
+            if not user.verify_sent or time.time() - user.verify_sent > RESEND_S:
+                send_code(c, user.id, user.email)
+            return {"verify": True, "email": user.email}
         token = new_session(c, user.id)
     return {"token": token, "user": profile(user.id)}
+
+
+@router.post("/auth/verify")
+def verify_email(body: Verify):
+    """Кодът от писмото: потвърждава имейла и влиза в профила."""
+    code = re.sub(r"\D", "", body.code)
+    with need_db().begin() as c:
+        user = c.execute(sa.select(db.users).where(db.users.c.google_sub == email_key(body.email))).first()
+        if user is None or not waiting(user):
+            raise HTTPException(400, "Няма профил, който чака потвърждение с този имейл.")
+        if (user.verify_expires or 0) < time.time():
+            raise HTTPException(400, "Кодът е изтекъл. Поискайте нов.")
+        if _code_tries.get(user.id, 0) >= CODE_TRIES:
+            raise HTTPException(429, "Твърде много грешни опита. Поискайте нов код.")
+        if not hmac.compare_digest(code_hash(user.id, code), user.verify_code):
+            _code_tries[user.id] = _code_tries.get(user.id, 0) + 1
+            raise HTTPException(400, "Грешен код. Проверете писмото и опитайте отново.")
+        _code_tries.pop(user.id, None)
+        c.execute(sa.update(db.users).where(db.users.c.id == user.id)
+                  .values(verify_code=None, verify_expires=None))  # fmt: skip
+        token = new_session(c, user.id)
+    return {"token": token, "user": profile(user.id)}
+
+
+@router.post("/auth/resend")
+def resend_code(body: Resend):
+    """Ново писмо с код (не по-често от RESEND_S)."""
+    with need_db().begin() as c:
+        user = c.execute(sa.select(db.users).where(db.users.c.google_sub == email_key(body.email))).first()
+        if user is None or not waiting(user):
+            raise HTTPException(400, "Няма профил, който чака потвърждение с този имейл.")
+        left = RESEND_S - (time.time() - (user.verify_sent or 0))
+        if left > 0:
+            raise HTTPException(429, f"Изчакайте още {int(left) + 1} секунди за ново писмо.")
+        send_code(c, user.id, user.email)
+    return {"ok": True}
 
 
 @router.post("/auth/logout")

@@ -8,8 +8,8 @@ import { Appear, RiseLines } from '@/components/motion';
 import { Stage } from '@/components/Stage';
 import { Button, ErrorText, Field, Label, Small } from '@/components/ui';
 import { errorText, health, type Health } from '@/lib/api';
-import { createAccount, signInWithGoogle, signInWithPassword } from '@/lib/auth';
-import { font, makeStyles, space, text, useColors } from '@/theme';
+import { confirmEmail, createAccount, sendCodeAgain, signInWithGoogle, signInWithPassword } from '@/lib/auth';
+import { font, makeStyles, radius, space, text, useColors } from '@/theme';
 
 const PASSWORD_MIN = 6; // правилото на сървъра (accounts.PASSWORD_MIN)
 
@@ -24,6 +24,10 @@ export default function SignIn() {
   const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Имейлът, на който е изпратен код за потвърждение (нов профил): екранът минава към въвеждане на кода.
+  const [pending, setPending] = useState<string | null>(null);
+  const [code, setCode] = useState('');
+  const [notice, setNotice] = useState<string | null>(null);
   const emailRef = useRef<TextInputInstance>(null);
   const passwordRef = useRef<TextInputInstance>(null);
 
@@ -44,9 +48,13 @@ export default function SignIn() {
     setBusy(true);
     setError(null);
     try {
-      // При успех подредбата заменя този екран с приложението.
-      if (register) await createAccount(email, password, name);
-      else await signInWithPassword(email, password);
+      // При успех подредбата заменя този екран с приложението; при нов профил първо кодът от имейла.
+      const done = register ? await createAccount(email, password, name) : await signInWithPassword(email, password);
+      if (done === 'verify') {
+        setPending(email.trim());
+        setCode('');
+        setNotice(null);
+      }
     } catch (e) {
       setError(errorText(e));
     } finally {
@@ -60,6 +68,33 @@ export default function SignIn() {
     setError(null);
     try {
       await signInWithGoogle();
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function confirm() {
+    if (!pending || code.replace(/\D/g, '').length !== 6 || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await confirmEmail(pending, code.replace(/\D/g, ''));
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function resend() {
+    if (!pending || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await sendCodeAgain(pending);
+      setNotice('Изпратихме нов код.');
     } catch (e) {
       setError(errorText(e));
     } finally {
@@ -98,6 +133,48 @@ export default function SignIn() {
             </Appear>
           </View>
 
+          {pending ? (
+            <Appear index={1} style={s.form}>
+              <View style={s.mailIcon}>
+                <Ionicons name="mail-unread-outline" size={26} color={c.accent} />
+              </View>
+              <Text style={s.codeTitle}>Потвърдете имейла си</Text>
+              <Small>
+                Изпратихме 6-цифрен код на {pending}. Въведете го тук (проверете и папката за нежелана поща).
+              </Small>
+              <Field
+                value={code}
+                onChangeText={(t) => setCode(t.replace(/\D/g, '').slice(0, 6))}
+                placeholder="000000"
+                keyboardType="number-pad"
+                textContentType="oneTimeCode"
+                autoComplete="one-time-code"
+                maxLength={6}
+                style={s.code}
+                onSubmitEditing={confirm}
+                accessibilityLabel="Код от имейла"
+                autoFocus
+              />
+              {error && <ErrorText>{error}</ErrorText>}
+              {notice && !error && <Small>{notice}</Small>}
+              <Button variant="brand" title="Потвърди" onPress={confirm} loading={busy} disabled={code.length !== 6} />
+              <View style={s.codeLinks}>
+                <Pressable onPress={resend} accessibilityRole="button" hitSlop={6} disabled={busy}>
+                  <Text style={s.link}>Изпрати нов код</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => {
+                    setPending(null);
+                    setError(null);
+                  }}
+                  accessibilityRole="button"
+                  hitSlop={6}
+                >
+                  <Text style={s.switchText}>Друг имейл</Text>
+                </Pressable>
+              </View>
+            </Appear>
+          ) : (
           <Appear index={1} style={s.form}>
             {register && <Label>Вашето име</Label>}
             {register && (
@@ -190,6 +267,7 @@ export default function SignIn() {
               </Text>
             </Pressable>
           </Appear>
+          )}
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -208,4 +286,8 @@ const useStyles = makeStyles((c) => ({
   link: { color: c.accent, fontFamily: font.medium },
   or: { flexDirection: 'row', alignItems: 'center', gap: space.md, marginVertical: space.sm },
   orLine: { flex: 1, height: 1, backgroundColor: c.line },
+  mailIcon: { width: 48, height: 48, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: c.accentLine, borderRadius: radius.md },
+  codeTitle: { fontFamily: font.semibold, fontSize: 20, color: c.text },
+  code: { fontFamily: font.monoMedium, fontSize: 26, letterSpacing: 10, textAlign: 'center', marginTop: space.sm },
+  codeLinks: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: space.xs },
 }));
