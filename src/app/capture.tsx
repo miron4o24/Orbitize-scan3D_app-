@@ -43,6 +43,11 @@ const LIVE_MS = 160; // колко често се обновяват числа
 const SWITCH_MS = 2500; // най-много толкова се чака камерата да мине от снимки към видео
 const RETRY_MS = 700; // запис, отказан веднага след смяната (камерата още не е готова): още един опит след толкова
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+// Повърхността под предмета е без шарка (сървърът по снимката преди записа): камерата няма за какво да се хване.
+// The Rock върху черна кутия излезе за 14 мин с двойни очи; върху шарен поднос - за 7 и чисто.
+const PLAIN_NOW = 'Под предмета няма шарка. Спрете и сложете отдолу вестник или списание.';
+const PLAIN_AFTER =
+  'Под предмета нямаше шарка: камерата няма за какво да се хване, моделът може да излезе размазан, а обработката - по-бавна. Сложете отдолу вестник или списание.';
 
 // Това, което сензорите казват в момента, за числата на екрана.
 type Live = { angle: number; speed: number; tilt: number; sharp: number; views: number };
@@ -63,6 +68,14 @@ export default function Capture() {
   const [camMode, setCamMode] = useState<'picture' | 'video'>('picture'); // снимката за очертанието, после видео
   const [preparing, setPreparing] = useState(false);
   const [shape, setShape] = useState<ObjectShape | null>(null);
+  // Повърхността под предмета е без шарка (от снимката преди записа). Ref за проверката след записа: тя е в
+  // извикване, започнато преди отговора на сървъра.
+  const [plainSurface, setPlainSurface] = useState(false);
+  const plain = useRef(false);
+  function markPlain(value: boolean) {
+    plain.current = value;
+    setPlainSurface(value);
+  }
   // Светлината на телефона, непрекъснато (при видео светкавицата свети, не мига): за предмет на сянка или в тъмно.
   const [torch, setTorch] = useState(false);
   const readyWaiter = useRef<(() => void) | null>(null);
@@ -169,9 +182,16 @@ export default function Capture() {
     if (unmounted.current) return;
     setChecking(false);
     if (!extending && tracker.current.firstLoopFraction < MIN_ROUND) found.push('Не обиколихте целия предмет.');
+    if (plain.current) found.push(PLAIN_AFTER);
     if (!found.length) return keep(uri, secs);
     showDialog('Да запишем ли отново?', `${found.join('\n')}\n\nМоделът може да излезе по-лош.`, [
-      { text: 'Запиши отново', onPress: () => new File(uri).delete() },
+      {
+        text: 'Запиши отново',
+        onPress: () => {
+          new File(uri).delete();
+          markPlain(false); // следващият запис е без нова снимка: приема се, че повърхността е сменена
+        },
+      },
       { text: 'Използвай все пак', onPress: () => keep(uri, secs) },
     ]);
   }
@@ -180,12 +200,16 @@ export default function Capture() {
    нея (грешка, няма връзка) записът тръгва както и да е, а точките остават цилиндър. */
   async function photoThenVideo() {
     if (camMode === 'video' || !camera.current) return;
+    markPlain(false);
     try {
       const pic = await camera.current.takePictureAsync({ quality: 0.6, shutterSound: false });
       if (pic?.uri) {
         const file = new File(pic.uri);
         objectShape(file).then((found) => {
-          if (found && !unmounted.current) setShape(found);
+          if (found && !unmounted.current) {
+            markPlain(found.plain);
+            setShape(found);
+          }
           try {
             file.delete();
           } catch {}
@@ -308,11 +332,15 @@ export default function Capture() {
   // предмета дава особености за съпоставяне; лъскавото отразява стаята и отблясъците се местят с камерата, а
   // светлината на телефона прави точно такива отблясъци.
   const tip =
-    recording || checking || preparing || message
+    checking || preparing || message
       ? null
-      : torch
-        ? 'Светлината на телефона прави отблясъци по лъскави предмети. При тях е по-добре лампа отстрани.'
-        : 'Под предмета: нещо шарено (вестник, списание). Лъскав предмет: матов спрей или пудра.'; // fmt: skip
+      : recording
+        ? plainSurface
+          ? PLAIN_NOW
+          : null
+        : torch
+          ? 'Светлината на телефона прави отблясъци по лъскави предмети. При тях е по-добре лампа отстрани.'
+          : 'Под предмета: нещо шарено (вестник, списание). Лъскав предмет: матов спрей или пудра.'; // fmt: skip
   const segments = Math.round(share * SECTORS);
   return (
     <View style={styles.fill}>
@@ -366,7 +394,7 @@ export default function Capture() {
         </View>
         <View style={styles.guide} pointerEvents="none">
           <Text style={[styles.guideText, warn && styles.amber]}>{guide}</Text>
-          {tip && <Text style={styles.tipText}>{tip}</Text>}
+          {tip && <Text style={[styles.tipText, recording && styles.amber]}>{tip}</Text>}
         </View>
         <View style={styles.panel}>
           <View style={styles.row}>
