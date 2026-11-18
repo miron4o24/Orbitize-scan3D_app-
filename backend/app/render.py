@@ -4,7 +4,9 @@
 двоен размер, а после се смалява плавно."""
 
 import io
+import os
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -102,6 +104,9 @@ SPIN_DRAWN = 1.5  # рисува се при толкова пъти по-гол
 SPIN_FPS, SPIN_SECONDS = 20, 6
 SPIN_POINTS = 3_000_000
 SPIN_BG_TOP, SPIN_BG_BOTTOM = np.array([28, 28, 36]), np.array([9, 9, 11])
+# Кадрите се рисуват наведнъж в толкова нишки (сортирането и филтрите на numpy и scipy пускат GIL), в реда си към
+# ffmpeg. Всеки кадър в работа заема около 250 MB: повече от 4 не се пускат.
+SPIN_WORKERS = max(1, min(4, (os.cpu_count() or 2) // 2))
 
 
 def spin_ground(w: int, h: int) -> np.ndarray:
@@ -165,11 +170,16 @@ def spin(job: Path, out: Path, ffmpeg: str, frames: int | None = None):
          "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(tmp)],
         stdin=subprocess.PIPE, stderr=subprocess.PIPE,
     )  # fmt: skip
+    def one(i: int) -> bytes:
+        frame = spin_frame(pts, col, nrm, start + 2 * np.pi * i / total, scale, centre, ground)
+        return Image.fromarray(frame).resize((SPIN_W, SPIN_H), Image.BILINEAR).tobytes()
+
     try:
-        for i in range(total):
-            frame = spin_frame(pts, col, nrm, start + 2 * np.pi * i / total, scale, centre, ground)
-            small = Image.fromarray(frame).resize((SPIN_W, SPIN_H), Image.BILINEAR)
-            proc.stdin.write(small.tobytes())
+        with ThreadPoolExecutor(SPIN_WORKERS) as pool:
+            # По няколко кадъра напред, не всички: готовите чакат реда си в паметта.
+            for k in range(0, total, 2 * SPIN_WORKERS):
+                for frame in pool.map(one, range(k, min(total, k + 2 * SPIN_WORKERS))):
+                    proc.stdin.write(frame)
         proc.stdin.close()
         problem = proc.stderr.read().decode("utf-8", "replace")
         if proc.wait(timeout=300) != 0:
