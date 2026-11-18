@@ -79,6 +79,12 @@ LEARNED_BELOW = 0.95
 # без съединяването (1,5 мин на сървъра). Колонката от LEARNED_BELOW: 6 от 15-те кадъра на високия кръг на мястото
 # си, затова там се съединява както преди.
 LEARNED_CONFIRMED = 0.9
+# Част на SIFT, несъгласна с научения модел, не го отхвърля, ако очертанията се съгласяват с него с толкова повече,
+# отколкото с нея самата: тогава грешната е тя. Фродо върху черна кутия (задача 9ce800, 18.11.2026): частта от 23
+# кадъра с кадрите на лицето (3-8) сложени грешно, очертанията ѝ съгласни 60,5%; наученият модел - 93,2% за всичките
+# 50 (15 от 23 на същото място). Съединени около тази част, кадрите на лицето бяха 53-62%: дупки в лицето. Колонката
+# от LEARNED_BELOW: частта 85%, наученият модел 66% - частта остава.
+LEARNED_BETTER = 0.1
 LEARNED_FEATURES = 2048  # на кадър: при 4096 съпоставянето е 3 пъти по-бавно, а кадрите - същите
 # Двойките за него (вижте match_pairs): по-малко от тези за SIFT, защото LightGlue е около 1 с на двойка на процесор, а
 # моделът му е само резервен (при неуспех на SIFT).
@@ -1295,13 +1301,22 @@ def learned_cameras(job: Path, work: Path, photos: Path, names: list[str], paire
         return
     sizes = [len(read_views(d)) for d in sorted(out.iterdir()) if (d / "images.bin").exists()]
     note(job, f"camera solving: learned features placed {' + '.join(map(str, sizes)) or 'no'} frames")
-    if not confirmed(job, work, out):
+    if not confirmed(job, work, out, masks):
         bridge_pieces(job, work, photos, out, masks, sh)
 
 
-def confirmed(job: Path, work: Path, learned: Path) -> bool:
-    """Дали най-големият модел с научени особености се потвърждава от частите на SIFT (вижте LEARNED_CONFIRMED); ако
-    да, той е в sparse/learned/0 и се оценява сам заедно с останалите модели."""
+def outline_agreement(views: M.Views, masks: dict) -> float:
+    """Колко съгласни са очертанията на кадрите при тези камери (средното на OutlineScore); masks: uint8 по име."""
+    frames = {n: (R, t) for n, R, t in zip(views.names, views.R, views.t) if n in masks}
+    if len(frames) < 3:
+        return 0.0
+    return OutlineScore(frames, {n: np.asarray(m) > 127 for n, m in masks.items()}, views.K[0], 56, 1)()
+
+
+def confirmed(job: Path, work: Path, learned: Path, masks: dict | None = None) -> bool:
+    """Дали най-големият модел с научени особености се потвърждава от частите на SIFT (вижте LEARNED_CONFIRMED и
+    LEARNED_BETTER: masks, маските на кадрите, решават коя от двете страни греши); ако да, той е в sparse/learned/0
+    и се оценява сам заедно с останалите модели."""
     sparse = work / "sparse"
     pieces = [read_views(d) for d in (sparse / "incremental").iterdir() if (d / "images.bin").exists()]
     pieces = [p for p in pieces if len(p) >= BRIDGE_MIN]
@@ -1311,12 +1326,22 @@ def confirmed(job: Path, work: Path, learned: Path) -> bool:
     mid = read_views(models[0])
     if len(mid) <= max(len(p) for p in pieces):
         return False
-    found = []
+    found, against = [], []
     for piece in pieces:
         same = same_place(piece, mid)
         found.append((len(same[3]) if same else 0, len(piece)))
+        if found[-1][0] < LEARNED_CONFIRMED * len(piece):
+            against.append(piece)
     text = ", ".join(f"{a} of {b}" for a, b in found)
-    if any(a < LEARNED_CONFIRMED * b for a, b in found):
+    if against and masks:
+        # Несъгласна част: грешна е тя, ако очертанията много повече се съгласяват с научения модел.
+        mine = outline_agreement(mid, masks)
+        theirs = [outline_agreement(p, masks) for p in against]
+        text += f"; outlines agree {mine:.1%} with the learned model, " + ", ".join(f"{t:.1%}" for t in theirs)
+        text += " with the pieces that disagree"
+        if all(mine >= t + LEARNED_BETTER for t in theirs):
+            against = []
+    if against:
         note(job, f"camera solving: the SIFT pieces' frames in the same place in the learned model: {text}; joining")
         return False
     note(job, f"camera solving: the SIFT pieces' frames in the same place in the learned model: {text}; using it alone")
