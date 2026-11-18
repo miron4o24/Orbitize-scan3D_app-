@@ -225,6 +225,9 @@ def find_ground(points: np.ndarray, thresh: float, max_tilt_deg: float = 20, ite
     return best
 
 
+GROUND_TILT_SENSOR, GROUND_TILT_GUESS = 5.0, 20.0  # градуси от "нагоре", в които се търси масата (вижте clean_cloud)
+
+
 def estimate_up(cam_centers: np.ndarray, cam_dirs: np.ndarray, cam_ups: np.ndarray) -> np.ndarray:
     mean_up = cam_ups.mean(0)
     if np.linalg.norm(mean_up) > 0.8:  # снимки с изправен телефон (приложението): "нагоре" в изображението е обратно на гравитацията
@@ -268,7 +271,10 @@ def clean_cloud(
     mid = (lo + hi) / 2
     around = ~on_object & (np.linalg.norm(pts[:, :2] - mid[:2], axis=1) < 1.5 * size)
     around &= np.abs(pts[:, 2] - lo[2]) < 0.5 * size
-    plane = find_ground(pts[around], thresh) if around.sum() >= 100 else None
+    # Сензорът за гравитация е точен до градус-два; равнина, наклонена повече от него, е друга (ръб или страна на
+    # кутия под предмета), а не масата. Предположението от камерите е грубо, затова без сензора се търси по-широко.
+    tilt = GROUND_TILT_SENSOR if up is not None else GROUND_TILT_GUESS
+    plane = find_ground(pts[around], thresh, tilt) if around.sum() >= 100 else None
     if plane is not None:
         n, d = plane
         R2 = rotation_to(n)
