@@ -100,16 +100,16 @@ function backdrop() {
     uniforms: {
       inner: { value: new Vector3() },
       outer: { value: new Vector3() },
-      dot: { value: new Vector3() },
+      dotColor: { value: new Vector3() },
       pitch: { value: DOT_PITCH * ratio },
       size: { value: Math.max(1, ratio) },
     },
     vertexShader: 'varying vec2 vUv; void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
     fragmentShader:
-      'uniform vec3 inner; uniform vec3 outer; uniform vec3 dot; uniform float pitch; uniform float size; varying vec2 vUv;' +
+      'uniform vec3 inner; uniform vec3 outer; uniform vec3 dotColor; uniform float pitch; uniform float size; varying vec2 vUv;' +
       'void main() { float t = clamp(length(vUv * 2.0 - 1.0) / 1.41421356, 0.0, 1.0); vec3 base = mix(inner, outer, t);' +
       ' vec2 g = mod(gl_FragCoord.xy, pitch); float on = step(g.x, size) * step(g.y, size);' +
-      ' gl_FragColor = vec4(mix(base, dot, 0.5 * on), 1.0); }',
+      ' gl_FragColor = vec4(mix(base, dotColor, 0.5 * on), 1.0); }',
     depthTest: false,
     depthWrite: false,
   });
@@ -119,9 +119,21 @@ function backdrop() {
   return { quad, material };
 }
 
+// expo-gl изпълнява само тези две настройки на pixelStorei; за всяка друга (three задава премултиплициране, цветово
+// преобразуване и PACK_*/UNPACK_* при всяко качване на текстура) не прави нищо, а пише ред в конзолата. Тук те се
+// пропускат тихо: резултатът е същият, без шума.
+function quietPixelStore(gl: ExpoWebGLRenderingContext) {
+  const native = gl.pixelStorei.bind(gl);
+  const supported = new Set<number>([gl.UNPACK_FLIP_Y_WEBGL, gl.UNPACK_ALIGNMENT]);
+  gl.pixelStorei = (pname: number, param: number | boolean) => {
+    if (supported.has(pname)) native(pname, param as never);
+  };
+}
+
 // three.js рисува върху канава; expo-gl дава само контекста на WebGL, затова подаваме на three минимален заместител.
 // Основната светлина е закачена за камерата: страната, която гледате, винаги е осветена.
 function createStage(gl: ExpoWebGLRenderingContext): Stage {
+  quietPixelStore(gl);
   const { drawingBufferWidth: width, drawingBufferHeight: height } = gl;
   const canvas = {
     width,
@@ -444,7 +456,7 @@ export function ModelView({ model, wireframe, background, plain = false, control
     if (!stage) return;
     stage.backdrop.uniforms.inner.value.copy(rgb(inner));
     stage.backdrop.uniforms.outer.value.copy(rgb(outer));
-    stage.backdrop.uniforms.dot.value.copy(rgb(grid));
+    stage.backdrop.uniforms.dotColor.value.copy(rgb(grid));
     draw();
   }, [stage, inner, outer, grid, beforeDraw]);
 
