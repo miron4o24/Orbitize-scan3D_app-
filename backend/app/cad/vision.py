@@ -12,6 +12,7 @@
 фона около него, с компактна форма (виждаме масата през отвора)."""
 
 import math
+import os
 import threading
 
 import numpy as np
@@ -23,6 +24,10 @@ from skimage import measure
 from .. import segment as S
 
 SIDE = 2400  # дългата страна, до която се смалява снимката
+# Нишки за моделите тук (изрязване и MobileSAM): до две снимки се четат наведнъж (service._busy), затова по половината
+# от процесора. С настройката за няколко модела наведнъж на сканирането (PAR.onnx_options) бяха 2 нишки на модел:
+# на 16 нишки една снимка отнемаше 20-50 с.
+THREADS = max(2, (os.cpu_count() or 2) // 2)
 MARGIN = 0.3  # поле около детайла при второто изрязване, в размери на детайла
 MIN_HOLE = 0.0015  # отвор под този дял от детайла е шум
 COLOR_HOLE_K = 2.5  # колко близо до цвета на фона (в разсейвания на фона) е пиксел "през отвор"
@@ -153,7 +158,7 @@ def sam():
 
     with _sam_lock:
         if _sam is None and RF.ENCODER.exists() and RF.DECODER.exists():
-            _sam = RF.sessions()
+            _sam = RF.sessions(threads=THREADS)
         return _sam
 
 
@@ -327,6 +332,10 @@ def touches(o: np.ndarray, size, edge: float = 3) -> bool:
 
 SAM_SWITCH = 0.9  # очертание на MobileSAM вътре в това на IS-Net и с по-малко припокриване от това: IS-Net е взел още
 SAM_INSIDE = 0.08  # "вътре": най-много толкова от очертанието на MobileSAM е извън това на IS-Net
+# MobileSAM предлага и части от предмета (надпис, лого, шев): очертание вътре в това на IS-Net, но под този дял от
+# него, е част, а не предметът без пръстите или сянката до него (те са малка част от изрязаното). Острилка отдясно
+# (задача d197c9): MobileSAM взе само надписа "PRESS" и той замени целия детайл.
+SAM_KEEP = 0.5
 
 
 def second_opinion(im: Image.Image, solid: np.ndarray, off: np.ndarray, outline: np.ndarray):
@@ -358,7 +367,7 @@ def second_opinion(im: Image.Image, solid: np.ndarray, off: np.ndarray, outline:
         return None
     inside = b.difference(a).area <= SAM_INSIDE * b.area
     iou = a.intersection(b).area / a.union(b).area
-    if touches(outline, im.size) or (inside and iou < SAM_SWITCH):
+    if touches(outline, im.size) or (inside and iou < SAM_SWITCH and b.area >= SAM_KEEP * a.area):
         return field_, hard, box, outer, holes, off2
     if partial(im, a, b):  # IS-Net е взел само част от детайла (сива химикалка на сиво дърво: само върха)
         return field_, hard, box, outer, holes, off2

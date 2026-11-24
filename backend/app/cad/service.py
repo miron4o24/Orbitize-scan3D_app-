@@ -49,12 +49,14 @@ def lock(job: Path) -> threading.Lock:
 
 
 def session():
+    """IS-Net на сканирането, с нишките на инженерния режим (VI.THREADS), а не с дела за няколко модела наведнъж."""
     global _session
     with _session_lock:
         if _session is None:
             from .. import segment as S
+            from . import vision as VI
 
-            _session = S.session()
+            _session = S.session(threads=VI.THREADS)
         return _session
 
 

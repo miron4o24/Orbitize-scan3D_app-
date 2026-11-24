@@ -48,6 +48,12 @@ BUTTON_LONG = 6.0  # и не по-дълга от толкова пъти шир
 DARK_FACE = 45.0  # стена, по-тъмна от това (L), е тъмна: цветно с тъмна цепка там е порт
 
 
+# Маските на декодера се връщат в 1/DECODE от размера на изрязването и после се уголемяват: при пълния размер
+# уголемяването на трите маски за всяка точка беше почти цялото време на снимка (химикалка: 368 точки, 10,6 с от 22).
+# Детайлът е поне AREA[0] от стената, затова ръб, по-груб с пиксел-два, не променя кои се намират.
+DECODE = 2
+
+
 def sam_masks(models, crop: Image.Image, points: list) -> list[np.ndarray]:
     """Маските на MobileSAM за всяка точка поотделно (без кутия: и малките части), с едно вграждане."""
     from .. import refine as RF
@@ -56,13 +62,14 @@ def sam_masks(models, crop: Image.Image, points: list) -> list[np.ndarray]:
     emb = RF.embedding(enc, crop)
     W, H = crop.size
     k = RF.SIZE / max(W, H)
+    h, w = -(-H // DECODE), -(-W // DECODE)  # закръглено нагоре: уголемените покриват цялото изрязване
     out = []
     for x, y in points:
         feed = {"image_embeddings": emb, "point_coords": (np.array([[x, y], [0, 0]], np.float32) * k)[None],
                 "point_labels": np.array([1.0, -1.0], np.float32)[None],
                 "mask_input": np.zeros((1, 1, 256, 256), np.float32), "has_mask_input": np.zeros(1, np.float32),
-                "orig_im_size": np.array([H, W], np.float32)}  # fmt: skip
-        out += [m > 0 for m in dec.run(None, feed)[0][0]]
+                "orig_im_size": np.array([h, w], np.float32)}  # fmt: skip
+        out += [np.repeat(np.repeat(m > 0, DECODE, 0), DECODE, 1)[:H, :W] for m in dec.run(None, feed)[0][0]]
     return out
 
 

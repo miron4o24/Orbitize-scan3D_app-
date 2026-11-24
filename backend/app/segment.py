@@ -32,12 +32,17 @@ MERGED = 1.8  # предмет от първия проход, толкова п
 SMALL_HOLE = 0.02  # дупки в маската на предмет под този дял от нея се запълват
 
 
-def session():
+def session(threads: int | None = None):
+    """Сесия на ONNX Runtime за IS-Net. threads: нишки, когато моделът не работи редом с други като него (инженерният
+    режим); иначе настройките за няколко модела наведнъж (PAR.onnx_options)."""
     import onnxruntime as ort
 
     if not MODEL.exists():
         raise SystemExit(f"Segmentation model missing: {MODEL}. Run the setup again (it downloads {MODEL_URL}).")
-    return ort.InferenceSession(str(MODEL), PAR.onnx_options(), providers=["CPUExecutionProvider"])
+    options = PAR.onnx_options()
+    if threads:
+        options.intra_op_num_threads = threads
+    return ort.InferenceSession(str(MODEL), options, providers=["CPUExecutionProvider"])
 
 
 def predict(sess, image: Image.Image, size: tuple[int, int]) -> np.ndarray:

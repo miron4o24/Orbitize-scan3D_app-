@@ -45,12 +45,15 @@ SPECK = 0.02  # части от маска под този дял от най-г
 SAME_CROP = 1.3  # изрязването от следващ кръг е същото (значението на изображението му вече е известно), ако е твърде голямо до толкова
 
 
-def sessions():
+def sessions(threads: int | None = None):
+    """(енкодер, декодер). threads: нишки, когато моделът не работи редом с други като него (инженерният режим)."""
     import onnxruntime as ort
 
     if not (ENCODER.exists() and DECODER.exists()):
         raise SystemExit(f"MobileSAM model missing in {MODEL_DIR}. Run install-task.ps1 again (it downloads it).")
     options = PAR.onnx_options()
+    if threads:
+        options.intra_op_num_threads = threads
     return (ort.InferenceSession(str(ENCODER), options, providers=["CPUExecutionProvider"]),
             ort.InferenceSession(str(DECODER), options, providers=["CPUExecutionProvider"]))  # fmt: skip
 
