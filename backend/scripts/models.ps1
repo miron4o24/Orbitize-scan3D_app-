@@ -31,6 +31,30 @@ $QWEN_FILES = [ordered]@{
 $CLIPSEG_BASE = 'https://huggingface.co/Xenova/clipseg-rd64-refined/resolve/924dc94f85f58739f353f94258b33bc47eae4862'
 $CLIPSEG_MODEL_SHA256 = '25C50E9A236FA16F309AAFD54D363ADB7CEE9CC7EAD8D93CF31A2610F8AF4B37'
 $CLIPSEG_TOKENIZER_SHA256 = '342739D4A4B111D4B1BDA83A96F5C518E1B162CC597252AC89DED17681791D31'
+# Engineering mode (app/cad/locate.py): Florence-2 base (MIT) finds which thing in the photo is the part, SAM 2.1 large
+# (Apache-2.0) cuts it out. Pinned revisions; file name -> SHA-256.
+$FLORENCE_BASE = 'https://huggingface.co/florence-community/Florence-2-base/resolve/00921df66db728a9ceb750f5eca43e5c203a2051'
+$FLORENCE_FILES = [ordered]@{
+  'added_tokens.json' = '1D75DEDA84DFA81FB6C09301F3FED00F9695059568BBB1403A6BF299CD84FC37'
+  'config.json' = '2A4DFE9885D183DA121F239ADA734BD700EE6908B650A7A25AB32EB104FE1D7A'
+  'generation_config.json' = '0251459C49CC358AC033B5D4B8569E61AC22BDE5D76BE404B97A44CFB33FB12E'
+  'merges.txt' = '1CE1664773C50F3E0CC8842619A93EDC4624525B728B188A9E0BE33B7726ADC5'
+  'model.safetensors' = '62F3E696DA74F8869A68DDB529A9B3E14EB25B21C592CB3DEA6179BF944DF6A0'
+  'preprocessor_config.json' = '1396EC5A0A7ADFE1C04FB777B09E8BA753BE6DBB5868212AB3C3EF39D91FE031'
+  'processor_config.json' = 'CD0E3BF41A39B1276503FBD273BC03B9AFC70D7A15EA681A92A1B4B77F858EE6'
+  'special_tokens_map.json' = '72FF172DC769BC1551B1B4211628CE3271643BC60379E4DA45D85A9BE9332C39'
+  'tokenizer.json' = '3AD7001F773409ABE6BBA33EAC92662611A73D72F459BDA2F00D2A221DD31CE4'
+  'tokenizer_config.json' = 'CB5F80BD9AFA767BB1BB798EE5F0A79EAE45239B8E72506166B4218175A16723'
+  'vocab.json' = 'ED19656EA1707DF69134C4AF35C8CEDA2CC9860BF2C3495026153A133670AB5E'
+}
+$SAM2_BASE = 'https://huggingface.co/facebook/sam2.1-hiera-large/resolve/665f8e2ad61cf5f53d65644ff27c8ee525124610'
+$SAM2_FILES = [ordered]@{
+  'config.json' = '00446988CF4D617118D2D347EABE2C46AEBED744628FACDD540508BE30B69EC3'
+  'model.safetensors' = 'DC407DCE21301FD94ABB395C5099B4F2C455FDC8A8F261AC3D0EA6D4CD197230'
+  'preprocessor_config.json' = '6EBF229EE259368CE4A8D4F2FE893A72B053023710853E257253939E601F583D'
+  'processor_config.json' = 'F8A68E865CFAD115C1C2763F3D93ECA7B1C622DA06DA2A9273EB437FB2389B6D'
+  'video_preprocessor_config.json' = '9FCCFE5F464EC38C2F236D0E6A68E95511C80C22132FC2FA4B9F7B65F24FAD95'
+}
 $modelDir = Join-Path (Split-Path $PSScriptRoot -Parent) 'tools'
 
 function Install-TripoSRCode {
@@ -81,4 +105,8 @@ function Install-Models {
   Write-Host "`n==> Pro's colour changes (550 MB, CLIPSeg: finds the part to recolour, e.g. the hair, free)" -ForegroundColor Cyan
   Install-Model (Join-Path $modelDir 'clipseg\model.onnx') "$CLIPSEG_BASE/onnx/model.onnx" $CLIPSEG_MODEL_SHA256
   Install-Model (Join-Path $modelDir 'clipseg\tokenizer.json') "$CLIPSEG_BASE/tokenizer.json" $CLIPSEG_TOKENIZER_SHA256
+  Write-Host "`n==> Engineering mode's object finder (460 MB, Florence-2 base: which thing in the photo is the part)" -ForegroundColor Cyan
+  foreach ($f in $FLORENCE_FILES.Keys) { Install-Model (Join-Path $modelDir "florence2\base\$f") "$FLORENCE_BASE/$f" $FLORENCE_FILES[$f] }
+  Write-Host "`n==> Engineering mode's outline cutter (900 MB, SAM 2.1 large: the part's exact edge)" -ForegroundColor Cyan
+  foreach ($f in $SAM2_FILES.Keys) { Install-Model (Join-Path $modelDir "sam2\large\$f") "$SAM2_BASE/$f" $SAM2_FILES[$f] }
 }

@@ -29,7 +29,9 @@ anthropic
 manifold3d
 # Pro's free AI model from one frame (app/single3d.py, TripoSR on the CPU; PyPI's Windows torch is the CPU build)
 torch
-transformers>=4.40,<5
+# Инженерният режим (app/cad/locate.py): Florence-2 и SAM 2.1 са вградени в transformers от 4.57; SAM 2.1 иска torchvision
+torchvision
+transformers>=4.57,<5
 omegaconf
 einops
 huggingface-hub

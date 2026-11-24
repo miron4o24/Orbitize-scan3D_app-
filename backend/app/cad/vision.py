@@ -471,12 +471,49 @@ def through_holes(im: Image.Image, solid: np.ndarray, off: np.ndarray, holes: li
     return out
 
 
+def located(im: Image.Image):
+    """Детайлът, намерен от Florence-2 и изрязан от SAM 2.1 (app/cad/locate.py), като cutout: (поле, твърда маска,
+    изрязване). Отворите остават само тези, през които SAM 2.1 вижда нещо отделно от детайла (L.through). None:
+    моделите липсват, в описанието няма детайл или SAM 2.1 не е сигурен; тогава IS-Net."""
+    from . import locate as L
+
+    if not L.available():
+        return None
+    with L.held(THREADS) as m:
+        if m is None:
+            return None
+        found = L.object_box(m, im)
+        if found is None:
+            return None
+        box, _caption = found
+        soft, crop_box, score, crop, emb = L.cut(m, im, box)
+        if score < L.MIN_SCORE:
+            return None
+        seed = ((box[0] + box[2]) / 2 - crop_box[0], (box[1] + box[3]) / 2 - crop_box[1])
+        try:
+            field_, solid = finish(soft, crop, seed)
+        except ValueError:
+            return None
+        filled = ndimage.binary_fill_holes(solid)
+        lab, n = ndimage.label(filled & ~solid)
+        field_, solid = field_.copy(), solid.copy()
+        for k in range(1, n + 1):
+            blob = lab == k
+            depth = ndimage.distance_transform_edt(blob)
+            y, x = np.unravel_index(int(np.argmax(depth)), depth.shape)
+            if not L.through(m, crop, emb, (x, y), solid):  # отблясък или печат: част от детайла
+                grown = ndimage.binary_dilation(blob, iterations=2) & filled
+                solid |= grown
+                field_[grown] = np.maximum(field_[grown], 0.75)
+    return field_, solid, crop_box
+
+
 def segment(sess, path, points: list | None = None) -> dict:
     """Очертанието на детайла на снимката: {"outer": [[x, y], ...], "holes": [...], "size": [w, h]} в пиксели на
     смалената снимка (load), x надясно, y надолу. points: докоснати точки върху детайла (0..1 от ширината и
     височината на снимката), когато автоматичното очертание е грешно: тогава го изрязва MobileSAM. "by": кой е
-    изрязал детайла (isnet; sam - IS-Net беше взел и ръката или повърхността: second_opinion; tap - по
-    докосване). ValueError: няма детайл
+    изрязал детайла (ai - Florence-2 и SAM 2.1: located; isnet; sam - IS-Net беше взел и ръката или повърхността:
+    second_opinion; tap - по докосване). ValueError: няма детайл
     ("no object"), не се събира в кадъра ("cut") или липсва MobileSAM за докосване ("no sam")."""
     im = load(path)
     by = "isnet"
@@ -491,7 +528,12 @@ def segment(sess, path, points: list | None = None) -> dict:
         field_, solid, box = sam_cutout(models, im, px)
         by = "tap"
     else:
-        field_, solid, box = cutout(sess, im)
+        got = located(im)
+        if got is not None:
+            field_, solid, box = got
+            by = "ai"
+        else:
+            field_, solid, box = cutout(sess, im)
     outer, holes = contours(field_)
     off = np.array([box[0], box[1]], float)
     if by == "isnet":

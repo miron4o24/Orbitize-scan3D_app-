@@ -29,14 +29,15 @@ def sess():
 
 def test_glare_on_a_shiny_side_is_not_a_hole(sess):
     """Отблясъкът по лъскавата страна е бял като листа под нея: по цвят изглежда като отвор (три петна, 4% от
-    страната), но мрежата е сигурна, че там е детайлът, и ръбът на отблясъка е мек."""
+    страната), но мрежата е сигурна, че там е детайлът, и ръбът на отблясъка е мек. Със или без Florence-2 и SAM 2.1
+    (app/cad/locate.py): и тогава SAM 2.1 вижда отблясъка като част от детайла."""
     im = V.load(GLARE)
     field_, solid, box = V.cutout(sess, im)
     filled = ndimage.binary_fill_holes(solid)
     crop = np.asarray(im.crop(box), np.float32)
     assert V.color_holes(crop, filled).sum() > 0.01 * filled.sum()  # капанът е там
     got = V.segment(sess, GLARE)
-    assert got["by"] == "isnet" and got["holes"] == []
+    assert got["by"] in ("ai", "isnet") and got["holes"] == []
 
 
 def test_tapping_the_object_never_leaves_a_hole_under_the_finger(sess):
