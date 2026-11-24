@@ -130,14 +130,44 @@ def subject(caption: str) -> str:
     return SUBJECT_END.split(" " + text + " ", maxsplit=1)[0].strip(" .")
 
 
-def candidates(found: dict, W: int, H: int) -> list[tuple[float, tuple]]:
-    """(разстояние до средата на кадъра, кутия) за частите, които не са повърхност, ръка или човек. За част с цялото
-    изречение думите не казват кое е в кутията: решава размерът (BIG)."""
+# Florence-2 често дава на листа под детайла и името на детайла: "A computer mouse" и "paper" с почти една и съща кутия
+# (пауърбанк на бял лист, задача 14a3b5). Кутия, която съвпада поне толкова (IoU) с кутия на повърхност, е повърхността.
+TWIN = 0.85
+# Кутия до ръба на снимката (дял от размера ѝ) е нещо друго в кадъра (мишка отстрани): детайлът в инженерния режим е
+# целият в кадъра, иначе снимката така или иначе се отхвърля ("cut").
+EDGE_BOX = 0.005
+
+
+def iou(a, b) -> float:
+    w = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    h = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    inter = w * h
+    union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return inter / union if union > 0 else 0.0
+
+
+def is_scene(box, label: str, W: int, H: int) -> bool:
+    """Повърхност, ръка или човек по името (ако не е цялото изречение) или повърхност по размера (BIG)."""
+    sentence = len(re.findall(r"[a-z]+", label.lower())) > SENTENCE
+    return (not sentence and head(label) in SCENE) or (box[2] - box[0]) * (box[3] - box[1]) > BIG * W * H
+
+
+def scene_boxes(found: dict, W: int, H: int) -> list[tuple]:
+    return [tuple(b) for b, label in zip(found["bboxes"], found["labels"]) if is_scene(b, label, W, H)]
+
+
+def candidates(found: dict, W: int, H: int, scene: list | None = None) -> list[tuple[float, tuple]]:
+    """(разстояние до средата на кадъра, кутия) за частите, които не са повърхност, ръка или човек: нито по името или
+    размера си (is_scene), нито като двойник на кутия на повърхност (TWIN, scene: и от предишно търсене), нито до ръба
+    на снимката (EDGE_BOX)."""
+    scene = scene_boxes(found, W, H) + list(scene or [])
+    edge = EDGE_BOX * max(W, H)
     out = []
     for box, label in zip(found["bboxes"], found["labels"]):
         x0, y0, x1, y1 = box
-        sentence = len(re.findall(r"[a-z]+", label.lower())) > SENTENCE
-        if (not sentence and head(label) in SCENE) or (x1 - x0) * (y1 - y0) > BIG * W * H or x1 <= x0 or y1 <= y0:
+        if x1 <= x0 or y1 <= y0 or is_scene(box, label, W, H) or any(iou(box, s) >= TWIN for s in scene):
+            continue
+        if x0 <= edge or y0 <= edge or x1 >= W - edge or y1 >= H - edge:
             continue
         out.append((((x0 + x1) / 2 - W / 2) ** 2 + ((y0 + y1) / 2 - H / 2) ** 2, tuple(box)))
     return out
@@ -148,11 +178,12 @@ def object_box(m, im: Image.Image) -> tuple[tuple[float, float, float, float], s
     повърхност, ръка или човек."""
     caption = florence(m, im, "<CAPTION>")
     W, H = im.size
-    cands = candidates(florence(m, im, "<CAPTION_TO_PHRASE_GROUNDING>", caption), W, H)
+    found = florence(m, im, "<CAPTION_TO_PHRASE_GROUNDING>", caption)
+    cands = candidates(found, W, H)
     if not cands:  # посочена е само повърхността ("of paper"): още веднъж само подлогът ("A bunch of keys")
         name = subject(caption)
         if name and head(name) not in SCENE:
-            cands = candidates(florence(m, im, "<CAPTION_TO_PHRASE_GROUNDING>", name), W, H)
+            cands = candidates(florence(m, im, "<CAPTION_TO_PHRASE_GROUNDING>", name), W, H, scene_boxes(found, W, H))
     if not cands:
         return None
     return min(cands)[1], caption

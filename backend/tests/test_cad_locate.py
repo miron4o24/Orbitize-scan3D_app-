@@ -34,3 +34,25 @@ def test_a_box_labelled_with_the_whole_caption_is_judged_by_its_size():
 def test_only_the_surface_found_gives_no_part():
     found = {"bboxes": [[1, 0, 1717, 1797]], "labels": ["of paper"]}
     assert L.candidates(found, W, H) == []
+
+
+def test_the_part_name_on_the_paper_box_is_the_paper():
+    """Пауърбанк на бял лист (задача 14a3b5): Florence-2 дава на кутията на листа и името на детайла; детайлът е
+    малката кутия."""
+    found = {"bboxes": [[0, 514, 1781, 1846], [573, 992, 1201, 1472], [0, 514, 1781, 1846]],
+             "labels": ["A small speaker", "A small speaker", "paper"]}  # fmt: skip
+    assert [box for _, box in L.candidates(found, 1800, 2400)] == [(573, 992, 1201, 1472)]
+
+
+def test_something_at_the_edge_of_the_photo_is_not_the_part():
+    """Мишка, влизаща в кадъра отгоре, докато детайлът и листът имат една и съща кутия: няма детайл, остава IS-Net."""
+    found = {"bboxes": [[168, 699, 1646, 1767], [171, 706, 1642, 1765], [834, 1, 1264, 466]],
+             "labels": ["A cell phone", "paper", "mouse"]}  # fmt: skip
+    assert L.candidates(found, 1800, 2400) == []
+
+
+def test_the_paper_from_the_first_search_counts_in_the_second():
+    """Второто търсене (само подлогът) пак намира листа под името на детайла: той е двойник на листа от първото."""
+    first = {"bboxes": [[45, 680, 1662, 1894]], "labels": ["paper"]}
+    again = {"bboxes": [[44, 675, 1664, 1894]], "labels": ["A mouse"]}
+    assert L.candidates(again, 1800, 2400, L.scene_boxes(first, 1800, 2400)) == []
