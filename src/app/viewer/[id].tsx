@@ -3,7 +3,7 @@ import { File, Paths } from 'expo-file-system';
 import { router, useFocusEffect, useLocalSearchParams, type ErrorBoundaryProps } from 'expo-router';
 import * as Sharing from 'expo-sharing';
 import { useCallback, useEffect, useRef, useState, type ComponentProps } from 'react';
-import { ActivityIndicator, Modal, Pressable, Share, Switch, Text, useWindowDimensions, View } from 'react-native';
+import { ActivityIndicator, Modal, Pressable, Share, Text, useWindowDimensions, View } from 'react-native';
 import Animated from 'react-native-reanimated';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import type { Object3D } from 'three';
@@ -11,10 +11,9 @@ import type { Object3D } from 'three';
 import { FullscreenModel } from '@/components/FullscreenModel';
 import { CadPanel } from '@/components/cad/CadPanel';
 import { MeasureTool } from '@/components/MeasureTool';
-import { ModelView, type Spot } from '@/components/ModelView';
+import { ModelView } from '@/components/ModelView';
 import { Appear, fade, PressScale, Skeleton, swap } from '@/components/motion';
 import { PrintHelper } from '@/components/PrintHelper';
-import { SpotPicker } from '@/components/SpotPicker';
 import {
   Badge,
   Brackets,
@@ -38,7 +37,6 @@ import {
 import {
   downloadResult,
   downloadSpin,
-  editModel,
   errorText,
   getGeometry,
   nameplateModel,
@@ -50,7 +48,6 @@ import {
   unshareScan,
   type Report,
 } from '@/lib/api';
-import { arAvailable, arSupport, viewInRoom, type ArSupport } from '@/lib/ar';
 import { duration, shortDate } from '@/lib/dates';
 import { exportForPrint } from '@/lib/exportModel';
 import { badgeOf, deleteEntry } from '@/lib/library';
@@ -128,7 +125,6 @@ export default function Viewer() {
   const [mmInput, setMmInput] = useState(String(scan?.longestMm ?? 100));
   const [busy, setBusy] = useState<string | null>(null);
   const [renaming, setRenaming] = useState(false);
-  const [realSize, setRealSize] = useState(true);
   const [attempt, setAttempt] = useState(0);
   // CAD детайл, променен в инженерния режим (нови мерки): при връщане тук се зарежда наново.
   const cadVersion = useRef(String(scan?.report?.cad?.volume_mm3 ?? ''));
@@ -146,28 +142,17 @@ export default function Viewer() {
   );
   const [tab, setTab] = useState<Tab>('overview');
   const [surface, setSurface] = useState<Surface>('smooth');
-  const [support, setSupport] = useState<ArSupport | null>(null); // AR на този телефон; null, докато се пита
-  const [editing, setEditing] = useState(false); // диалогът за текстова промяна
-  const [editText, setEditText] = useState(''); // пази се, докато потребителят посочва върху модела
-  const [spot, setSpot] = useState<Spot | null>(null); // мястото върху модела, за което е промяната ("smooth here")
-  const [picking, setPicking] = useState(false); // посочване върху модела на целия екран
   const [measuring, setMeasuring] = useState(false); // две докосвания върху модела на целия екран
   const [plating, setPlating] = useState(false); // диалогът за табелка с име
   const session = useSession();
   const user = session?.kind === 'account' ? session.user : null;
   const jobId = scan?.jobId;
   const account = !!currentUserId() && !!jobId; // запазено в профила: преименуване на сървъра, споделяне с линк
-  const arDone = arAvailable && !!jobId && scan?.status === 'done';
-  const showAr = arDone && support !== null && support !== 'unsupported';
-  const canEdit = !!user?.ai?.edit && !!jobId && scan?.status === 'done';
+  const canPlate = !!user?.ai?.edit && !!jobId && scan?.status === 'done';
   // Създаден от видео, чиито кадри още са на сървъра: може да се добави липсваща страна (с AI модела).
   const [openedAt] = useState(() => Date.now());
   const canExtend =
     !!user && aiAvailable() && !!jobId && scan?.status === 'done' && !scan.report?.edit && openedAt - scan.createdAt < FRAMES_KEPT_MS;
-
-  useEffect(() => {
-    if (arDone) arSupport().then(setSupport);
-  }, [arDone]);
 
   // Обем и повърхност за оценката на печата, за сканирания с отчет отпреди те да бъдат включени в него.
   const needGeometry = scan?.status === 'done' && !!jobId && !!scan.report && scan.report.volume_mm3 == null;
@@ -245,31 +230,9 @@ export default function Viewer() {
       await Sharing.shareAsync(file.uri, { mimeType: mime, dialogTitle: 'Изнасяне на 3D модел' });
     });
 
-  const viewAr = () => {
-    run('ar', async () => {
-      if (!mmValid || !scan) return;
-      setScan(updateScan(id, { longestMm: mm }));
-      await viewInRoom(jobId!, mm, scanTitle(scan), realSize);
-    });
-  };
-
   const stressTest = () => {
     router.push({ pathname: '/stress/[id]', params: { id: jobId!, source: 'scan', mm: String(mm), title: scanTitle(scan!) } });
   };
-
-  // Нов модел, създаден от този чрез текстова промяна; следи се на екрана за обработка като сканиране.
-  const edit = (prompt: string) =>
-    run('edit', async () => {
-      if (!mmValid || !scan) return;
-      const title = `${scanTitle(scan)} · промяна`.slice(0, 100);
-      const job = await editModel(jobId!, prompt, mm, title, spot);
-      const next = createScan(currentUserId() ?? undefined, 'edit');
-      updateScan(next.id, { jobId: job.id, status: job.state, title });
-      setEditing(false);
-      setEditText('');
-      setSpot(null);
-      router.push({ pathname: '/processing/[id]', params: { id: next.id } });
-    });
 
   const nameplate = (text: string, shape: 'round' | 'square') =>
     run('plate', async () => {
@@ -400,7 +363,7 @@ export default function Viewer() {
       <View style={s.preview}>
         {model ? (
           <Animated.View entering={fade} style={s.flex}>
-            {!full && !picking && <ModelView model={model} wireframe={wireframe} plain={look === 'plain'} background={c.viewer} />}
+            {!full && <ModelView model={model} wireframe={wireframe} plain={look === 'plain'} background={c.viewer} />}
           </Animated.View>
         ) : loadError ? (
           <View style={s.center}>
@@ -486,7 +449,6 @@ export default function Viewer() {
               disabled={!model || !mmValid || (!!busy && busy !== 'stl')}
             />
             <ActionTile icon="resize-outline" label="Измери" onPress={() => setMeasuring(true)} disabled={!model || !mmValid} />
-            {showAr && <ActionTile icon="cube-outline" label="В стаята" onPress={viewAr} loading={busy === 'ar'} disabled={!mmValid || (!!busy && busy !== 'ar')} />}
             {account && <ActionTile icon="videocam-outline" label="Видео" onPress={shareVideo} loading={busy === 'spin'} disabled={!!busy && busy !== 'spin'} />}
           </Appear>
         )}
@@ -530,24 +492,6 @@ export default function Viewer() {
                       ))}
                     </View>
                   )}
-                  {showAr && (
-                    <View style={s.lineTop}>
-                      <Row
-                        label="Реален размер в стаята"
-                        last
-                        right={
-                          <Switch
-                            value={realSize}
-                            onValueChange={setRealSize}
-                            trackColor={{ true: c.accentStrong, false: c.surface3 }}
-                            thumbColor={c.text2}
-                            ios_backgroundColor={c.surface3}
-                            accessibilityLabel="Реален размер в AR"
-                          />
-                        }
-                      />
-                    </View>
-                  )}
                 </Card>
               </Section>
 
@@ -567,7 +511,7 @@ export default function Viewer() {
               {!!user?.owner && !!report && (
                 <Section label="Собственик">
                   <Card style={s.list}>
-                    <Row label="Начин" value={report.ai ? madeWith(report.ai) : report.edit ? 'Промяна с AI' : 'Сканиране'} last={report.seconds == null} />
+                    <Row label="Начин" value={report.ai ? madeWith(report.ai) : report.edit ? 'Промяна на модела' : 'Сканиране'} last={report.seconds == null} />
                     {report.seconds != null && <Row label="Време за обработка" value={duration(report.seconds)} last />}
                   </Card>
                 </Section>
@@ -629,10 +573,7 @@ export default function Viewer() {
               {done && !!jobId && (
                 <ToolRow icon="barbell-outline" title="Тест за здравина" sub="Къде моделът би се счупил при натоварване" onPress={stressTest} disabled={!mmValid} />
               )}
-              {canEdit && (
-                <ToolRow icon="color-wand-outline" title="Промени с AI" sub="Опишете с думи какво да се промени" onPress={() => setEditing(true)} disabled={!mmValid || !!busy} />
-              )}
-              {canEdit && (
+              {canPlate && (
                 <ToolRow icon="pricetag-outline" title="Табелка с име" sub="Основа с надпис под модела" onPress={() => setPlating(true)} disabled={!mmValid || !!busy} />
               )}
               {canExtend && (
@@ -714,41 +655,6 @@ export default function Viewer() {
           }}
         />
       )}
-      <EditDialog
-        visible={editing}
-        saving={busy === 'edit'}
-        error={editing ? error : null}
-        value={editText}
-        onChange={setEditText}
-        spot={spot}
-        onPickSpot={
-          model
-            ? () => {
-                setEditing(false);
-                setPicking(true);
-              }
-            : undefined
-        }
-        onClearSpot={() => setSpot(null)}
-        onClose={() => setEditing(false)}
-        onSave={edit}
-      />
-      {model && (
-        <SpotPicker
-          visible={picking}
-          model={model}
-          initial={spot}
-          onClose={() => {
-            setPicking(false);
-            setEditing(true);
-          }}
-          onDone={(picked) => {
-            setSpot(picked);
-            setPicking(false);
-            setEditing(true);
-          }}
-        />
-      )}
     </View>
   );
 }
@@ -795,73 +701,6 @@ function RenameDialog(props: { visible: boolean; initial: string; saving: boolea
           <View style={s.buttons}>
             <Button title="Отказ" variant="secondary" onPress={props.onClose} style={s.flex} />
             <Button title="Запази" onPress={() => props.onSave(value.trim())} loading={props.saving} style={s.flex} />
-          </View>
-        </Card>
-      </View>
-    </Modal>
-  );
-}
-
-// Заявки, които сървърът разбира точно (сървър app/edit.py, правила); останалите отиват при езиковия му модел. При
-// посочено място върху модела "here" и "this" означават него.
-const EXAMPLES = ['make the hair blue', 'make it 15 cm tall', 'add a keychain loop', 'hollow it with 2 mm walls'];
-const SPOT_EXAMPLES = ['make this red', 'smooth here', 'add a 3 mm hole here'];
-
-type EditDialogProps = {
-  visible: boolean;
-  saving: boolean;
-  error: string | null;
-  value: string;
-  onChange: (text: string) => void;
-  spot: Spot | null;
-  onPickSpot?: () => void; // липсва, докато моделът не се зареди
-  onClearSpot: () => void;
-  onClose: () => void;
-  onSave: (prompt: string) => void;
-};
-
-function EditDialog(props: EditDialogProps) {
-  const s = useStyles();
-  const c = useColors();
-  const prompt = props.value.trim();
-  return (
-    <Modal visible={props.visible} transparent animationType="fade" onRequestClose={props.onClose}>
-      <View style={s.backdrop}>
-        <Card style={s.dialog}>
-          <H2>Промени с AI</H2>
-          <Small>Опишете промяната на английски.</Small>
-          <Field
-            value={props.value}
-            onChangeText={props.onChange}
-            autoFocus
-            multiline
-            maxLength={500}
-            autoCapitalize="none"
-            placeholder={props.spot ? 'smooth here and make this red' : 'make the hair blue and add a keychain loop'}
-            accessibilityLabel="Каква промяна"
-            style={s.prompt}
-          />
-          {props.spot ? (
-            <View style={s.spotRow}>
-              <Ionicons name="locate" size={18} color={c.accent} />
-              <Text style={s.spotText}>Мястото е посочено</Text>
-              {props.onPickSpot && <Button title="Смени" variant="secondary" onPress={props.onPickSpot} />}
-              <IconButton icon="close" label="Махни посоченото място" onPress={props.onClearSpot} />
-            </View>
-          ) : (
-            props.onPickSpot && <Button title="Посочи място на модела" icon="locate-outline" variant="secondary" onPress={props.onPickSpot} />
-          )}
-          <View style={s.examples}>
-            {(props.spot ? SPOT_EXAMPLES : EXAMPLES).map((ex) => (
-              <Pressable key={ex} onPress={() => props.onChange(ex)} style={s.example} accessibilityRole="button" accessibilityLabel={ex}>
-                <Text style={s.exampleText}>{ex}</Text>
-              </Pressable>
-            ))}
-          </View>
-          {props.error && <ErrorText>{props.error}</ErrorText>}
-          <View style={s.buttons}>
-            <Button title="Отказ" variant="secondary" onPress={props.onClose} style={s.flex} />
-            <Button title="Направи" onPress={() => props.onSave(prompt)} loading={props.saving} disabled={prompt.length < 2} style={s.flex} />
           </View>
         </Card>
       </View>
@@ -1042,7 +881,6 @@ const useStyles = makeStyles((c) => ({
   cellLine: { borderLeftWidth: 1, borderLeftColor: c.line },
   tab: { gap: space.xl },
   list: { paddingVertical: 0 },
-  lineTop: { borderTopWidth: 1, borderTopColor: c.line },
   mmRow: { flexDirection: 'row', alignItems: 'center', gap: space.md, paddingVertical: space.md },
   mmBox: {
     width: 112,
@@ -1061,8 +899,6 @@ const useStyles = makeStyles((c) => ({
   dims: { flexDirection: 'row', borderTopWidth: 1, borderTopColor: c.line, marginHorizontal: -space.lg },
   dim: { flex: 1, alignItems: 'center', gap: space.xs, paddingVertical: space.md },
   dimValue: { fontFamily: font.monoMedium, fontSize: 17, color: c.text },
-  spotRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
-  spotText: { flex: 1, fontFamily: font.medium, fontSize: 14, color: c.text },
   formats: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   format: {
     flexBasis: '48%',
@@ -1082,11 +918,6 @@ const useStyles = makeStyles((c) => ({
   formatName: { fontFamily: font.monoMedium, fontSize: 16, color: c.text },
   dim40: { opacity: 0.4 },
   share: { gap: space.md },
-  noteText: { textAlign: 'center' },
-  prompt: { minHeight: 72, textAlignVertical: 'top' },
-  examples: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
-  example: { borderWidth: 1, borderColor: c.lineStrong, borderRadius: radius.sm, paddingHorizontal: 8, paddingVertical: 4 },
-  exampleText: { fontFamily: font.mono, fontSize: 11, color: c.text2 },
   buttons: { flexDirection: 'row', gap: space.sm },
   backdrop: { flex: 1, backgroundColor: c.backdrop, justifyContent: 'center', padding: space.xl },
   dialog: { gap: space.md },

@@ -52,7 +52,7 @@ export type Geometry = { dimensions_mm: [number, number, number]; volume_mm3: nu
 // AI моделите (сървър app/ai.py): експресното сканиране за около 5 минути и AI моделите: single (безплатен, на сървъра:
 // очертанията на предмета, изрязани с AI във всеки кадър, в които се сливат измерената и AI дълбочината, със снимките
 // като текстура; TripoSR от един кадър е резервен вариант), claude и photo (платени услуги, изключени, докато
-// сървърът няма ключове за тях). edit: текстова промяна на модел (сървър app/edit.py), направена от екрана за
+// сървърът няма ключове за тях). edit: нов модел от съществуващ (табелка с име, сървър app/edit.py), направен от екрана за
 // преглед.
 export type AiMethod = 'single' | 'claude' | 'photo';
 export type ProMethod = 'express' | 'edit' | AiMethod;
@@ -266,28 +266,8 @@ export const downloadResult = (jobId: string, format: ResultFormat, dest: File, 
     File.downloadFileAsync(resultUrl(jobId, format, longestMm, smooth), dest, { headers: headers(), idempotent: true }),
   );
 
-// Подписани линкове към модела в реален размер за AR (lib/ar.ts), които браузърът отваря без нашия ключ: `page`
-// (сървъри отпреди него изпращат само `url`, тоест GLB). Сървърът първо създава файла, затова това отнема няколко
-// секунди; не се повтаря, защото всеки опит го създава наново.
-export async function arLink(jobId: string, longestMm: number) {
-  try {
-    return await call<{ url: string; page?: string; expires: number }>('POST', `/jobs/${jobId}/ar`, {
-      longest_mm: longestMm,
-    });
-  } catch (e) {
-    if (e instanceof ApiError && (e.status === 405 || (e.status === 404 && e.message === 'Not Found')))
-      throw new Error(NOT_AVAILABLE);
-    throw e;
-  }
-}
-
 // Обем и повърхност за оценката на печата, за сканирания с отчет отпреди те да бъдат включени в него.
 export const getGeometry = (jobId: string) => call<Geometry>('GET', `/jobs/${jobId}/geometry`);
-
-// Нов модел, създаден от този чрез текстова промяна (на английски); сървърът връща новата задача. spot: мястото,
-// което потребителят е докоснал върху модела ("smooth here", "make this red"), като Spot от components/ModelView.
-export const editModel = (jobId: string, prompt: string, longestMm: number, title: string, spot?: readonly number[] | null) =>
-  call<Job>('POST', `/jobs/${jobId}/edit`, { prompt, longest_mm: longestMm, title, ...(spot ? { spot } : {}) });
 
 // Нов модел, създаден от този, стоящ върху плочка с име.
 export const nameplateModel = (jobId: string, text: string, shape: 'round' | 'square', longestMm: number, title: string) =>

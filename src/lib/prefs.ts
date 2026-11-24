@@ -11,7 +11,7 @@ export type Quality = 'quick' | 'detailed';
 // вече направени с тях сканирания и за текстови промени ("edit").
 export const PRO_INFO: Record<ProMethod, { label: string; time: string; minutes: number }> = {
   express: { label: 'Експресно', time: '~5 мин', minutes: 5 },
-  edit: { label: 'Промяна с AI', time: '~1–3 мин', minutes: 2 },
+  edit: { label: 'Промяна на модела', time: '~1–3 мин', minutes: 2 },
   single: { label: 'AI модел', time: '~15 мин', minutes: 15 },
   claude: { label: 'Claude дизайн', time: '~3 мин', minutes: 3 },
   photo: { label: 'AI от снимки', time: '~3 мин', minutes: 3 },
