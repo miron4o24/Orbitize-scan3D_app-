@@ -3,7 +3,7 @@ import { Image } from 'expo-image';
 import { useState } from 'react';
 import { ActivityIndicator, Pressable, Text, View } from 'react-native';
 
-import { Button, ErrorText, Header, Note, Screen, Segmented } from '@/components/ui';
+import { Button, ErrorText, Header, Screen, Segmented } from '@/components/ui';
 import { authHeaders, cadOutlineUrl, cadRetrace, errorText, type CadPhoto, type CadPoint } from '@/lib/api';
 import { font, makeStyles, radius, space, useColors } from '@/theme';
 
@@ -163,11 +163,7 @@ function Fix({ jobId, photo, onChanged, onDone, onRetake }: { jobId: string; pho
           </View>
         )}
       </View>
-      {error ? (
-        <ErrorText>{error}</ErrorText>
-      ) : (
-        <Note>Увеличете с два пръста или с „+“ и местете с един, за да докоснете малък детайл. Зелените точки са върху предмета, червените не са.</Note>
-      )}
+      {error && <ErrorText>{error}</ErrorText>}
       <Button title="Готово" variant="brand" icon="checkmark" disabled={busy} onPress={onDone} />
       {points.length > 0 && <Button title="Обратно към автоматичното" variant="secondary" icon="refresh" disabled={busy} onPress={() => send([])} />}
       <Button title="Снимай тази страна отново" variant="ghost" icon="camera-outline" disabled={busy} onPress={onRetake} />

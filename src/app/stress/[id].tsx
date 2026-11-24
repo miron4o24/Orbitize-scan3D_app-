@@ -26,7 +26,7 @@ import {
 
 import { ModelView } from '@/components/ModelView';
 import { Appear, fade, haptic, Skeleton, swap } from '@/components/motion';
-import { Button, Card, ErrorText, Field, H3, IconButton, Kicker, Label, Note, Section, Segmented, Small, Title, type IconName } from '@/components/ui';
+import { Button, Card, ErrorText, Field, H3, IconButton, Kicker, Label, Section, Segmented, Small, Title, type IconName } from '@/components/ui';
 import { downloadStressModel, errorText, stressSummary, type StressCase, type StressSource, type StressSummary, type Vec3 } from '@/lib/api';
 import { refreshProfile } from '@/lib/auth';
 import { parseGlb } from '@/lib/model';
@@ -379,10 +379,6 @@ export default function StressTest() {
           </Card>
           {!mmValid && <Small style={s.danger}>Въведете размер от 5 до 2000 мм.</Small>}
         </Section>
-
-        {current && current.summary.dropped > 0.01 && (
-          <Note warn>Сивите части са твърде тънки и не са тествани.</Note>
-        )}
 
         <Small>Приблизително изчисление.</Small>
       </ScrollView>

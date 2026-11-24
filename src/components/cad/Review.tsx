@@ -6,7 +6,7 @@ import { ActivityIndicator, Pressable, Text, View } from 'react-native';
 import type { Object3D } from 'three';
 
 import { ModelView } from '@/components/ModelView';
-import { Button, Card, ErrorText, Header, Note, Screen, Section, Small } from '@/components/ui';
+import { Button, Card, ErrorText, Header, Screen, Section, Small } from '@/components/ui';
 import {
   authHeaders,
   cadPhotoUrl,
@@ -130,11 +130,6 @@ export function Review({
         {onRetake && <Button title="Снимай отново" icon="camera-outline" variant="ghost" onPress={onRetake} disabled={busy} />}
       </Section>
 
-      {[...state.warnings, ...state.notes].map((n) => (
-        <Note key={n} warn>
-          {n}
-        </Note>
-      ))}
       {error && <ErrorText>{error}</ErrorText>}
       <Button
         title={left ? `Към мерките (${left})` : 'Построй модела'}

@@ -5,7 +5,7 @@ import * as Sharing from 'expo-sharing';
 import { useState } from 'react';
 import { Text, View } from 'react-native';
 
-import { Button, Card, ErrorText, Note, Row, Section, Small } from '@/components/ui';
+import { Button, Card, ErrorText, Row, Section, Small } from '@/components/ui';
 import { authHeaders, cadPhotoUrl, downloadCadFile, errorText, type CadFile, type CadPhoto, type CadReport } from '@/lib/api';
 import { font, makeStyles, radius, space } from '@/theme';
 
@@ -48,10 +48,6 @@ export function CadPanel({ scanId, jobId, cad, stamp }: { scanId: string; jobId:
         <Row label="Измерени с шублер" value={String(cad.measured)} />
         <Row label="Оценени от снимките" value={String(cad.estimated)} last />
       </Card>
-      {cad.estimated > 0 && (
-        <Note warn>{`Оценени, не измерени: ${cad.estimated_names.join(', ')}. Проверете ги преди изработка; в чертежа са със звездичка.`}</Note>
-      )}
-      {!!cad.adjusted?.length && <Note>{cad.adjusted.join('\n')}</Note>}
       <Card style={s.box}>
         {cad.elements.map((e, i) => (
           <Small key={`${i}-${e}`}>{`${i + 1}. ${e}`}</Small>

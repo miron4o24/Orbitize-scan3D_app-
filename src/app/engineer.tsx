@@ -11,7 +11,7 @@ import { Outlines } from '@/components/cad/Outlines';
 import { Photos } from '@/components/cad/Photos';
 import { Review } from '@/components/cad/Review';
 import { SHOTS, Shoot } from '@/components/cad/Shoot';
-import { Button, Card, ErrorText, Header, Note, Screen, Section, Small } from '@/components/ui';
+import { Button, Card, ErrorText, Header, Screen, Section, Small } from '@/components/ui';
 import {
   cadAssemble,
   cadBuild,
@@ -515,10 +515,6 @@ export default function Engineer() {
             ))}
           </Card>
         </Section>
-        <Note>
-          Нужен е шублер (или линийка за по-груби мерки) и контрастна повърхност: светъл предмет на тъмна маса или обратно. За
-          плочи, скоби, куки, капаци, кутии, валове, цилиндри; не за свободни (органични) форми.
-        </Note>
         {started ? (
           <Button title="Към снимките" variant="brand" size="lg" icon="camera-outline" onPress={() => setPhase('photos')} />
         ) : (

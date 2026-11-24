@@ -28,7 +28,6 @@ import {
   IconButton,
   Label,
   Mono,
-  Note,
   Row,
   Screen,
   Section,
@@ -93,9 +92,6 @@ type Format = (typeof FORMATS)[number]['format'];
 // моделът, както е показан.
 type Surface = 'smooth' | 'detail';
 const SMOOTH_PASSES = 2;
-// Под този дял от ширината на кадъра предметът няма достатъчно пиксели за детайлите си (колонка от 6 см, заснета от
-// разстояние на ръка, заема 18%).
-const SMALL_OBJECT = 0.5;
 
 type Tab = 'overview' | 'files' | 'tools' | 'share';
 // Как се показва моделът: в цвета си, без него (сива глина: само формата) или като мрежа от триъгълници.
@@ -505,15 +501,6 @@ export default function Viewer() {
         <Animated.View key={tab} entering={swap} style={s.tab}>
           {tab === 'overview' && (
             <>
-              {report?.object_width != null && report.object_width < SMALL_OBJECT && (
-                <Note warn>Предметът беше далеч от камерата. Следващия път се приближете.</Note>
-              )}
-              {report?.tips?.map((tip) => (
-                <Note key={tip} warn>
-                  {tip}
-                </Note>
-              ))}
-
               {report?.cad && !!jobId && done && <CadPanel scanId={id} jobId={jobId} cad={report.cad} stamp={String(report.cad.volume_mm3)} />}
 
               <Section label="Реален размер">
@@ -1095,7 +1082,6 @@ const useStyles = makeStyles((c) => ({
   formatName: { fontFamily: font.monoMedium, fontSize: 16, color: c.text },
   dim40: { opacity: 0.4 },
   share: { gap: space.md },
-  withNote: { gap: space.sm },
   noteText: { textAlign: 'center' },
   prompt: { minHeight: 72, textAlignVertical: 'top' },
   examples: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },

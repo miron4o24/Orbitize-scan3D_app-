@@ -3,7 +3,7 @@ import type { File } from 'expo-file-system';
 import { Image } from 'expo-image';
 import { Pressable, Text, View } from 'react-native';
 
-import { Button, ErrorText, Header, Note, Screen } from '@/components/ui';
+import { Button, ErrorText, Header, Screen } from '@/components/ui';
 import type { CadPhoto } from '@/lib/api';
 import { font, makeStyles, radius, space, useColors } from '@/theme';
 
@@ -66,7 +66,6 @@ export function Photos({
           );
         })}
       </View>
-      {count < 3 && list.length > 2 && <Note>С повече страни (поне отгоре, отпред и отдясно) формата се разчита по-сигурно.</Note>}
       {error && <ErrorText>{error}</ErrorText>}
       <Button title={uploading ? 'Качване на снимките…' : 'Напред: общите размери'} variant="brand" size="lg" icon="arrow-forward" loading={uploading} onPress={onNext} />
       <Button title="Назад" variant="ghost" icon="arrow-back" onPress={onBack} />

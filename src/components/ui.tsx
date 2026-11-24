@@ -560,19 +560,6 @@ export function ErrorText({ children }: { children: ReactNode }) {
   );
 }
 
-/* Тиха бележка: икона за информация и приглушен текст, `warn` в цвета за предупреждение. */
-export function Note({ children, warn }: { children: ReactNode; warn?: boolean }) {
-  const c = useColors();
-  const s = useStyles();
-  const color = warn ? c.warning : c.muted;
-  return (
-    <View style={[s.note, warn && { backgroundColor: c.warningSoft, borderColor: 'transparent' }]}>
-      <Ionicons name="information-circle-outline" size={17} color={color} />
-      <Text style={[text.small, s.flex, { color: warn ? c.warning : c.muted }]}>{children}</Text>
-    </View>
-  );
-}
-
 const useStyles = makeStyles((c) => ({
   flex: { flex: 1 },
   screen: { flex: 1, backgroundColor: c.bg },
@@ -702,14 +689,4 @@ const useStyles = makeStyles((c) => ({
   invalid: { borderColor: c.danger },
   error: { flexDirection: 'row', gap: space.sm, alignItems: 'flex-start', backgroundColor: c.dangerSoft, borderRadius: radius.sm, padding: space.md },
   errorText: { color: c.danger, fontFamily: font.medium },
-  note: {
-    flexDirection: 'row',
-    gap: space.sm,
-    alignItems: 'flex-start',
-    borderRadius: radius.sm,
-    borderWidth: 1,
-    borderColor: c.line,
-    backgroundColor: c.surface2,
-    padding: space.md,
-  },
 }));
