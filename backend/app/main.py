@@ -18,6 +18,7 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
 from . import accounts as A
+from . import admin
 from . import ai as AI
 from . import ar as AR
 from . import community
@@ -64,6 +65,7 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(title="3D scan backend", lifespan=lifespan)
 app.state.worker = worker
 app.include_router(A.router)
+app.include_router(admin.router)
 app.include_router(community.router)
 app.include_router(progress.router)
 

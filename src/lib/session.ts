@@ -15,8 +15,10 @@ export type Profile = {
   has_avatar: boolean;
   created: number; // секунди по Unix
   stats: { scans: number; done: number; seconds: number; shared: number; published?: number }; // published: по-нови сървъри
-  // ai: за кои AI модели сървърът има ключове; owner: собственикът на приложението (вижда дневника на сървъра)
+  // ai: за кои AI модели сървърът има ключове; owner: собственикът на приложението (вижда дневника на сървъра);
+  // admin: собственик или назначен от него администратор (вижда „Администриране“)
   owner?: boolean;
+  admin?: boolean;
   ai?: Partial<Record<ProMethod, boolean>>;
 };
 

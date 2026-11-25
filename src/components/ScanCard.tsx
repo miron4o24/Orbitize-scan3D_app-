@@ -35,7 +35,9 @@ export function ScanThumb({ entry, zoom, plain, fill, size = 36 }: { entry: Entr
   const c = useColors();
   const s = useStyles();
   const [failed, setFailed] = useState(false);
-  const show = entry.thumb && !!entry.jobId && !failed;
+  // Готов модел има изображение дори когато старият сървър казва, че няма (кадрите са изчистени след 7 дни, а рисунката
+  // на модела остава); ако все пак липсва, onError показва иконата.
+  const show = (entry.thumb || entry.status === 'done') && !!entry.jobId && !failed;
   // Друг адрес след завършване: кешът на изображения на телефона не бива да пази кадъра от видеото, показван по време
   // на обработката.
   const uri = `${thumbUrl(entry.jobId ?? '')}${entry.status === 'done' ? '?v=model' : ''}`;

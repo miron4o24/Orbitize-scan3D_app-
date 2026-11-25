@@ -601,3 +601,78 @@ export const downloadCadPreview = (jobId: string, dest: File) =>
   retrying(() => File.downloadFileAsync(`${API_URL}/jobs/${jobId}/cad/preview.glb`, dest, { headers: headers(), idempotent: true }));
 export const downloadCadFile = (jobId: string, name: CadFile, dest: File) =>
   retrying(() => File.downloadFileAsync(`${API_URL}/jobs/${jobId}/cad/file/${name}`, dest, { headers: headers(), idempotent: true }));
+
+// --- Администриране (сървър app/admin.py): само за собственика и администраторите --------------------------------------
+
+export type AdminOverview = {
+  users: { total: number; new_week: number; active_week: number; unverified: number; blocked: number; admins: number };
+  jobs: { total: number; done: number; working: number; queued: number; uploading: number; failed_week: number };
+  community: { published: number; reported: number };
+  server: { disk_free_gb: number; disk_total_gb: number; database: string; mail: boolean; version: string };
+  me: { owner: boolean };
+};
+
+export type AdminUser = {
+  id: string;
+  name: string;
+  email: string;
+  created: number; // секунди по Unix
+  last_seen: number | null;
+  scans: number;
+  verified: boolean;
+  blocked: boolean;
+  admin: boolean;
+  owner: boolean;
+  google: boolean; // влиза с Google, а не с имейл и парола
+  has_avatar: boolean;
+  google_picture: string | null;
+};
+
+export type AdminScan = {
+  id: string;
+  title: string;
+  created: number;
+  state: JobState;
+  error?: string | null;
+  method?: string | null;
+  published: number | null;
+  thumb: boolean;
+};
+
+export type AdminUserDetail = AdminUser & { sessions: number; scans_list: AdminScan[]; is_me: boolean };
+export type AdminFilter = 'all' | 'blocked' | 'admins' | 'unverified';
+export type AdminJob = {
+  id: string;
+  state: JobState;
+  step?: string | null;
+  error?: string | null;
+  created: number;
+  title: string;
+  user: { id: string; name: string } | null;
+  method?: string | null;
+  seconds?: number | null;
+};
+export type AdminReport = { id: string; title: string; author: string; reasons: string[]; reports: number; hidden: boolean };
+export type MailStatus = { configured: boolean; source: 'server' | 'app' | null; host?: string | null; port?: number | null; user?: string | null; sender?: string | null };
+
+export const adminOverview = () => call<AdminOverview>('GET', '/manage/overview');
+export const adminUsers = (q: string, show: AdminFilter, offset = 0) =>
+  call<{ total: number; users: AdminUser[]; next: number | null }>(
+    'GET',
+    `/manage/users?q=${encodeURIComponent(q)}&show=${show}&offset=${offset}`,
+  );
+export const adminUser = (id: string) => call<AdminUserDetail>('GET', `/manage/users/${id}`);
+export const adminChangeUser = (id: string, change: Partial<Pick<AdminUser, 'blocked' | 'admin' | 'verified' | 'name'>>) =>
+  call<AdminUserDetail>('PATCH', `/manage/users/${id}`, change);
+export const adminSignOutUser = (id: string) => call<{ ended: number }>('POST', `/manage/users/${id}/signout`);
+export const adminDeleteUser = (id: string) => call<{ ok: boolean }>('DELETE', `/manage/users/${id}`);
+export const adminAvatarUrl = (id: string) => `${API_URL}/manage/users/${id}/avatar.jpg`;
+export const adminJobs = (show: 'active' | 'failed' | 'all') => call<AdminJob[]>('GET', `/manage/jobs?show=${show}`);
+export const adminDeleteJob = (id: string) => call<Job>('DELETE', `/jobs/${id}`);
+export const adminReports = () => call<AdminReport[]>('GET', '/manage/reports');
+export const adminKeepPost = (id: string) => call<{ ok: boolean }>('POST', `/admin/community/${id}/keep`);
+export const adminRemovePost = (id: string) => call<{ published: null }>('DELETE', `/admin/community/${id}`);
+export const adminMail = () => call<MailStatus>('GET', '/manage/mail');
+export const adminSetMail = (m: { host: string; port: number; user: string; password?: string; sender: string }) =>
+  call<MailStatus>('PUT', '/manage/mail', m);
+export const adminTestMail = () => call<{ sent_to: string }>('POST', '/manage/mail/test');

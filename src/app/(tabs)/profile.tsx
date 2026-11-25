@@ -33,7 +33,6 @@ import { deleteAccount, errorText, removeAvatar, renameMe, uploadAvatar } from '
 import { afterTransition } from '@/lib/afterTransition';
 import { refreshProfile, signOut } from '@/lib/auth';
 import { checkProgress, useProgress } from '@/lib/progress';
-import { restartTour } from '@/lib/tour';
 import { deleteScan, listScans } from '@/lib/scans';
 import { avatarChanged, clearSession, updateProfile, useSession, type Profile } from '@/lib/session';
 import { makeStyles, radius, setScheme, space, useColors, useScheme, type Scheme } from '@/theme';
@@ -262,17 +261,16 @@ function Account({ user }: { user: Profile }) {
           </Section>
         </Appear>
 
-        {/* Само за собственика на приложението: обиколката за първи път отново, за проба (lib/tour.ts). */}
-        {!!user.owner && (
+        {/* Собственикът и администраторите: профилите, опашката, сигналите и пощата (app/admin). */}
+        {!!(user.admin || user.owner) && (
           <Appear index={2}>
-            <Section label="Собственик">
+            <Section label="Администратор">
               <Card style={s.list}>
                 <Row
-                  label="Покажи обиколката отново"
-                  onPress={() => {
-                    router.navigate('/');
-                    setTimeout(restartTour, 600);
-                  }}
+                  label="Администриране"
+                  description="Профили, обработка, сигнали, поща"
+                  onPress={() => router.push('/admin')}
+                  right={<Ionicons name="shield-checkmark-outline" size={18} color={c.accent} />}
                   last
                 />
               </Card>

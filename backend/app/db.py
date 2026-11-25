@@ -38,13 +38,19 @@ users = sa.Table(
     sa.Column("verify_code", sa.String(64)),  # SHA-256 на кода и профила
     sa.Column("verify_expires", sa.BigInteger),
     sa.Column("verify_sent", sa.BigInteger),  # кога е изпратено последното писмо (не по-често от RESEND_S)
+    # Администриране от приложението (app/admin.py): администратор, назначен от собственика (собствениците са в
+    # accounts.OWNER_EMAILS), блокиран профил (без вход и без сесии) и кога профилът е използван за последно.
+    sa.Column("admin", sa.Boolean, nullable=False, default=False, server_default=sa.false()),
+    sa.Column("blocked", sa.Boolean, nullable=False, default=False, server_default=sa.false()),
+    sa.Column("last_seen", sa.BigInteger),
 )
 
 # Колони, добавени след първото пускане на таблиците: create_all създава само липсващи таблици, а не липсващи колони.
 LATER_COLUMNS = {
     "users": {"password_hash": "VARCHAR(200)", "pro": "BOOLEAN NOT NULL DEFAULT 0", "pro_until": "BIGINT",
               "pro_token": "VARCHAR(512)", "verify_code": "VARCHAR(64)", "verify_expires": "BIGINT",
-              "verify_sent": "BIGINT"},
+              "verify_sent": "BIGINT", "admin": "BOOLEAN NOT NULL DEFAULT 0", "blocked": "BOOLEAN NOT NULL DEFAULT 0",
+              "last_seen": "BIGINT"},
     "scans": {"published": "BIGINT", "longest_mm": "FLOAT"},
 }
 

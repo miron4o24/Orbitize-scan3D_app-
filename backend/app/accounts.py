@@ -67,13 +67,21 @@ def principal(authorization: str = Header("")) -> Principal:
             raise HTTPException(503, "Профилите временно не са достъпни. Опитайте след малко.")
         now = int(time.time())
         with e.begin() as c:
-            row = c.execute(sa.select(db.sessions).where(db.sessions.c.token_hash == hashed(token))).first()
+            row = c.execute(sa.select(db.sessions, db.users.c.blocked)
+                            .join(db.users, db.users.c.id == db.sessions.c.user_id)
+                            .where(db.sessions.c.token_hash == hashed(token))).first()  # fmt: skip
+            if row and row.blocked:  # сесиите се изтриват при блокиране; това е за всеки случай
+                raise HTTPException(403, BLOCKED)
             if row:
                 if now - row.last_used > SESSION_TOUCH_S:
                     c.execute(sa.update(db.sessions).where(db.sessions.c.token_hash == row.token_hash)
                               .values(last_used=now))  # fmt: skip
+                    c.execute(sa.update(db.users).where(db.users.c.id == row.user_id).values(last_seen=now))
                 return Principal(row.user_id)
     raise HTTPException(401, "Влезте отново в профила си.")
+
+
+BLOCKED = "Профилът е блокиран от администратора."
 
 
 def admin_only(p: Principal = Depends(principal)) -> Principal:
@@ -106,8 +114,25 @@ def owner_only(p: Principal = Depends(principal)) -> Principal:
     return p
 
 
+def is_staff(user_id: str) -> bool:
+    """Администратор в приложението: собственик (OWNER_EMAILS) или профил, на който собственикът е дал това право."""
+    with need_db().connect() as c:
+        u = c.execute(sa.select(db.users.c.email, db.users.c.admin).where(db.users.c.id == user_id)).first()
+    return u is not None and (bool(u.admin) or is_owner_email(u.email))
+
+
+def staff_only(p: Principal = Depends(principal)) -> Principal:
+    """Администраторският ключ на сървъра или администратор в приложението (app/admin.py)."""
+    if not p.admin and not (p.user_id and is_staff(p.user_id)):
+        raise HTTPException(403, "Само за администратора.")
+    return p
+
+
 def can_see(p: Principal, status: dict) -> bool:
-    return p.admin or (p.user_id is not None and status.get("owner") == p.user_id)
+    """Своите задачи; администраторът (ключът на сървъра или в приложението) вижда всички."""
+    if p.admin or (p.user_id is not None and status.get("owner") == p.user_id):
+        return True
+    return p.user_id is not None and db.engine() is not None and is_staff(p.user_id)
 
 
 # --- Вход с Google --------------------------------------------------------------------------------------------------
@@ -158,10 +183,13 @@ def sign_in_google(body: GoogleSignIn):
                                                  name=name, google_picture=claims.get("picture"), avatar=False,
                                                  created=now))  # fmt: skip
         else:
+            if user.blocked:
+                raise HTTPException(403, BLOCKED)
             user_id = user.id
             c.execute(sa.update(db.users).where(db.users.c.id == user_id)
                       .values(email=claims["email"], google_picture=claims.get("picture")))  # fmt: skip
         c.execute(sa.insert(db.sessions).values(token_hash=hashed(token), user_id=user_id, created=now, last_used=now))
+        c.execute(sa.update(db.users).where(db.users.c.id == user_id).values(last_seen=now))
     return {"token": token, "user": profile(user_id)}
 
 
@@ -207,6 +235,7 @@ def email_key(email: str) -> str:
 def new_session(c, user_id: str) -> str:
     token, now = secrets.token_urlsafe(32), int(time.time())
     c.execute(sa.insert(db.sessions).values(token_hash=hashed(token), user_id=user_id, created=now, last_used=now))
+    c.execute(sa.update(db.users).where(db.users.c.id == user_id).values(last_seen=now))
     return token
 
 
@@ -290,6 +319,8 @@ def login(body: Login):
             _failed[key] = recent + [now]
             raise HTTPException(401, "Грешен имейл или парола.")
         _failed.pop(key, None)
+        if user.blocked:
+            raise HTTPException(403, BLOCKED)
         if waiting(user):  # паролата е вярна, но имейлът още не е потвърден: ново писмо, ако старото е отдавна
             if not user.verify_sent or time.time() - user.verify_sent > RESEND_S:
                 send_code(c, user.id, user.email)
@@ -306,6 +337,8 @@ def verify_email(body: Verify):
         user = c.execute(sa.select(db.users).where(db.users.c.google_sub == email_key(body.email))).first()
         if user is None or not waiting(user):
             raise HTTPException(400, "Няма профил, който чака потвърждение с този имейл.")
+        if user.blocked:
+            raise HTTPException(403, BLOCKED)
         if (user.verify_expires or 0) < time.time():
             raise HTTPException(400, "Кодът е изтекъл. Поискайте нов.")
         if _code_tries.get(user.id, 0) >= CODE_TRIES:
@@ -376,6 +409,7 @@ def profile(user_id: str) -> dict:
         # приложението, които показват AI модела само на Pro. "ai" казва за кои AI модели сървърът има ключове.
         "pro": True,
         "owner": owner,
+        "admin": owner or bool(u.admin),  # вижда администрирането (app/admin.py)
         "ai": AI.available(),
         "stats": {
             "scans": sum(1 for s in statuses if s),
@@ -471,17 +505,22 @@ def delete_job_files(job_id: str, worker):
 def delete_me(request: Request, p: Principal = Depends(signed_in)):
     """Изтрива профила с всичките му сканирания завинаги (магазините за приложения изискват това да е възможно в
     приложението)."""
-    for r in owned_jobs(p.user_id):
-        delete_job_files(r.job_id, request.app.state.worker)
-    avatar_path(p.user_id).unlink(missing_ok=True)
+    delete_user(p.user_id, request.app.state.worker)
+    return {"ok": True}
+
+
+def delete_user(user_id: str, worker) -> None:
+    """Профилът, сканиранията му (с файловете), снимката, сесиите и точките му; от delete_me и от администратора."""
+    for r in owned_jobs(user_id):
+        delete_job_files(r.job_id, worker)
+    avatar_path(user_id).unlink(missing_ok=True)
     with need_db().begin() as c:
-        mine = sa.select(db.scans.c.job_id).where(db.scans.c.user_id == p.user_id)
+        mine = sa.select(db.scans.c.job_id).where(db.scans.c.user_id == user_id)
         for t in (db.likes, db.reports):  # върху публикациите на профила (за бази данни без каскадно изтриване)
             c.execute(sa.delete(t).where(t.c.job_id.in_(mine)))
-        for t in (db.likes, db.reports, db.scans, db.sessions, db.xp_events):
-            c.execute(sa.delete(t).where(t.c.user_id == p.user_id))
-        c.execute(sa.delete(db.users).where(db.users.c.id == p.user_id))
-    return {"ok": True}
+        for t in (db.likes, db.reports, db.scans, db.sessions, db.xp_events, db.push_tokens):
+            c.execute(sa.delete(t).where(t.c.user_id == user_id))
+        c.execute(sa.delete(db.users).where(db.users.c.id == user_id))
 
 
 # --- Сканирания на профил -------------------------------------------------------------------------------------------
@@ -495,7 +534,10 @@ def scan_entry(row: sa.Row, status: dict) -> dict:
         "created": row.created,
         "share": row.share,
         "published": row.published,
-        "thumb": (d / jobs.THUMB).exists() or any((d / "photos").glob("*.jp*g")),
+        # Има изображение (jobs.thumbnail): рисунката на модела, кадърът или снимките. Кадрите изчезват след
+        # JOB_TTL_DAYS, а рисунката на модела остава (или се прави от него), затова готовите модели имат изображение.
+        "thumb": (d / jobs.PREVIEW).exists() or (d / jobs.THUMB).exists() or any((d / "photos").glob("*.jp*g"))
+        or (status.get("state") == "done" and (d / "model.ply").exists()),
     }
 
 

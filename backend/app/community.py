@@ -20,7 +20,7 @@ from . import db, jobs, progress
 from . import mesh as M
 from . import stress as ST
 from . import texture as TX
-from .accounts import Principal, admin_only, avatar_path, need_db, owned_row, signed_in
+from .accounts import Principal, avatar_path, need_db, owned_row, signed_in, staff_only
 
 PAGE = 20
 HIDE_AFTER_REPORTS = 3
@@ -340,7 +340,7 @@ def report_print(print_id: str, p: Principal = Depends(signed_in)):
 # --- Преглед на сигналите от администратора -------------------------------------------------------------------------
 
 
-@router.get("/admin/community/reports", dependencies=[Depends(admin_only)])
+@router.get("/admin/community/reports", dependencies=[Depends(staff_only)])
 def reported():
     with need_db().connect() as c:
         rows = c.execute(sa.select(db.reports.c.job_id, db.reports.c.reason, db.reports.c.created, db.scans.c.title,
@@ -355,7 +355,7 @@ def reported():
             for post in out.values()]  # fmt: skip
 
 
-@router.post("/admin/community/{job_id}/keep", dependencies=[Depends(admin_only)])
+@router.post("/admin/community/{job_id}/keep", dependencies=[Depends(staff_only)])
 def keep(job_id: str):
     """Сигналите са неоснователни: изчистват се и публикацията се връща в списъка."""
     with need_db().begin() as c:
@@ -363,7 +363,7 @@ def keep(job_id: str):
     return {"ok": True}
 
 
-@router.delete("/admin/community/{job_id}", dependencies=[Depends(admin_only)])
+@router.delete("/admin/community/{job_id}", dependencies=[Depends(staff_only)])
 def take_down(job_id: str):
     """Извън общността; самото сканиране остава на собственика си."""
     with need_db().begin() as c:

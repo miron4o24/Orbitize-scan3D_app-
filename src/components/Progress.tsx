@@ -1,5 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { Pressable, Text, View } from 'react-native';
 import Animated, { useAnimatedProps, useAnimatedStyle, useReducedMotion, useSharedValue, withDelay, withTiming } from 'react-native-reanimated';
 import Svg, { Circle, Polygon } from 'react-native-svg';
@@ -18,6 +18,8 @@ const AnimatedCircle = Animated.createAnimatedComponent(Circle);
 
 // Шестоъгълникът на значка (50 точки): отключена - рамка в цвета за акцент, заключена - пунктир при 50%.
 const HEX = 50;
+const COLUMNS = 3;
+const GAP = 8;
 const HEX_POINTS = Array.from({ length: 6 }, (_, k) => {
   const a = ((-90 + 60 * k) * Math.PI) / 180;
   return `${HEX / 2 + (HEX / 2 - 1.5) * Math.cos(a)},${HEX / 2 + (HEX / 2 - 1.5) * Math.sin(a)}`;
@@ -173,13 +175,17 @@ export function Badges({ progress }: { progress: Progress }) {
       b.title,
       b.unlocked ? `${b.description}.\nОтключена на ${shortDate((b.unlocked_at ?? 0) * 1000)}.` : `${b.description}.\nДосега: ${b.progress} от ${b.target}.`,
     );
+  // Три колони с точна ширина от измерената (процентите плюс отстъпите не се събират на тесни екрани и редовете се
+  // разместваха); всички значки са с еднаква височина.
+  const [width, setWidth] = useState(0);
+  const cell = width ? Math.floor((width - GAP * (COLUMNS - 1)) / COLUMNS) : 0;
   return (
-    <View style={s.grid}>
-      {progress.badges.map((b) => (
+    <View style={s.grid} onLayout={(e) => setWidth(e.nativeEvent.layout.width)}>
+      {!!cell && progress.badges.map((b) => (
         <Pressable
           key={b.id}
           onPress={() => open(b)}
-          style={({ pressed }) => [s.badge, pressed && s.pressed]}
+          style={({ pressed }) => [s.badge, { width: cell }, pressed && s.pressed]}
           accessibilityRole="button"
           accessibilityLabel={`${b.title}, ${b.unlocked ? 'отключена' : `${b.progress} от ${b.target}`}`}
         >
@@ -203,15 +209,17 @@ export function Badges({ progress }: { progress: Progress }) {
           <Text style={[s.badgeTitle, !b.unlocked && s.lockedText]} numberOfLines={2}>
             {b.title}
           </Text>
-          {b.unlocked ? (
-            <Text style={s.badgeSub}>{shortDate((b.unlocked_at ?? 0) * 1000)}</Text>
-          ) : b.target > 1 ? (
-            <View style={s.badgeBar}>
-              <Bar value={b.progress / b.target} color={c.muted} />
-            </View>
-          ) : (
-            <Text style={s.badgeSub}>заключена</Text>
-          )}
+          <View style={s.badgeFoot}>
+            {b.unlocked ? (
+              <Text style={s.badgeSub}>{shortDate((b.unlocked_at ?? 0) * 1000)}</Text>
+            ) : b.target > 1 ? (
+              <View style={s.badgeBar}>
+                <Bar value={b.progress / b.target} color={c.muted} />
+              </View>
+            ) : (
+              <Text style={s.badgeSub}>заключена</Text>
+            )}
+          </View>
         </Pressable>
       ))}
     </View>
@@ -255,9 +263,8 @@ const useStyles = makeStyles((c) => ({
     paddingVertical: 3,
     overflow: 'hidden',
   },
-  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: GAP, minHeight: 1 },
   badge: {
-    width: '31.8%',
     alignItems: 'center',
     gap: 6,
     paddingVertical: 14,
@@ -283,8 +290,10 @@ const useStyles = makeStyles((c) => ({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  badgeTitle: { fontFamily: font.medium, fontSize: 12.5, lineHeight: 16, textAlign: 'center', color: c.text },
+  // Мястото на две реда, за да са значките с еднаква височина и с подравнени дати и ленти.
+  badgeTitle: { fontFamily: font.medium, fontSize: 12.5, lineHeight: 16, height: 32, textAlign: 'center', textAlignVertical: 'center', color: c.text },
+  badgeFoot: { height: 16, alignSelf: 'stretch', alignItems: 'center', justifyContent: 'center' },
   lockedText: { color: c.muted },
   badgeSub: { fontFamily: font.mono, fontSize: 10.5, color: c.muted },
-  badgeBar: { alignSelf: 'stretch', paddingHorizontal: 10, paddingTop: 4 },
+  badgeBar: { alignSelf: 'stretch', paddingHorizontal: 10 },
 }));

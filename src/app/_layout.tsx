@@ -87,6 +87,12 @@ export default function RootLayout() {
           <Stack.Screen name="viewer/[id]" options={{ headerShown: false }} />
           <Stack.Screen name="community/[id]" options={{ headerShown: false }} />
           <Stack.Screen name="stress/[id]" options={{ headerShown: false }} />
+          <Stack.Screen name="admin/index" options={{ title: 'Администриране' }} />
+          <Stack.Screen name="admin/users" options={{ title: 'Профили' }} />
+          <Stack.Screen name="admin/user/[id]" options={{ title: 'Профил' }} />
+          <Stack.Screen name="admin/jobs" options={{ title: 'Обработка' }} />
+          <Stack.Screen name="admin/reports" options={{ title: 'Сигнали в общността' }} />
+          <Stack.Screen name="admin/mail" options={{ title: 'Потвърждение по имейл' }} />
         </Stack.Protected>
         <Stack.Protected guard={!inside}>
           <Stack.Screen name="sign-in" options={{ headerShown: false, animation: 'fade' }} />
