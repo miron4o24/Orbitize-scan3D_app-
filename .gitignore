@@ -55,3 +55,4 @@ __pycache__/
 
 # Лични бележки извън проекта
 /VIDEOS/
+backend/accounts.db

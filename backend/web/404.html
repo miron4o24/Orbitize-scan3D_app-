@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="bg">
+<head>
+  <meta charset="utf-8">
+  <!-- Theme before anything is drawn: dark unless this browser chose light (assets/app.js). -->
+  <script>(function(d){var t="dark";try{t=localStorage.getItem("orbitize.theme")||t}catch(e){}d.dataset.theme=t;d.classList.add("js")})(document.documentElement)</script>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Страницата не е намерена · Orbitize</title>
+  <meta name="robots" content="noindex">
+  <!-- Shown for any address that does not exist, so all links here start at the site root. -->
+  <base href="/">
+  <link rel="icon" href="/assets/icon.svg?v=30" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/style.css?v=30">
+</head>
+<body>
+<main class="wrap">
+  <div class="center" style="min-height:60vh">
+    <div class="icon-box" style="width:64px;height:64px;border-radius:18px" id="ic"></div>
+    <div class="kicker" style="margin:0"><i style="background:var(--danger);box-shadow:0 0 0 3px var(--danger-soft)"></i>Грешка 404</div>
+    <h1 style="font-size:clamp(30px,6vw,48px);margin:0">Тази страница не съществува</h1>
+    <p class="muted" style="max-width:420px;margin:0">Може линкът да е стар или да има грешка в адреса.</p>
+    <div class="cta" style="justify-content:center;margin-top:8px">
+      <a class="btn btn-primary" href="/index.html">Към началото</a>
+      <a class="btn btn-secondary" href="/scans.html">Моите сканирания</a>
+    </div>
+  </div>
+</main>
+<script src="/assets/config.js?v=30"></script>
+<script src="/assets/app.js?v=30"></script>
+<script>
+  S.page({ title: "Страницата не е намерена" });
+  document.getElementById("ic").append(S.icon("cube"));
+</script>
+</body>
+</html>

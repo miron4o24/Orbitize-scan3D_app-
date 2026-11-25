@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="bg">
+<head>
+  <meta charset="utf-8">
+  <!-- Theme before anything is drawn: dark unless this browser chose light (assets/app.js). -->
+  <script>(function(d){var t="dark";try{t=localStorage.getItem("orbitize.theme")||t}catch(e){}d.dataset.theme=t;d.classList.add("js")})(document.documentElement)</script>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Моите сканирания · Orbitize</title>
+  <meta name="robots" content="noindex">
+  <link rel="icon" href="assets/icon.svg?v=30" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="assets/icon-180.png?v=30">
+  <link rel="manifest" href="site.webmanifest">
+  <meta name="theme-color" content="#080b10">
+  <link rel="stylesheet" href="assets/style.css?v=30">
+</head>
+<body>
+<main class="wrap">
+  <div class="page-head">
+    <div>
+      <div class="kicker" style="margin-bottom:12px"><i></i><span id="hello">&nbsp;</span></div>
+      <h1>Моите сканирания</h1>
+    </div>
+    <div class="head-right">
+      <div class="stats" id="stats"></div>
+      <a class="btn btn-primary amber-btn" href="engineer.html" id="new-cad"></a>
+    </div>
+  </div>
+  <div class="tools hidden" id="tools">
+    <label class="search"><span id="search-icon"></span>
+      <input class="input" id="search" type="search" placeholder="Търсене по име или бележка" aria-label="Търсене по име или бележка" autocomplete="off"></label>
+    <div class="chips" id="chips"></div>
+    <select class="input sort" id="sort" aria-label="Подреждане">
+      <option value="new">Най-нови</option>
+      <option value="old">Най-стари</option>
+      <option value="name">По име</option>
+    </select>
+  </div>
+  <div id="list"></div>
+</main>
+<script src="assets/config.js?v=30"></script>
+<script src="assets/app.js?v=30"></script>
+<script>
+  if (S.requireAuth()) {
+    S.page({ title: "Моите сканирания", active: "scans" });
+    const { el, icon, api } = S;
+    const list = document.getElementById("list");
+    const search = document.getElementById("search");
+    document.getElementById("search-icon").replaceWith(icon("search"));
+    document.getElementById("new-cad").append(icon("ruler"), "Нов CAD детайл");
+    const thumbs = new Map(); // scan id -> blob URL
+    const FILTERS = [
+      ["all", "Всички", () => true],
+      ["fav", "Любими", (s) => S.marks.fav(s.id)],
+      ["done", "Готови", (s) => s.state === "done"],
+      ["cad", "CAD детайли", (s) => s.report && s.report.ai === "cad"],
+      ["busy", "В процес", (s) => S.ACTIVE.has(s.state) || s.state === "uploading"],
+      ["failed", "Неуспешни", (s) => s.state === "failed" || s.state === "cancelled"],
+    ];
+    let scans = S.scansCache.get();
+    // Search, filter and order are kept for this tab, so coming back from a scan shows the same list.
+    const view = (() => { try { return JSON.parse(sessionStorage.getItem("orbitize.view")) || {}; } catch { return {}; } })();
+    let filter = view.filter || "all";
+    const sort = document.getElementById("sort");
+    search.value = view.q || "";
+    sort.value = view.sort || "new";
+    const keepView = () => {
+      try { sessionStorage.setItem("orbitize.view", JSON.stringify({ filter, q: search.value, sort: sort.value })); } catch {}
+    };
+    const ORDER = {
+      new: (a, b) => b.created - a.created,
+      old: (a, b) => a.created - b.created,
+      name: (a, b) => (a.title || "я").localeCompare(b.title || "я", "bg"),
+    };
+    sort.addEventListener("change", () => { keepView(); draw(); });
+
+    const thumbKey = (s) => `thumb/${s.id}/${s.state}-${(s.report && s.report.seconds) || 0}`;
+
+    function showMe(me) {
+      document.getElementById("hello").textContent = `Здравейте, ${me.name.split(" ")[0]}`;
+      document.getElementById("stats").replaceChildren(
+        el("span", { class: "stat" }, el("b", {}, me.stats.done), "готови"),
+        el("span", { class: "stat" }, el("b", {}, me.stats.shared), "споделени"));
+    }
+    if (S.auth.user() && S.auth.user().stats) showMe(S.auth.user());
+    api("/me").then((me) => { S.auth.setUser(me); showMe(me); }).catch(() => {});
+
+    // Pictures need the token, so they are fetched (4 at a time, kept in the browser) instead of plain <img> links.
+    async function loadThumbs(items) {
+      // A finished model always has a picture (the server draws it from the model), even when an older server says no.
+      const todo = items.filter((s) => (s.thumb || s.state === "done") && !thumbs.has(s.id));
+      const worker = async () => {
+        for (let s; (s = todo.shift()); ) {
+          thumbs.set(s.id, null);
+          try {
+            const raw = await S.cachedBlob(thumbKey(s), `/jobs/${s.id}/thumb.jpg`);
+            // Without the server's light background, so it sits on the card (app.js cutout); as it is if that fails.
+            const url = URL.createObjectURL(await S.cutout(raw).catch(() => raw));
+            thumbs.set(s.id, url);
+            const box = document.querySelector(`[data-thumb="${s.id}"]`);
+            if (box) box.replaceChildren(el("img", { src: url, alt: "", decoding: "async" }));
+          } catch {}
+        }
+      };
+      await Promise.all([worker(), worker(), worker(), worker()]);
+    }
+
+    function card(s) {
+      const pic = thumbs.get(s.id), on = S.marks.fav(s.id), note = S.marks.note(s.id);
+      const star = el("button", { class: `fav-btn ${on ? "on" : ""}`, type: "button", title: on ? "Махни от любими" : "Добави в любими",
+        "aria-label": on ? "Махни от любими" : "Добави в любими", "aria-pressed": String(on) }, icon("star"));
+      star.onclick = (e) => { e.preventDefault(); e.stopPropagation(); S.marks.setFav(s.id, !on); draw(); };
+      return el("a", { class: "scan-card", href: `scan.html?id=${encodeURIComponent(s.id)}` },
+        el("div", { class: "thumb", "data-thumb": s.id }, pic ? el("img", { src: pic, alt: "", decoding: "async" }) : icon("cube")),
+        star,
+        s.report && s.report.ai ? el("span", { class: `mode-tag ${s.report.ai === "cad" ? "cad" : "ai"}` }, s.report.ai === "cad" ? "CAD 1:1" : "AI") : null,
+        el("div", { class: "meta" },
+          el("div", { class: "title" }, s.title || "Без име"),
+          note ? el("div", { class: "note" }, note) : null,
+          el("div", { class: "row" }, el("span", {}, S.date(s.created)), S.stateBadge(s.state))));
+    }
+
+    function ghosts(n) {
+      return el("div", { class: "scan-grid" }, Array.from({ length: n }, () =>
+        el("div", { class: "scan-card ghost" },
+          el("div", { class: "thumb" }, el("div", { class: "skeleton" })),
+          el("div", { class: "meta" }, el("div", { class: "skeleton", style: "height:16px;width:70%" }),
+            el("div", { class: "skeleton", style: "height:12px;width:45%" })))));
+    }
+
+    let entered = false; // the cards come up one by one the first time only, not on every search keystroke
+    function draw() {
+      if (!scans) return list.replaceChildren(ghosts(6));
+      if (!scans.length) {
+        document.getElementById("tools").classList.add("hidden");
+        return list.replaceChildren(el("div", { class: "card center" },
+          el("div", { class: "icon-box" }, icon("cube")),
+          el("h3", {}, "Още нямате сканирания"),
+          el("p", { class: "muted", style: "max-width:420px" },
+            `AI модел от видео: с приложението ${S.C.appName} на телефона. CAD детайл 1:1 от снимки и мерки: и тук, в сайта.`),
+          el("div", { class: "row-actions", style: "justify-content:center" },
+            el("a", { class: "btn btn-primary amber-btn", href: "engineer.html" }, icon("ruler"), "Нов CAD детайл"),
+            el("a", { class: "btn btn-secondary", href: S.C.apkUrl }, icon("android"), "Приложението за Android"))));
+      }
+      document.getElementById("tools").classList.remove("hidden");
+      const current = FILTERS.find((f) => f[0] === filter);
+      if (!current || !scans.some(current[2])) filter = "all"; // a kept filter with nothing left in it
+      document.getElementById("chips").replaceChildren(...FILTERS.map(([key, label, test]) => {
+        const n = scans.filter(test).length;
+        if (key !== "all" && !n) return "";
+        return el("button", { class: `chip-btn ${filter === key ? "on" : ""}`, type: "button",
+          onclick: () => { filter = key; keepView(); draw(); } }, label, el("span", { class: "n" }, n));
+      }));
+      const q = search.value.trim().toLowerCase();
+      const test = FILTERS.find((f) => f[0] === filter)[2];
+      const shown = scans.filter((s) => test(s) && (!q || `${s.title || "без име"} ${S.marks.note(s.id)}`.toLowerCase().includes(q))).sort(ORDER[sort.value] || ORDER.new);
+      list.replaceChildren(shown.length
+        ? el("div", { class: `scan-grid ${entered ? "" : "enter"}` }, shown.map(card))
+        : el("p", { class: "muted center" }, "Няма сканирания, които да отговарят."));
+      loadThumbs(shown);
+      entered = true;
+    }
+    search.addEventListener("input", () => { keepView(); draw(); });
+
+    let timer;
+    async function load() {
+      clearTimeout(timer);
+      try {
+        scans = await api("/me/scans");
+        S.scansCache.set(scans);
+      } catch (err) {
+        if (scans) return S.toast(err.message); // keep showing the saved list
+        return list.replaceChildren(el("div", { class: "card center" },
+          el("p", { class: "alert alert-error" }, err.message),
+          el("button", { class: "btn btn-secondary", onclick: load }, "Опитай отново")));
+      }
+      draw();
+      // Scans still being built: look again in a while.
+      if (scans.some((s) => S.ACTIVE.has(s.state) || s.state === "uploading")) timer = setTimeout(load, 15000);
+    }
+
+    draw(); // the list saved from the last visit (or placeholders) at once, then the fresh one
+    load();
+  }
+</script>
+</body>
+</html>

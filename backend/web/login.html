@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="bg">
+<head>
+  <meta charset="utf-8">
+  <!-- Theme before anything is drawn: dark unless this browser chose light (assets/app.js). -->
+  <script>(function(d){var t="dark";try{t=localStorage.getItem("orbitize.theme")||t}catch(e){}d.dataset.theme=t;d.classList.add("js")})(document.documentElement)</script>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Вход · Orbitize</title>
+  <meta name="robots" content="noindex">
+  <link rel="icon" href="assets/icon.svg?v=30" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="assets/icon-180.png?v=30">
+  <link rel="manifest" href="site.webmanifest">
+  <meta name="theme-color" content="#080b10">
+  <link rel="stylesheet" href="assets/style.css?v=30">
+</head>
+<body>
+<main class="wrap">
+  <div class="auth-split">
+  <aside class="auth-side">
+    <div class="kicker"><i></i>Профил в <span data-app-name></span></div>
+    <h2>Един профил: в приложението и тук.</h2>
+    <ol class="numbered">
+      <li><span>01</span>Всички модели от приложението, в 3D в браузъра</li>
+      <li><span>02</span>Инженерен режим: CAD модел 1:1 от снимки и мерки</li>
+      <li><span>03</span>Файлове за печат и CAD: 3MF, STL, OBJ, STEP</li>
+    </ol>
+  </aside>
+  <div class="auth">
+    <div style="margin-bottom:22px">
+      <h1 style="font-size:32px" id="heading">Добре дошли отново</h1>
+      <p class="muted" id="sub">Влезте със същия профил като в приложението.</p>
+    </div>
+    <div class="card">
+      <div class="tabs" role="tablist">
+        <button type="button" class="on" id="tab-in" role="tab">Вход</button>
+        <button type="button" id="tab-up" role="tab">Нов профил</button>
+      </div>
+      <div id="msg" class="alert alert-error hidden" role="alert"></div>
+      <form id="code-form" class="hidden" novalidate>
+        <p class="muted" id="code-text" style="margin-top:0"></p>
+        <label class="field"><span>Код от имейла</span>
+          <input class="input mono" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="12" style="font-size:24px;letter-spacing:6px;text-align:center" required></label>
+        <button class="btn btn-primary btn-block btn-lg" id="code-submit" type="submit">Потвърди</button>
+        <div class="row-actions" style="justify-content:space-between;margin-top:12px">
+          <button type="button" class="btn btn-ghost btn-sm" id="code-back">Назад</button>
+          <button type="button" class="btn btn-ghost btn-sm" id="code-resend">Изпрати нов код</button>
+        </div>
+      </form>
+      <form id="form" novalidate>
+        <label class="field hidden" id="name-field"><span>Вашето име</span>
+          <input class="input" name="name" autocomplete="name" maxlength="100"></label>
+        <label class="field"><span>Имейл</span>
+          <input class="input" name="email" type="email" inputmode="email" autocomplete="email" autocapitalize="off" spellcheck="false" required maxlength="320"></label>
+        <div class="field"><label for="password"><span style="display:block;font-weight:600;font-size:14px;margin-bottom:6px;color:var(--text-2)">Парола</span></label>
+          <div class="pw"><input class="input" id="password" name="password" type="password" autocomplete="current-password" required maxlength="200">
+            <button type="button" id="pw-toggle" aria-label="Покажи паролата" aria-pressed="false"></button></div></div>
+        <p class="small muted hidden" id="pw-hint" style="margin-top:-6px">Поне 6 знака.</p>
+        <button class="btn btn-primary btn-block btn-lg" id="submit" type="submit">Вход</button>
+      </form>
+      <div class="divider">или</div>
+      <div id="google-btn"></div>
+      <p class="small muted hidden" id="google-off" style="text-align:center">Входът с Google не се зареди. Използвайте имейл и парола или опитайте по-късно.</p>
+    </div>
+    <p class="small muted" style="margin-top:18px">
+      Използвайте същия профил като в приложението.<br>
+      Продължавайки, приемате <a href="terms.html">Условията</a> и <a href="privacy.html">Политиката за поверителност</a>.
+    </p>
+  </div>
+  </div>
+</main>
+<script src="assets/config.js?v=30"></script>
+<script src="assets/app.js?v=30"></script>
+<script>
+  S.page({ title: "Вход", active: "login" });
+  const pwToggle = document.getElementById("pw-toggle"), pwInput = document.getElementById("password");
+  pwToggle.append(S.icon("eye"));
+  pwToggle.onclick = () => {
+    const show = pwInput.type === "password";
+    pwInput.type = show ? "text" : "password";
+    pwToggle.replaceChildren(S.icon(show ? "eyeoff" : "eye"));
+    pwToggle.setAttribute("aria-label", show ? "Скрий паролата" : "Покажи паролата");
+    pwToggle.setAttribute("aria-pressed", String(show));
+  };
+  // Cursor in the email box on computers (on phones it would pop up the keyboard over the page).
+  if (matchMedia("(hover: hover)").matches) document.querySelector("[name=email]").focus();
+  const $ = (id) => document.getElementById(id);
+  const params = new URLSearchParams(location.search);
+  // Only go back to one of our own pages after sign-in, never to another site.
+  const next = /^[a-z]+\.html(\?[\w=&%.-]*)?$/.test(params.get("next") || "") ? params.get("next") : "scans.html";
+  if (S.auth.token()) location.replace(next);
+
+  let mode = "in";
+  function setMode(m) {
+    mode = m;
+    const up = m === "up";
+    $("tab-in").classList.toggle("on", !up);
+    $("tab-up").classList.toggle("on", up);
+    $("name-field").classList.toggle("hidden", !up);
+    $("pw-hint").classList.toggle("hidden", !up);
+    $("submit").textContent = up ? "Създай профил" : "Вход";
+    $("heading").textContent = up ? "Създайте профил" : "Добре дошли отново";
+    $("sub").textContent = up ? "Моделите ви се пазят в него, в приложението и тук." : "Влезте със същия профил като в приложението.";
+    $("form").password.autocomplete = up ? "new-password" : "current-password";
+    showError(null);
+  }
+  $("tab-in").onclick = () => setMode("in");
+  $("tab-up").onclick = () => setMode("up");
+  if (params.get("mode") === "register") setMode("up");
+
+  function showError(text) {
+    $("msg").textContent = text || "";
+    $("msg").classList.toggle("hidden", !text);
+  }
+
+  // Нов профил (или непотвърден при вход): сървърът праща 6-цифрен код на имейла и чака него, без сесия.
+  let pending = null;
+  function done(res) {
+    if (res.verify) return askCode(res.email);
+    S.auth.save(res.token, res.user);
+    location.replace(next);
+  }
+  function askCode(email) {
+    pending = email;
+    $("form").classList.add("hidden");
+    document.querySelector(".tabs").classList.add("hidden");
+    document.querySelector(".divider").classList.add("hidden");
+    $("google-btn").classList.add("hidden");
+    $("code-form").classList.remove("hidden");
+    $("heading").textContent = "Потвърдете имейла";
+    $("sub").textContent = "Последна стъпка преди профила.";
+    $("code-text").textContent = `Изпратихме 6-цифрен код на ${email}. Въведете го тук (проверете и нежеланата поща).`;
+    $("code-form").code.value = "";
+    $("code-form").code.focus();
+    $("submit").disabled = false;
+    showError(null);
+  }
+  $("code-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const code = e.target.code.value.replace(/\D/g, "");
+    if (code.length !== 6) return showError("Кодът е 6 цифри.");
+    $("code-submit").disabled = true;
+    showError(null);
+    try {
+      done(await S.api("/auth/verify", { method: "POST", json: { email: pending, code } }));
+    } catch (err) {
+      showError(err.message);
+      $("code-submit").disabled = false;
+    }
+  });
+  $("code-resend").onclick = async () => {
+    showError(null);
+    try {
+      await S.api("/auth/resend", { method: "POST", json: { email: pending } });
+      S.toast("Изпратихме нов код.");
+    } catch (err) { showError(err.message); }
+  };
+  $("code-back").onclick = () => {
+    $("code-form").classList.add("hidden");
+    $("form").classList.remove("hidden");
+    document.querySelector(".tabs").classList.remove("hidden");
+    document.querySelector(".divider").classList.remove("hidden");
+    $("google-btn").classList.remove("hidden");
+    setMode(mode);
+  };
+
+  $("form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const f = e.target;
+    const email = f.email.value.trim(), password = f.password.value;
+    if (!email || !password) return showError("Въведете имейл и парола.");
+    if (mode === "up" && password.length < 6) return showError("Паролата трябва да е поне 6 знака.");
+    $("submit").disabled = true;
+    showError(null);
+    try {
+      const json = mode === "up" ? { email, password, name: f.name.value.trim() } : { email, password };
+      done(await S.api(mode === "up" ? "/auth/register" : "/auth/login", { method: "POST", json }));
+    } catch (err) {
+      showError(err.message);
+      $("submit").disabled = false;
+    }
+  });
+
+  // Google Identity Services: Google gives us an ID token, the server checks it and returns our own session token.
+  window.onGoogleLibraryLoad = () => {
+    google.accounts.id.initialize({
+      client_id: S.C.googleClientId,
+      callback: async (resp) => {
+        showError(null);
+        try {
+          done(await S.api("/auth/google", { method: "POST", json: { id_token: resp.credential } }));
+        } catch (err) { showError(err.message); }
+      },
+    });
+    const box = $("google-btn");
+    google.accounts.id.renderButton(box, {
+      theme: S.theme() === "dark" ? "filled_black" : "outline", size: "large", shape: "pill", text: "continue_with", locale: "bg",
+      width: Math.min(box.clientWidth || 360, 400),
+    });
+  };
+  const gsi = document.createElement("script");
+  gsi.src = "https://accounts.google.com/gsi/client?hl=bg";
+  gsi.async = true;
+  gsi.onerror = () => $("google-off").classList.remove("hidden");
+  document.head.append(gsi);
+</script>
+</body>
+</html>
