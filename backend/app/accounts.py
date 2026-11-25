@@ -823,4 +823,4 @@ def health_info() -> dict:
     # (проверява се отдалечено след инсталиране). stress, progress, pro: тестът за здравина (app/stress.py), точките
     # (app/progress.py) и AI моделите на Pro (app/ai.py) са налични, затова приложението ги показва.
     return {"accounts": ok, "database": db.status(), "google_client_id": ids[0] if ids else None,
-            "version": "2026-11-04-orbitize", "stress": True, "progress": True, "pro": True}  # fmt: skip
+            "version": "2026-11-25-orbitize", "stress": True, "progress": True, "pro": True}  # fmt: skip
