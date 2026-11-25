@@ -9,16 +9,13 @@ import shutil
 import threading
 import time
 import zipfile
-from pathlib import Path
 from contextlib import asynccontextmanager
 from typing import Annotated, Literal
 
 import trimesh
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
-from starlette.exceptions import HTTPException as StarletteHTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from . import accounts as A
@@ -68,6 +65,18 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="3D scan backend", lifespan=lifespan)
 app.state.worker = worker
+# Уебсайтът (папката website/, на IIS на собствен адрес) вика API-то от браузъра: позволени са само неговите адреси.
+# Сесийният ключ е в заглавието Authorization (не бисквитка), затова без credentials. WEB_ORIGINS в .env: адресите,
+# разделени със запетая.
+WEB_ORIGINS = [o.strip().rstrip("/") for o in os.environ.get("WEB_ORIGINS", "https://scanly.bg046.com").split(",") if o.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=WEB_ORIGINS,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+    allow_headers=["Authorization", "Content-Type"],
+    expose_headers=["Content-Length", "Content-Disposition"],
+    max_age=3600,
+)
 app.include_router(A.router)
 app.include_router(admin.router)
 app.include_router(community.router)
@@ -787,37 +796,3 @@ def ar_model(job_id: str, tenths: int, expires: int, sig: str, request: Request)
         path, headers["Content-Encoding"] = AR.zipped(path), "gzip"
     return Response(path.read_bytes(), media_type=M.MEDIA_TYPES["glb"], headers=headers)
 
-
-# --- Уебсайтът (backend/web) ----------------------------------------------------------------------------------------
-# Сайтът е на същия адрес като API-то (Tailscale Funnel), затова няма нужда от CORS, отделен уеб сървър или IIS, а
-# update.ps1 обновява сървъра и сайта заедно. Монтира се последен: всеки път на API-то (/jobs, /me, /auth, ...) е
-# преди него. Заглавията за сигурност и кеширането са тези от web.config на стария сайт.
-WEB = Path(__file__).resolve().parent.parent / "web"
-WEB_CSP = (
-    "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://accounts.google.com/gsi/client; "
-    "style-src 'self' 'unsafe-inline' https://accounts.google.com/gsi/style; font-src 'self'; "
-    "img-src 'self' data: blob: https://*.googleusercontent.com; connect-src 'self' blob: data: https://accounts.google.com/gsi/; "
-    "frame-src https://accounts.google.com/gsi/; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; "
-    "form-action 'self'; object-src 'none'"
-)
-
-
-class Website(StaticFiles):
-    async def get_response(self, path: str, scope):
-        try:
-            response = await super().get_response(path, scope)
-        except StarletteHTTPException as e:
-            if e.status_code != 404:
-                raise
-            response = FileResponse(WEB / "404.html", status_code=404)
-        response.headers.update({"X-Content-Type-Options": "nosniff", "Referrer-Policy": "strict-origin-when-cross-origin",
-                                 "X-Frame-Options": "DENY", "Content-Security-Policy": WEB_CSP})  # fmt: skip
-        # Скриптовете и стиловете се зареждат с ?v=N в страниците, затова се пазят дълго; страниците и config.js
-        # винаги се проверяват, така че промяна се вижда веднага.
-        cached = path.startswith("assets/") and path != "assets/config.js"
-        response.headers["Cache-Control"] = "public, max-age=31536000, immutable" if cached else "no-cache"
-        return response
-
-
-if WEB.is_dir():
-    app.mount("/", Website(directory=WEB, html=True), name="website")

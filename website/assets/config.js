@@ -1,8 +1,9 @@
 // Orbitize website settings. Everything here is public: never put a password, the API_TOKEN or any other secret here.
-// The website is served by the Orbitize server itself (backend/app/main.py), so the API is at the same address ("").
+// The website is a folder on IIS (its own address); the API is the Orbitize server, which allows this site's address
+// (WEB_ORIGINS in the server's .env).
 window.ORBITIZE = {
   appName: "Orbitize",
-  apiUrl: "",
+  apiUrl: "https://ustyle.tail7978cf.ts.net",
   // The newest Android build (EAS). Change it after every new build.
   apkUrl: "https://expo.dev/artifacts/eas/7FLF6ehuQ87Gebihi4SxF4gKjHH0k32_IHYezZmIysA.apk",
   googleClientId: "814464272568-p3lknkud9vg4alfcn1beq695bjtffc8u.apps.googleusercontent.com",
