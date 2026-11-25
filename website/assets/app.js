@@ -1,6 +1,13 @@
 // Shared by every page: API calls with the user's session token, the header and footer, small helpers.
 // Only the user's own session token is used here (from sign-in); the site never holds the server's admin token.
 (function () {
+  // The site over plain http:// can be read and changed on the way (passwords, session). If the same address answers
+  // over HTTPS, go there at once; Strict-Transport-Security (web.config) then keeps the browser on HTTPS.
+  if (location.protocol === "http:" && !/^(localhost|127\.|\[::1\])/.test(location.hostname)) {
+    fetch("https://" + location.host + "/assets/config.js", { mode: "no-cors", cache: "no-store" })
+      .then(() => location.replace("https://" + location.host + location.pathname + location.search + location.hash))
+      .catch(() => {});
+  }
   const C = window.ORBITIZE;
   const TOKEN_KEY = "orbitize.token";
   const USER_KEY = "orbitize.user";

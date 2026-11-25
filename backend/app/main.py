@@ -68,7 +68,7 @@ app.state.worker = worker
 # Уебсайтът (папката website/, на IIS на собствен адрес) вика API-то от браузъра: позволени са само неговите адреси.
 # Сесийният ключ е в заглавието Authorization (не бисквитка), затова без credentials. WEB_ORIGINS в .env: адресите,
 # разделени със запетая.
-WEB_ORIGINS = [o.strip().rstrip("/") for o in os.environ.get("WEB_ORIGINS", "https://scanly.bg046.com").split(",") if o.strip()]
+WEB_ORIGINS = [o.strip().rstrip("/") for o in os.environ.get("WEB_ORIGINS", "https://orbitize.bg046.com").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=WEB_ORIGINS,
