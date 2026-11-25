@@ -21,6 +21,15 @@ $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccou
 $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -Priority 4 -StartWhenAvailable `
   -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 Stop-ScheduledTask -TaskName 'scan3d' -ErrorAction SilentlyContinue
+# Stopping the task can leave its server running (a run-server loop started another way, or the python it started),
+# and that old server keeps the settings .env had when it started. End all of them so the new one reads .env again.
+Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
+  Where-Object { $_.CommandLine -like '*run-server.ps1*' -and $_.ProcessId -ne $PID } |
+  ForEach-Object { taskkill.exe /PID $_.ProcessId /T /F | Out-Null }
+foreach ($c in Get-NetTCPConnection -LocalPort $env:PORT -State Listen -ErrorAction SilentlyContinue) {
+  taskkill.exe /PID $c.OwningProcess /T /F | Out-Null
+}
+Start-Sleep 2
 Register-ScheduledTask -TaskName 'scan3d' -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
 Start-ScheduledTask -TaskName 'scan3d'
 Write-Host 'Task "scan3d" registered and started. Waiting for the server...'
@@ -28,8 +37,10 @@ Write-Host 'Task "scan3d" registered and started. Waiting for the server...'
 for ($i = 0; $i -lt 60; $i++) {
   Start-Sleep 2
   try {
-    Invoke-RestMethod "http://127.0.0.1:$env:PORT/health" | Out-Null
-    Write-Host "Server is up: http://127.0.0.1:$env:PORT/health" -ForegroundColor Green
+    $h = Invoke-RestMethod "http://127.0.0.1:$env:PORT/health"
+    Write-Host "Server is up: http://127.0.0.1:$env:PORT/health (version $($h.version))" -ForegroundColor Green
+    if ($h.mail) { Write-Host 'Mail for sign-up codes: ON' -ForegroundColor Green }
+    else { Write-Host 'Mail for sign-up codes: OFF - add SMTP_HOST, SMTP_USER and SMTP_PASSWORD to .env, nobody can register without it' -ForegroundColor Yellow }
     exit 0
   } catch {}
 }

@@ -27,6 +27,11 @@ def client(tmp_path, monkeypatch):
 
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{(tmp_path / 'accounts.db').as_posix()}")
     monkeypatch.delenv("GOOGLE_CLIENT_ID", raising=False)
+    from app import mail
+
+    for key in ("SMTP_HOST", "SMTP_USER", "SMTP_PASSWORD", "SMTP_PORT", "SMTP_FROM"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(mail, "ENV_FILE", tmp_path / "no.env")
     db.reset()
     (tmp_path / "jobs").mkdir()
     monkeypatch.setattr(jobs, "DATA", tmp_path / "jobs")
@@ -76,7 +81,8 @@ def finished_scan(client, h, frames=8):
 def test_google_client_id_set_remotely_by_admin(client):
     # accounts: входът с имейл работи (базата данни е достатъчна); за Google първо е нужен идентификатор на клиента.
     assert client.get("/health").json() == {"ok": True, "accounts": True, "database": "ok", "google_client_id": None,
-                                         "version": "2026-11-25-verify", "stress": True, "progress": True, "pro": True}
+                                         "version": "2026-11-25-mail", "stress": True, "progress": True, "pro": True,
+                                         "mail": False}
     assert client.post("/auth/google", json={"id_token": "g1:a@example.com"}).status_code == 503
     assert client.put("/admin/settings", json={"google_client_id": CLIENT_ID}).status_code == 401
     r = client.put("/admin/settings", json={"google_client_id": f" {CLIENT_ID} "}, headers=ADMIN)
@@ -233,7 +239,8 @@ def test_accounts_turned_off(client, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "off")
     db.reset()
     assert client.get("/health").json() == {"ok": True, "accounts": False, "database": "off", "google_client_id": None,
-                                         "version": "2026-11-25-verify", "stress": True, "progress": True, "pro": True}
+                                         "version": "2026-11-25-mail", "stress": True, "progress": True, "pro": True,
+                                         "mail": False}
     assert client.post("/auth/google", json={"id_token": "g1:a@example.com"}).status_code == 503
     assert client.post("/jobs", headers=ADMIN).status_code == 200  # споделеният ключ работи както преди
     assert client.get("/me", headers={"Authorization": "Bearer whatever"}).status_code == 401
@@ -342,3 +349,22 @@ def test_an_old_google_account_gets_a_password_through_the_mail_code(client, mon
     assert r.json()["user"]["id"] == old_id
     assert client.post("/auth/login", json={"email": "gina@example.com", "password": "secret1"}).json()["user"]["id"] == old_id
     assert client.post("/auth/register", json={"email": "gina@example.com", "password": "other1"}).status_code == 409
+
+
+
+def test_the_mailbox_is_read_from_the_env_file_even_if_the_server_started_without_it(client, monkeypatch, tmp_path):
+    """Сървър, пуснат преди редовете SMTP_* да са в .env (или от скрипт без .env): кодът пак тръгва."""
+    from app import mail
+
+    env = tmp_path / "server.env"
+    env.write_text("\ufeffPORT=8010\nSMTP_HOST=smtp.gmail.com\nSMTP_PORT=587\nSMTP_USER=x@gmail.com\n"
+                   "SMTP_PASSWORD=abcd efgh ijkl mnop\nSMTP_FROM=Orbitize <x@gmail.com>\n", encoding="utf-8")
+    monkeypatch.setattr(mail, "ENV_FILE", env)
+    cfg = mail.settings()
+    assert cfg["host"] == "smtp.gmail.com" and cfg["port"] == 587 and cfg["password"] == "abcdefghijklmnop"
+    assert cfg["sender"] == "Orbitize <x@gmail.com>"
+    assert client.get("/health").json()["mail"] is True
+    sent = []
+    monkeypatch.setattr(mail, "verification_code", lambda to, code, minutes: sent.append(code))
+    r = client.post("/auth/register", json={"email": "hal@example.com", "password": "secret1"})
+    assert r.json() == {"verify": True, "email": "hal@example.com"} and len(sent) == 1

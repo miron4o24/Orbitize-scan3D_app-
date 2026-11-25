@@ -845,6 +845,8 @@ def health_info() -> dict:
     ids = google_client_ids() if ok else []
     # accounts: входът с имейл и парола работи (нужна е само базата данни). version: коя версия работи на сървъра
     # (проверява се отдалечено след инсталиране). stress, progress, pro: тестът за здравина (app/stress.py), точките
-    # (app/progress.py) и AI моделите на Pro (app/ai.py) са налични, затова приложението ги показва.
+    # (app/progress.py) и AI моделите на Pro (app/ai.py) са налични, затова приложението ги показва. mail: има ли
+    # пощенска кутия за кодовете при регистрация (само да/не, без адреса).
     return {"accounts": ok, "database": db.status(), "google_client_id": ids[0] if ids else None,
-            "version": "2026-11-25-verify", "stress": True, "progress": True, "pro": True}  # fmt: skip
+            "version": "2026-11-25-mail", "stress": True, "progress": True, "pro": True,
+            "mail": mail.configured()}  # fmt: skip

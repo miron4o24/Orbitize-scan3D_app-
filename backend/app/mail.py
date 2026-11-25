@@ -6,20 +6,39 @@
 
 import logging
 import os
+import re
 import smtplib
+from pathlib import Path
 import ssl
 from email.message import EmailMessage
 
 
 log = logging.getLogger(__name__)
 
+ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
+
+
+def _from_file() -> dict:
+    """SMTP_* направо от backend/.env, при всяко писмо: промяна във файла важи веднага, дори ако сървърът е пуснат
+    преди нея или от скрипт, който не е заредил .env."""
+    out = {}
+    try:
+        for line in ENV_FILE.read_text(encoding="utf-8-sig").splitlines():
+            m = re.match(r"^\s*(SMTP_[A-Z]+)\s*=\s*(.*?)\s*$", line)
+            if m:
+                out[m.group(1)] = m.group(2)
+    except OSError:
+        pass
+    return out
+
+
 def settings() -> dict:
-    """Пощенската кутия от средата ({} без нея)."""
-    if not (os.environ.get("SMTP_HOST") and os.environ.get("SMTP_USER") and os.environ.get("SMTP_PASSWORD")):
+    """Пощенската кутия ({} без нея): от средата на процеса, а липсващото от backend/.env."""
+    env = {k: v for k, v in _from_file().items() if v} | {k: v for k, v in os.environ.items() if k.startswith("SMTP_") and v}
+    if not (env.get("SMTP_HOST") and env.get("SMTP_USER") and env.get("SMTP_PASSWORD")):
         return {}
-    return {"host": os.environ["SMTP_HOST"], "port": int(os.environ.get("SMTP_PORT", "587")),
-            "user": os.environ["SMTP_USER"], "password": os.environ["SMTP_PASSWORD"],
-            "sender": os.environ.get("SMTP_FROM") or ""}  # fmt: skip
+    return {"host": env["SMTP_HOST"], "port": int(env.get("SMTP_PORT") or "587"), "user": env["SMTP_USER"],
+            "password": env["SMTP_PASSWORD"].replace(" ", ""), "sender": env.get("SMTP_FROM") or ""}  # fmt: skip
 
 
 def status() -> dict:
