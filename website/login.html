@@ -7,11 +7,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Вход · Orbitize</title>
   <meta name="robots" content="noindex">
-  <link rel="icon" href="assets/icon.svg?v=30" type="image/svg+xml">
-  <link rel="apple-touch-icon" href="assets/icon-180.png?v=30">
+  <link rel="icon" href="assets/icon.svg?v=31" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="assets/icon-180.png?v=31">
   <link rel="manifest" href="site.webmanifest">
   <meta name="theme-color" content="#080b10">
-  <link rel="stylesheet" href="assets/style.css?v=30">
+  <link rel="stylesheet" href="assets/style.css?v=31">
 </head>
 <body>
 <main class="wrap">
@@ -57,9 +57,6 @@
         <p class="small muted hidden" id="pw-hint" style="margin-top:-6px">Поне 6 знака.</p>
         <button class="btn btn-primary btn-block btn-lg" id="submit" type="submit">Вход</button>
       </form>
-      <div class="divider">или</div>
-      <div id="google-btn"></div>
-      <p class="small muted hidden" id="google-off" style="text-align:center">Входът с Google не се зареди. Използвайте имейл и парола или опитайте по-късно.</p>
     </div>
     <p class="small muted" style="margin-top:18px">
       Използвайте същия профил като в приложението.<br>
@@ -68,8 +65,8 @@
   </div>
   </div>
 </main>
-<script src="assets/config.js?v=30"></script>
-<script src="assets/app.js?v=30"></script>
+<script src="assets/config.js?v=31"></script>
+<script src="assets/app.js?v=31"></script>
 <script>
   S.page({ title: "Вход", active: "login" });
   const pwToggle = document.getElementById("pw-toggle"), pwInput = document.getElementById("password");
@@ -123,8 +120,6 @@
     pending = email;
     $("form").classList.add("hidden");
     document.querySelector(".tabs").classList.add("hidden");
-    document.querySelector(".divider").classList.add("hidden");
-    $("google-btn").classList.add("hidden");
     $("code-form").classList.remove("hidden");
     $("heading").textContent = "Потвърдете имейла";
     $("sub").textContent = "Последна стъпка преди профила.";
@@ -158,8 +153,6 @@
     $("code-form").classList.add("hidden");
     $("form").classList.remove("hidden");
     document.querySelector(".tabs").classList.remove("hidden");
-    document.querySelector(".divider").classList.remove("hidden");
-    $("google-btn").classList.remove("hidden");
     setMode(mode);
   };
 
@@ -179,29 +172,6 @@
       $("submit").disabled = false;
     }
   });
-
-  // Google Identity Services: Google gives us an ID token, the server checks it and returns our own session token.
-  window.onGoogleLibraryLoad = () => {
-    google.accounts.id.initialize({
-      client_id: S.C.googleClientId,
-      callback: async (resp) => {
-        showError(null);
-        try {
-          done(await S.api("/auth/google", { method: "POST", json: { id_token: resp.credential } }));
-        } catch (err) { showError(err.message); }
-      },
-    });
-    const box = $("google-btn");
-    google.accounts.id.renderButton(box, {
-      theme: S.theme() === "dark" ? "filled_black" : "outline", size: "large", shape: "pill", text: "continue_with", locale: "bg",
-      width: Math.min(box.clientWidth || 360, 400),
-    });
-  };
-  const gsi = document.createElement("script");
-  gsi.src = "https://accounts.google.com/gsi/client?hl=bg";
-  gsi.async = true;
-  gsi.onerror = () => $("google-off").classList.remove("hidden");
-  document.head.append(gsi);
 </script>
 </body>
 </html>

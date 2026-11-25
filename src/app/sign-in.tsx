@@ -4,11 +4,9 @@ import { KeyboardAvoidingView, Platform, Pressable, ScrollView, Text, type TextI
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Brand } from '@/components/Logo';
-import { Appear, RiseLines } from '@/components/motion';
-import { Stage } from '@/components/Stage';
 import { Button, ErrorText, Field, Label, Small } from '@/components/ui';
 import { errorText, health, type Health } from '@/lib/api';
-import { confirmEmail, createAccount, sendCodeAgain, signInWithGoogle, signInWithPassword } from '@/lib/auth';
+import { confirmEmail, createAccount, sendCodeAgain, signInWithPassword } from '@/lib/auth';
 import { font, makeStyles, radius, space, text, useColors } from '@/theme';
 
 const PASSWORD_MIN = 6; // правилото на сървъра (accounts.PASSWORD_MIN)
@@ -62,19 +60,6 @@ export default function SignIn() {
     }
   }
 
-  async function google() {
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await signInWithGoogle();
-    } catch (e) {
-      setError(errorText(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function confirm() {
     if (!pending || code.replace(/\D/g, '').length !== 6 || busy) return;
     setBusy(true);
@@ -115,26 +100,16 @@ export default function SignIn() {
       <KeyboardAvoidingView style={s.fill} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <ScrollView contentContainerStyle={s.content} keyboardShouldPersistTaps="handled">
           <View style={s.top}>
-            <Appear>
-              <Brand />
-            </Appear>
-            <Appear index={1}>
-              <Stage height={210} />
-            </Appear>
-            <RiseLines
-              key={mode}
-              lines={register ? ['Създайте', { soft: 'профил.' }] : ['Добре дошли', { soft: 'отново.' }]}
-              style={{ ...text.title, color: c.text }}
-              softColor={c.muted}
-              delay={120}
-            />
-            <Appear index={4}>
-              <Small>Сканирайте предмет. Отпечатайте го в реален размер.</Small>
-            </Appear>
+            <Brand />
+            <Text style={s.title}>
+              {register ? 'Създайте ' : 'Добре дошли '}
+              <Text style={{ color: c.muted }}>{register ? 'профил.' : 'отново.'}</Text>
+            </Text>
+            <Small>Сканирайте предмет. Отпечатайте го в реален размер.</Small>
           </View>
 
           {pending ? (
-            <Appear index={1} style={s.form}>
+            <View style={s.form}>
               <View style={s.mailIcon}>
                 <Ionicons name="mail-unread-outline" size={26} color={c.accent} />
               </View>
@@ -173,9 +148,9 @@ export default function SignIn() {
                   <Text style={s.switchText}>Друг имейл</Text>
                 </Pressable>
               </View>
-            </Appear>
+            </View>
           ) : (
-          <Appear index={1} style={s.form}>
+          <View style={s.form}>
             {register && <Label>Вашето име</Label>}
             {register && (
               <Field
@@ -250,23 +225,13 @@ export default function SignIn() {
                 disabled={!ready}
               />
             )}
-            {server !== null && server !== 'unreachable' && !!server.google_client_id && (
-              <>
-                <View style={s.or}>
-                  <View style={s.orLine} />
-                  <Label>или</Label>
-                  <View style={s.orLine} />
-                </View>
-                <Button title="Продължи с Google" icon="logo-google" variant="secondary" onPress={google} disabled={busy} />
-              </>
-            )}
             <Pressable onPress={switchMode} accessibilityRole="button" style={s.switch} hitSlop={6}>
               <Text style={s.switchText}>
                 {register ? 'Имате профил? ' : 'Нямате профил? '}
                 <Text style={s.link}>{register ? 'Вход' : 'Регистрация'}</Text>
               </Text>
             </Pressable>
-          </Appear>
+          </View>
           )}
         </ScrollView>
       </KeyboardAvoidingView>
@@ -278,14 +243,13 @@ const useStyles = makeStyles((c) => ({
   fill: { flex: 1, backgroundColor: c.bg },
   content: { flexGrow: 1, justifyContent: 'center', padding: 18, paddingVertical: space.xl, gap: space.xl },
   top: { gap: space.lg },
+  title: { ...text.title, color: c.text },
   form: { gap: space.sm },
   password: { paddingRight: 44 },
   eye: { position: 'absolute', right: space.md, top: 0, bottom: 0, justifyContent: 'center' },
   switch: { paddingVertical: space.xs, alignSelf: 'center' },
   switchText: { fontFamily: font.regular, fontSize: 13.5, color: c.muted },
   link: { color: c.accent, fontFamily: font.medium },
-  or: { flexDirection: 'row', alignItems: 'center', gap: space.md, marginVertical: space.sm },
-  orLine: { flex: 1, height: 1, backgroundColor: c.line },
   mailIcon: { width: 48, height: 48, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: c.accentLine, borderRadius: radius.md },
   codeTitle: { fontFamily: font.semibold, fontSize: 20, color: c.text },
   code: { fontFamily: font.monoMedium, fontSize: 26, letterSpacing: 10, textAlign: 'center', marginTop: space.sm },

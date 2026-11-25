@@ -1,10 +1,10 @@
 import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
-import { ActivityIndicator, RefreshControl, ScrollView, View } from 'react-native';
+import { ActivityIndicator, RefreshControl, ScrollView } from 'react-native';
 
 import { Chip, Tiles } from '@/components/admin';
 import { Appear } from '@/components/motion';
-import { Card, ErrorText, Header, Row, Section, Small } from '@/components/ui';
+import { Card, ErrorText, Header, Row, Section } from '@/components/ui';
 import { adminOverview, errorText, type AdminOverview } from '@/lib/api';
 import { restartTour } from '@/lib/tour';
 import { makeStyles, space, useColors } from '@/theme';
@@ -119,9 +119,6 @@ export default function AdminHome() {
               </Section>
             </Appear>
           )}
-          <View style={s.note}>
-            <Small>Промените се записват веднага. Собственикът се задава само на сървъра (OWNER_EMAILS).</Small>
-          </View>
         </>
       )}
     </ScrollView>
@@ -133,5 +130,4 @@ const useStyles = makeStyles((c) => ({
   content: { padding: 18, paddingTop: space.sm, paddingBottom: space.xxl * 2, gap: space.xl },
   loading: { marginTop: space.xxl },
   list: { paddingVertical: 0 },
-  note: { paddingHorizontal: space.xs },
 }));

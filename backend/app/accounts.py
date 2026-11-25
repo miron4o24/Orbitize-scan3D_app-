@@ -203,8 +203,7 @@ MAX_FAILED = 10  # грешни пароли за имейл в рамките �
 FAILED_WINDOW_S = 15 * 60
 _failed: dict[str, list[float]] = {}
 # Потвърждение на имейла при регистрация: 6-цифрен код по имейл (app/mail.py), валиден CODE_MINUTES, най-много
-# CODE_TRIES грешни опита, ново писмо не по-често от RESEND_S. Без настроен SMTP профилите се създават потвърдени, както
-# преди (иначе никой не би могъл да се регистрира).
+# CODE_TRIES грешни опита, ново писмо не по-често от RESEND_S. Без настроен SMTP (.env) регистрацията се отказва.
 CODE_MINUTES = 30
 CODE_TRIES = 5
 RESEND_S = 60
@@ -277,6 +276,15 @@ def send_code(c, user_id: str, email: str) -> None:
         raise HTTPException(503, "Писмото с кода не можа да се изпрати. Опитайте отново след малко.") from e
 
 
+def by_email(c, email: str):
+    """Профилът с този имейл: с имейл и парола (ключ в google_sub) или стар профил от вход с Google (по полето email)."""
+    user = c.execute(sa.select(db.users).where(db.users.c.google_sub == email_key(email))).first()
+    if user is None:
+        user = c.execute(sa.select(db.users).where(sa.func.lower(db.users.c.email) == email.strip().lower())
+                         .order_by(db.users.c.created)).first()  # fmt: skip
+    return user
+
+
 def waiting(user) -> bool:
     """Профилът чака потвърждение на имейла."""
     return bool(getattr(user, "verify_code", None))
@@ -284,26 +292,42 @@ def waiting(user) -> bool:
 
 @router.post("/auth/register")
 def register(body: Register):
+    """Нов профил с имейл и парола. Входът е възможен едва след кода от писмото (/auth/verify): без пощенска кутия на
+    сървъра (SMTP_* в .env) регистрация няма. Непотвърден профил със същия имейл се презаписва с новите данни и
+    получава нов код, така че грешно въведена парола или изгубено писмо не заключват имейла. При неуспешно писмо
+    (503) транзакцията се връща и профил не остава."""
     email = body.email.strip()
     if not EMAIL_RE.match(email):
         raise HTTPException(400, "Въведете валиден имейл.")
     if len(body.password) < PASSWORD_MIN:
         raise HTTPException(400, f"Паролата трябва да е поне {PASSWORD_MIN} знака.")
+    if not mail.configured():
+        log.error("registration refused: SMTP_* is not set in .env, so no verification mail can be sent")
+        raise HTTPException(503, "Регистрацията временно не работи (няма поща за кода). Опитайте по-късно.")
     name = " ".join(body.name.split()) or email.split("@")[0]
     with need_db().begin() as c:
-        if c.execute(sa.select(db.users.c.id).where(db.users.c.google_sub == email_key(email))).first():
+        old = by_email(c, email)
+        # Потвърден профил с парола не се презаписва. Стар профил от Google (без парола) получава парола след кода, като
+        # запазва сканиранията си: входът с Google вече го няма.
+        if old is not None and old.password_hash and not waiting(old):
             raise HTTPException(409, "Вече има профил с този имейл. Влезте в него.")
-        if c.execute(sa.select(db.users.c.id).where(sa.func.lower(db.users.c.email) == email.lower())).first():
-            raise HTTPException(409, "Този имейл има профил през Google. Използвайте „Продължи с Google“.")
-        user_id = secrets.token_hex(16)
-        c.execute(sa.insert(db.users).values(id=user_id, google_sub=email_key(email), email=email, name=name[:100],
-                                             avatar=False, created=int(time.time()),
-                                             password_hash=hash_password(body.password)))  # fmt: skip
-        if mail.configured():
-            send_code(c, user_id, email)
-            return {"verify": True, "email": email}
-        token = new_session(c, user_id)
-    return {"token": token, "user": profile(user_id)}
+        if old is not None:
+            if old.blocked:
+                raise HTTPException(403, BLOCKED)
+            if old.verify_sent and waiting(old) and time.time() - old.verify_sent < RESEND_S:
+                left = int(RESEND_S - (time.time() - old.verify_sent)) + 1
+                raise HTTPException(429, f"Току-що изпратихме код на този имейл. Изчакайте още {left} секунди.")
+            user_id = old.id
+            c.execute(sa.update(db.users).where(db.users.c.id == user_id)
+                      .values(name=name[:100] if old.password_hash else old.name,
+                              password_hash=hash_password(body.password)))  # fmt: skip
+        else:
+            user_id = secrets.token_hex(16)
+            c.execute(sa.insert(db.users).values(id=user_id, google_sub=email_key(email), email=email, name=name[:100],
+                                                 avatar=False, created=int(time.time()),
+                                                 password_hash=hash_password(body.password)))  # fmt: skip
+        send_code(c, user_id, old.email if old is not None else email)  # при неуспешно писмо 503 и транзакцията се връща: профил не остава
+    return {"verify": True, "email": email}
 
 
 @router.post("/auth/login")
@@ -314,7 +338,7 @@ def login(body: Login):
     if len(recent) >= MAX_FAILED:
         raise HTTPException(429, "Твърде много грешни пароли. Изчакайте 15 минути и опитайте пак.")
     with need_db().begin() as c:
-        user = c.execute(sa.select(db.users).where(db.users.c.google_sub == key)).first()
+        user = by_email(c, body.email)
         if user is None or not password_matches(body.password, user.password_hash):
             _failed[key] = recent + [now]
             raise HTTPException(401, "Грешен имейл или парола.")
@@ -334,7 +358,7 @@ def verify_email(body: Verify):
     """Кодът от писмото: потвърждава имейла и влиза в профила."""
     code = re.sub(r"\D", "", body.code)
     with need_db().begin() as c:
-        user = c.execute(sa.select(db.users).where(db.users.c.google_sub == email_key(body.email))).first()
+        user = by_email(c, body.email)
         if user is None or not waiting(user):
             raise HTTPException(400, "Няма профил, който чака потвърждение с този имейл.")
         if user.blocked:
@@ -357,7 +381,7 @@ def verify_email(body: Verify):
 def resend_code(body: Resend):
     """Ново писмо с код (не по-често от RESEND_S)."""
     with need_db().begin() as c:
-        user = c.execute(sa.select(db.users).where(db.users.c.google_sub == email_key(body.email))).first()
+        user = by_email(c, body.email)
         if user is None or not waiting(user):
             raise HTTPException(400, "Няма профил, който чака потвърждение с този имейл.")
         left = RESEND_S - (time.time() - (user.verify_sent or 0))
@@ -823,4 +847,4 @@ def health_info() -> dict:
     # (проверява се отдалечено след инсталиране). stress, progress, pro: тестът за здравина (app/stress.py), точките
     # (app/progress.py) и AI моделите на Pro (app/ai.py) са налични, затова приложението ги показва.
     return {"accounts": ok, "database": db.status(), "google_client_id": ids[0] if ids else None,
-            "version": "2026-11-25-orbitize", "stress": True, "progress": True, "pro": True}  # fmt: skip
+            "version": "2026-11-25-verify", "stress": True, "progress": True, "pro": True}  # fmt: skip

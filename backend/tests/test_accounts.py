@@ -76,7 +76,7 @@ def finished_scan(client, h, frames=8):
 def test_google_client_id_set_remotely_by_admin(client):
     # accounts: входът с имейл работи (базата данни е достатъчна); за Google първо е нужен идентификатор на клиента.
     assert client.get("/health").json() == {"ok": True, "accounts": True, "database": "ok", "google_client_id": None,
-                                         "version": "2026-11-25-orbitize", "stress": True, "progress": True, "pro": True}
+                                         "version": "2026-11-25-verify", "stress": True, "progress": True, "pro": True}
     assert client.post("/auth/google", json={"id_token": "g1:a@example.com"}).status_code == 503
     assert client.put("/admin/settings", json={"google_client_id": CLIENT_ID}).status_code == 401
     r = client.put("/admin/settings", json={"google_client_id": f" {CLIENT_ID} "}, headers=ADMIN)
@@ -233,7 +233,7 @@ def test_accounts_turned_off(client, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "off")
     db.reset()
     assert client.get("/health").json() == {"ok": True, "accounts": False, "database": "off", "google_client_id": None,
-                                         "version": "2026-11-25-orbitize", "stress": True, "progress": True, "pro": True}
+                                         "version": "2026-11-25-verify", "stress": True, "progress": True, "pro": True}
     assert client.post("/auth/google", json={"id_token": "g1:a@example.com"}).status_code == 503
     assert client.post("/jobs", headers=ADMIN).status_code == 200  # споделеният ключ работи както преди
     assert client.get("/me", headers={"Authorization": "Bearer whatever"}).status_code == 401
@@ -281,7 +281,64 @@ def test_the_code_stops_working_after_too_many_wrong_tries(client, monkeypatch):
     assert client.post("/auth/verify", json={"email": "bob@example.com", "code": sent[0]}).status_code == 429
 
 
-def test_without_a_mailbox_registration_signs_in_right_away(client):
-    """Сървър без SMTP: както преди, профилът е готов веднага (иначе никой не би могъл да се регистрира)."""
+def test_without_a_mailbox_there_is_no_registration(client, monkeypatch):
+    """Сървър без SMTP: регистрацията се отказва и профил не остава (иначе някой би влязъл без потвърден имейл)."""
+    from app import mail
+
+    monkeypatch.setattr(mail, "configured", lambda: False)
     r = client.post("/auth/register", json={"email": "cid@example.com", "password": "secret1"})
-    assert r.status_code == 200 and "token" in r.json()
+    assert r.status_code == 503 and "token" not in r.json()
+    assert client.post("/auth/login", json={"email": "cid@example.com", "password": "secret1"}).status_code == 401
+
+
+def test_a_failed_mail_leaves_no_account(client, monkeypatch):
+    from app import mail
+
+    def broken(to, code, minutes):
+        raise OSError("smtp down")
+
+    monkeypatch.setattr(mail, "configured", lambda: True)
+    monkeypatch.setattr(mail, "verification_code", broken)
+    assert client.post("/auth/register", json={"email": "eva@example.com", "password": "secret1"}).status_code == 503
+    assert client.post("/auth/login", json={"email": "eva@example.com", "password": "secret1"}).status_code == 401
+
+
+def test_registering_again_before_the_code_replaces_the_unconfirmed_account(client, monkeypatch):
+    """Грешна парола или изгубено писмо не заключват имейла: нова регистрация презаписва непотвърдения профил."""
+    from app import accounts, mail
+
+    sent = []
+    monkeypatch.setattr(mail, "configured", lambda: True)
+    monkeypatch.setattr(mail, "verification_code", lambda to, code, minutes: sent.append(code))
+    client.post("/auth/register", json={"email": "fil@example.com", "password": "first1"})
+    assert client.post("/auth/register", json={"email": "fil@example.com", "password": "second"}).status_code == 429
+    monkeypatch.setattr(accounts, "RESEND_S", 0)
+    r = client.post("/auth/register", json={"email": "fil@example.com", "password": "second", "name": "Фил"})
+    assert r.json() == {"verify": True, "email": "fil@example.com"} and len(sent) == 2
+    assert client.post("/auth/verify", json={"email": "fil@example.com", "code": sent[0]}).status_code == 400
+    r = client.post("/auth/verify", json={"email": "fil@example.com", "code": sent[1]})
+    assert r.json()["user"]["name"] == "Фил"
+    assert client.post("/auth/login", json={"email": "fil@example.com", "password": "first1"}).status_code == 401
+    assert "token" in client.post("/auth/login", json={"email": "fil@example.com", "password": "second"}).json()
+    r = client.post("/auth/register", json={"email": "fil@example.com", "password": "third1"})
+    assert r.status_code == 409  # потвърден профил не се презаписва
+
+
+def test_an_old_google_account_gets_a_password_through_the_mail_code(client, monkeypatch):
+    """Входът с Google го няма: стар профил от Google се регистрира със същия имейл и пази сканиранията си."""
+    from app import mail
+
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", CLIENT_ID)
+    _, user = sign_in(client, "g9", "gina@example.com")
+    old_id = user["id"]
+    sent = []
+    monkeypatch.setattr(mail, "configured", lambda: True)
+    monkeypatch.setattr(mail, "verification_code", lambda to, code, minutes: sent.append(code))
+    assert client.post("/auth/login", json={"email": "gina@example.com", "password": "secret1"}).status_code == 401
+    r = client.post("/auth/register", json={"email": "Gina@example.com", "password": "secret1"})
+    assert r.json()["verify"] is True and len(sent) == 1
+    assert client.post("/auth/login", json={"email": "gina@example.com", "password": "secret1"}).json()["verify"] is True
+    r = client.post("/auth/verify", json={"email": "gina@example.com", "code": sent[0]})
+    assert r.json()["user"]["id"] == old_id
+    assert client.post("/auth/login", json={"email": "gina@example.com", "password": "secret1"}).json()["user"]["id"] == old_id
+    assert client.post("/auth/register", json={"email": "gina@example.com", "password": "other1"}).status_code == 409

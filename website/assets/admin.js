@@ -83,8 +83,7 @@
         row("Сигнали в общността", `${o.community.reported} · ${o.community.published} публикувани`, "#reports"),
         row("Потвърждение по имейл", o.server.mail ? "Включено" : "Изключено", "#mail"),
         row("Свободно място", `${o.server.disk_free_gb} от ${o.server.disk_total_gb} GB`),
-        row("База данни", o.server.database), row("Версия на сървъра", o.server.version)),
-      el("p", { class: "small muted" }, "Промените се записват веднага. Собственикът се задава само на сървъра (OWNER_EMAILS)."));
+        row("База данни", o.server.database), row("Версия на сървъра", o.server.version)));
   }
   function row(k, v, href) {
     return el(href ? "a" : "div", { class: "adm-row", href }, el("span", {}, k), el("b", { class: "mono" }, v), href ? icon("back") : null);
