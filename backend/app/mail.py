@@ -1,58 +1,31 @@
 """Имейли от сървъра (засега само кодът за потвърждение на нов профил, app/accounts.py), през SMTP пощенска кутия.
-Настройва се с променливи на средата: SMTP_HOST, SMTP_PORT (587: STARTTLS, 465: SSL), SMTP_USER, SMTP_PASSWORD и
-SMTP_FROM (по подразбиране SMTP_USER), или от собственика в приложението (администриране, app/admin.py): тогава се пази
-в таблицата с настройки на базата данни и паролата никога не се връща. Средата е с предимство. С Gmail:
-smtp.gmail.com, 587, адресът и "парола за приложения" (Google профил -> Сигурност -> Потвърждаване в две стъпки ->
-Пароли за приложения). Без пощенска кутия имейли не се изпращат и новите профили не се потвърждават."""
+Настройва се само в .env на сървъра (никога в кода и никога от приложението): SMTP_HOST, SMTP_PORT (587: STARTTLS,
+465: SSL), SMTP_USER, SMTP_PASSWORD и SMTP_FROM (по подразбиране SMTP_USER). С Gmail: smtp.gmail.com, 587, адресът и
+"парола за приложения" (Google профил -> Сигурност -> Потвърждаване в две стъпки -> Пароли за приложения). Без пощенска
+кутия имейли не се изпращат и новите профили се създават без потвърждение."""
 
-import json
 import logging
 import os
 import smtplib
 import ssl
 from email.message import EmailMessage
 
-from . import db
 
 log = logging.getLogger(__name__)
 
-SETTING = "smtp"  # JSON с host, port, user, password, sender в таблицата с настройки
-
-
 def settings() -> dict:
-    """Пощенската кутия: от средата, ако е зададена там, иначе от базата данни ({} без настройка)."""
-    if os.environ.get("SMTP_HOST") and os.environ.get("SMTP_USER") and os.environ.get("SMTP_PASSWORD"):
-        return {"host": os.environ["SMTP_HOST"], "port": int(os.environ.get("SMTP_PORT", "587")),
-                "user": os.environ["SMTP_USER"], "password": os.environ["SMTP_PASSWORD"],
-                "sender": os.environ.get("SMTP_FROM") or "", "source": "server"}  # fmt: skip
-    try:
-        saved = json.loads(db.get_setting(SETTING) or "{}")
-    except Exception:  # noqa: BLE001 - повредена стойност или недостъпна база данни: без поща
+    """Пощенската кутия от средата ({} без нея)."""
+    if not (os.environ.get("SMTP_HOST") and os.environ.get("SMTP_USER") and os.environ.get("SMTP_PASSWORD")):
         return {}
-    if not (saved.get("host") and saved.get("user") and saved.get("password")):
-        return {}
-    return saved | {"port": int(saved.get("port") or 587), "source": "app"}
-
-
-def save(host: str, port: int, user: str, password: str | None, sender: str) -> None:
-    """Записва пощенската кутия от приложението; password None запазва досегашната парола, host "" я изтрива."""
-    if not host:
-        db.set_setting(SETTING, "{}")
-        return
-    old = {}
-    try:
-        old = json.loads(db.get_setting(SETTING) or "{}")
-    except ValueError:
-        pass
-    db.set_setting(SETTING, json.dumps({"host": host, "port": port, "user": user, "sender": sender,
-                                        "password": old.get("password", "") if password is None else password}))
+    return {"host": os.environ["SMTP_HOST"], "port": int(os.environ.get("SMTP_PORT", "587")),
+            "user": os.environ["SMTP_USER"], "password": os.environ["SMTP_PASSWORD"],
+            "sender": os.environ.get("SMTP_FROM") or ""}  # fmt: skip
 
 
 def status() -> dict:
-    """За екрана на администратора: без паролата."""
+    """За екрана на администратора: включена ли е пощата и от кой адрес, без паролата."""
     s = settings()
-    return {"configured": bool(s), "source": s.get("source"), "host": s.get("host"), "port": s.get("port"),
-            "user": s.get("user"), "sender": s.get("sender") or None}  # fmt: skip
+    return {"configured": bool(s), "user": s.get("user")}
 
 
 def configured() -> bool:

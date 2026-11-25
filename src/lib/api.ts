@@ -653,7 +653,7 @@ export type AdminJob = {
   seconds?: number | null;
 };
 export type AdminReport = { id: string; title: string; author: string; reasons: string[]; reports: number; hidden: boolean };
-export type MailStatus = { configured: boolean; source: 'server' | 'app' | null; host?: string | null; port?: number | null; user?: string | null; sender?: string | null };
+export type MailStatus = { configured: boolean; user: string | null };
 
 export const adminOverview = () => call<AdminOverview>('GET', '/manage/overview');
 export const adminUsers = (q: string, show: AdminFilter, offset = 0) =>
@@ -673,6 +673,4 @@ export const adminReports = () => call<AdminReport[]>('GET', '/manage/reports');
 export const adminKeepPost = (id: string) => call<{ ok: boolean }>('POST', `/admin/community/${id}/keep`);
 export const adminRemovePost = (id: string) => call<{ published: null }>('DELETE', `/admin/community/${id}`);
 export const adminMail = () => call<MailStatus>('GET', '/manage/mail');
-export const adminSetMail = (m: { host: string; port: number; user: string; password?: string; sender: string }) =>
-  call<MailStatus>('PUT', '/manage/mail', m);
 export const adminTestMail = () => call<{ sent_to: string }>('POST', '/manage/mail/test');

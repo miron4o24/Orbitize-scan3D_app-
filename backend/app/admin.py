@@ -1,10 +1,10 @@
 """Администриране от приложението (екранът „Администриране“): преглед на сървъра, профилите и техния статус, работата
-на опашката и пощенската кутия за кодовете за потвърждение. Достъп имат собствениците (accounts.OWNER_EMAILS), профили,
+на опашката и дали пощата за кодовете за потвърждение работи. Достъп имат собствениците (accounts.OWNER_EMAILS), профили,
 на които собственик е дал права на администратор (users.admin), и администраторският ключ на сървъра.
 
 Правила: никой не променя себе си и собствениците (те се задават само на сървъра); правата на администратор и
 изтриването на администратор са само за собственика; блокиран профил губи всичките си сесии и не може да влезе
-(accounts.principal, login); пощенската кутия се задава само от собственика, а паролата ѝ никога не се връща."""
+(accounts.principal, login). Пощенската кутия за кодовете е само в .env на сървъра (app/mail.py)."""
 
 import re
 import shutil
@@ -262,33 +262,9 @@ def reports(p: Principal = Depends(staff_only)):
 # --- Пощенска кутия (кодовете за потвърждение) ---------------------------------------------------------------------
 
 
-class MailSettings(BaseModel):
-    host: str = Field("", max_length=200)  # "" изключва пощата
-    port: int = Field(587, ge=1, le=65535)
-    user: str = Field("", max_length=320)
-    password: str | None = Field(None, max_length=200)  # None: досегашната
-    sender: str = Field("", max_length=320)
-
-
 @router.get("/mail")
 def mail_status(p: Principal = Depends(staff_only)):
-    return mail.status()
-
-
-@router.put("/mail")
-def set_mail(body: MailSettings, p: Principal = Depends(staff_only)):
-    if not _me(p)[1]:
-        raise HTTPException(403, "Само собственикът може да настройва пощата.")
-    if mail.status()["source"] == "server":
-        raise HTTPException(409, "Пощата е зададена в настройките на сървъра (.env) и се променя там.")
-    A.need_db()
-    host = body.host.strip()
-    if host and not (body.user.strip() and (body.password or mail.status()["configured"])):
-        raise HTTPException(400, "Въведете имейла и паролата за приложения на пощенската кутия.")
-    password = body.password.strip() if body.password else None
-    if password and re.fullmatch(r"[a-z]{4}( [a-z]{4}){3}", password):  # паролата за приложения на Google, с интервали
-        password = password.replace(" ", "")
-    mail.save(host, body.port, body.user.strip(), password, body.sender.strip())
+    """Пощата се задава само в .env на сървъра; тук се вижда дали е включена и се праща пробно писмо."""
     return mail.status()
 
 

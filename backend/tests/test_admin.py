@@ -1,7 +1,5 @@
 """Администриране от приложението (app/admin.py): кой има достъп, статус на профилите, задачите, пощенската кутия."""
 
-import json
-
 from tests.test_accounts import ADMIN, CLIENT_ID, client, finished_scan, sign_in  # noqa: F401 (client: fixture)
 
 
@@ -67,30 +65,30 @@ def test_admin_sees_any_scan_and_can_delete_an_account(client, monkeypatch):
     assert client.get(f"/jobs/{job}", headers=boss).status_code == 404
 
 
-def test_manual_verification_and_mail_settings(client, monkeypatch):
-    from app import db, mail
+def test_manual_verification_and_mail_only_from_the_server(client, monkeypatch):
+    from app import mail
 
     boss, ana, _ = setup(client, monkeypatch)
-    # Без поща профилите са потвърдени веднага; с поща новият чака кода, а администраторът може да го потвърди.
-    monkeypatch.setattr(mail, "verification_code", lambda to, code, minutes: None)
     for key in ("SMTP_HOST", "SMTP_USER", "SMTP_PASSWORD"):
         monkeypatch.delenv(key, raising=False)
-    assert client.get("/manage/mail", headers=boss).json()["configured"] is False
-    assert client.put("/manage/mail", json={"host": "smtp.gmail.com", "user": "x@gmail.com"}, headers=boss).status_code == 400
-    assert client.put("/manage/mail", json={"host": "smtp.gmail.com", "user": "x@gmail.com", "password": "pw"},
-                      headers=ana).status_code == 403  # fmt: skip
-    r = client.put("/manage/mail", json={"host": "smtp.gmail.com", "user": "x@gmail.com", "password": "abcd efgh ijkl mnop"},
-                   headers=boss)  # fmt: skip
-    assert r.status_code == 200 and r.json()["configured"] is True and "password" not in r.json()
-    assert json.loads(db.get_setting(mail.SETTING))["password"] == "abcdefghijklmnop"
+    assert client.get("/manage/mail", headers=boss).json() == {"configured": False, "user": None}
+    # Пощата не се задава от приложението: само от .env на сървъра.
+    assert client.put("/manage/mail", json={"host": "smtp.gmail.com"}, headers=boss).status_code == 405
+    monkeypatch.setenv("SMTP_HOST", "smtp.gmail.com")
+    monkeypatch.setenv("SMTP_USER", "x@gmail.com")
+    monkeypatch.setenv("SMTP_PASSWORD", "secret")
+    status = client.get("/manage/mail", headers=boss).json()
+    assert status == {"configured": True, "user": "x@gmail.com"}  # без паролата
+    sent = []
+    monkeypatch.setattr(mail, "verification_code", lambda to, code, minutes: sent.append(code))
     r = client.post("/auth/register", json={"email": "dan@example.com", "password": "secret1"})
-    assert r.json() == {"verify": True, "email": "dan@example.com"}
+    assert r.json() == {"verify": True, "email": "dan@example.com"} and len(sent) == 1
     dan = client.get("/manage/users", params={"show": "unverified"}, headers=boss).json()["users"]
     assert [u["email"] for u in dan] == ["dan@example.com"] and dan[0]["verified"] is False
     assert client.patch(f"/manage/users/{dan[0]['id']}", json={"verified": True}, headers=boss).json()["verified"] is True
     assert "token" in client.post("/auth/login", json={"email": "dan@example.com", "password": "secret1"}).json()
-    # Изключване на пощата.
-    assert client.put("/manage/mail", json={"host": ""}, headers=boss).json()["configured"] is False
+    monkeypatch.setattr(mail, "test", lambda to: sent.append(to))
+    assert client.post("/manage/mail/test", headers=boss).json() == {"sent_to": "boss@example.com"}
 
 
 def test_old_scans_keep_their_picture_after_the_frames_are_gone(client, monkeypatch):
