@@ -236,6 +236,7 @@ def report(job_id: str, body: Report, p: Principal = Depends(signed_in)):
 
 MAX_PHOTO = 12 * 1024 * 1024
 PRINT_SIDE = 1600
+MAX_PIXELS = 50_000_000  # повече е бомба от пиксели
 
 
 def print_file(job_id: str, print_id: str):
@@ -280,11 +281,13 @@ async def add_print(job_id: str, request: Request, p: Principal = Depends(signed
             raise HTTPException(413, "Снимката е твърде голяма.")
     try:
         with Image.open(io.BytesIO(bytes(body))) as im:
+            if im.width * im.height > MAX_PIXELS:
+                raise HTTPException(400, "Снимката е твърде голяма.")
             im = ImageOps.exif_transpose(im).convert("RGB")
             im.thumbnail((PRINT_SIDE, PRINT_SIDE), Image.LANCZOS)
             out = io.BytesIO()
             im.save(out, "JPEG", quality=85)
-    except OSError:
+    except (OSError, ValueError, Image.DecompressionBombError):
         raise HTTPException(400, "Файлът не е снимка.")
     print_id = uuid.uuid4().hex
     path = print_file(job_id, print_id)

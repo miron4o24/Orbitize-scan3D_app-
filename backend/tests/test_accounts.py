@@ -27,12 +27,14 @@ def client(tmp_path, monkeypatch):
 
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{(tmp_path / 'accounts.db').as_posix()}")
     monkeypatch.delenv("GOOGLE_CLIENT_ID", raising=False)
+    monkeypatch.setenv("GOOGLE_SIGNIN", "1")  # входът с Google е изключен по подразбиране; тестовете го ползват за профили
     from app import mail
 
     for key in ("SMTP_HOST", "SMTP_USER", "SMTP_PASSWORD", "SMTP_PORT", "SMTP_FROM"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr(mail, "ENV_FILE", tmp_path / "no.env")
     db.reset()
+    accounts.reset_limits()
     (tmp_path / "jobs").mkdir()
     monkeypatch.setattr(jobs, "DATA", tmp_path / "jobs")
     monkeypatch.setattr(accounts, "AVATARS", tmp_path / "avatars")
@@ -120,7 +122,7 @@ def test_profile_scans_and_privacy(client):
 
     assert client.put("/me/avatar", content=b"not a jpeg", headers=h).status_code == 400
     assert client.put("/me/avatar", content=jpeg(), headers=h).json()["has_avatar"] is True
-    assert client.get("/me/avatar.jpg", headers=h).content == jpeg()
+    assert client.get("/me/avatar.jpg", headers=h).content[:3] == b"\xff\xd8\xff"  # записана наново (без EXIF)
     assert client.get("/me/avatar.jpg", headers=other).status_code == 404
     assert client.delete("/me/avatar", headers=h).json()["has_avatar"] is False
 
@@ -253,11 +255,11 @@ def test_new_email_account_is_confirmed_with_a_code_from_the_mail(client, monkey
     sent = []
     monkeypatch.setattr(mail, "configured", lambda: True)
     monkeypatch.setattr(mail, "verification_code", lambda to, code, minutes: sent.append((to, code)))
-    r = client.post("/auth/register", json={"email": "ana@example.com", "password": "secret1", "name": "Ана"})
+    r = client.post("/auth/register", json={"email": "ana@example.com", "password": "secret12", "name": "Ана"})
     assert r.status_code == 200 and r.json() == {"verify": True, "email": "ana@example.com"} and "token" not in r.json()
     assert len(sent) == 1 and sent[0][0] == "ana@example.com" and len(sent[0][1]) == 6
     # Вход преди потвърждението: пак кодът (писмото не се праща отново веднага), без сесия.
-    r = client.post("/auth/login", json={"email": "ana@example.com", "password": "secret1"})
+    r = client.post("/auth/login", json={"email": "ana@example.com", "password": "secret12"})
     assert r.json() == {"verify": True, "email": "ana@example.com"} and len(sent) == 1
     wrong = "000000" if sent[0][1] != "000000" else "111111"
     r = client.post("/auth/verify", json={"email": "ana@example.com", "code": wrong})
@@ -269,7 +271,7 @@ def test_new_email_account_is_confirmed_with_a_code_from_the_mail(client, monkey
     token = r.json()["token"]
     assert client.get("/me", headers={"Authorization": f"Bearer {token}"}).status_code == 200
     # Вече потвърден: входът дава сесия, а кодът не важи втори път.
-    r = client.post("/auth/login", json={"email": "ana@example.com", "password": "secret1"})
+    r = client.post("/auth/login", json={"email": "ana@example.com", "password": "secret12"})
     assert "token" in r.json()
     assert client.post("/auth/verify", json={"email": "ana@example.com", "code": sent[0][1]}).status_code == 400
     assert accounts.CODE_TRIES >= 3
@@ -281,7 +283,7 @@ def test_the_code_stops_working_after_too_many_wrong_tries(client, monkeypatch):
     sent = []
     monkeypatch.setattr(mail, "configured", lambda: True)
     monkeypatch.setattr(mail, "verification_code", lambda to, code, minutes: sent.append(code))
-    client.post("/auth/register", json={"email": "bob@example.com", "password": "secret1"})
+    client.post("/auth/register", json={"email": "bob@example.com", "password": "secret12"})
     wrong = "000000" if sent[0] != "000000" else "111111"
     for _ in range(accounts.CODE_TRIES):
         assert client.post("/auth/verify", json={"email": "bob@example.com", "code": wrong}).status_code == 400
@@ -293,9 +295,9 @@ def test_without_a_mailbox_there_is_no_registration(client, monkeypatch):
     from app import mail
 
     monkeypatch.setattr(mail, "configured", lambda: False)
-    r = client.post("/auth/register", json={"email": "cid@example.com", "password": "secret1"})
+    r = client.post("/auth/register", json={"email": "cid@example.com", "password": "secret12"})
     assert r.status_code == 503 and "token" not in r.json()
-    assert client.post("/auth/login", json={"email": "cid@example.com", "password": "secret1"}).status_code == 401
+    assert client.post("/auth/login", json={"email": "cid@example.com", "password": "secret12"}).status_code == 401
 
 
 def test_a_failed_mail_leaves_no_account(client, monkeypatch):
@@ -306,8 +308,8 @@ def test_a_failed_mail_leaves_no_account(client, monkeypatch):
 
     monkeypatch.setattr(mail, "configured", lambda: True)
     monkeypatch.setattr(mail, "verification_code", broken)
-    assert client.post("/auth/register", json={"email": "eva@example.com", "password": "secret1"}).status_code == 503
-    assert client.post("/auth/login", json={"email": "eva@example.com", "password": "secret1"}).status_code == 401
+    assert client.post("/auth/register", json={"email": "eva@example.com", "password": "secret12"}).status_code == 503
+    assert client.post("/auth/login", json={"email": "eva@example.com", "password": "secret12"}).status_code == 401
 
 
 def test_registering_again_before_the_code_replaces_the_unconfirmed_account(client, monkeypatch):
@@ -317,17 +319,17 @@ def test_registering_again_before_the_code_replaces_the_unconfirmed_account(clie
     sent = []
     monkeypatch.setattr(mail, "configured", lambda: True)
     monkeypatch.setattr(mail, "verification_code", lambda to, code, minutes: sent.append(code))
-    client.post("/auth/register", json={"email": "fil@example.com", "password": "first1"})
-    assert client.post("/auth/register", json={"email": "fil@example.com", "password": "second"}).status_code == 429
+    client.post("/auth/register", json={"email": "fil@example.com", "password": "first123"})
+    assert client.post("/auth/register", json={"email": "fil@example.com", "password": "second12"}).status_code == 429
     monkeypatch.setattr(accounts, "RESEND_S", 0)
-    r = client.post("/auth/register", json={"email": "fil@example.com", "password": "second", "name": "Фил"})
+    r = client.post("/auth/register", json={"email": "fil@example.com", "password": "second12", "name": "Фил"})
     assert r.json() == {"verify": True, "email": "fil@example.com"} and len(sent) == 2
     assert client.post("/auth/verify", json={"email": "fil@example.com", "code": sent[0]}).status_code == 400
     r = client.post("/auth/verify", json={"email": "fil@example.com", "code": sent[1]})
     assert r.json()["user"]["name"] == "Фил"
-    assert client.post("/auth/login", json={"email": "fil@example.com", "password": "first1"}).status_code == 401
-    assert "token" in client.post("/auth/login", json={"email": "fil@example.com", "password": "second"}).json()
-    r = client.post("/auth/register", json={"email": "fil@example.com", "password": "third1"})
+    assert client.post("/auth/login", json={"email": "fil@example.com", "password": "first123"}).status_code == 401
+    assert "token" in client.post("/auth/login", json={"email": "fil@example.com", "password": "second12"}).json()
+    r = client.post("/auth/register", json={"email": "fil@example.com", "password": "third123"})
     assert r.status_code == 409  # потвърден профил не се презаписва
 
 
@@ -341,14 +343,14 @@ def test_an_old_google_account_gets_a_password_through_the_mail_code(client, mon
     sent = []
     monkeypatch.setattr(mail, "configured", lambda: True)
     monkeypatch.setattr(mail, "verification_code", lambda to, code, minutes: sent.append(code))
-    assert client.post("/auth/login", json={"email": "gina@example.com", "password": "secret1"}).status_code == 401
-    r = client.post("/auth/register", json={"email": "Gina@example.com", "password": "secret1"})
+    assert client.post("/auth/login", json={"email": "gina@example.com", "password": "secret12"}).status_code == 401
+    r = client.post("/auth/register", json={"email": "Gina@example.com", "password": "secret12"})
     assert r.json()["verify"] is True and len(sent) == 1
-    assert client.post("/auth/login", json={"email": "gina@example.com", "password": "secret1"}).json()["verify"] is True
+    assert client.post("/auth/login", json={"email": "gina@example.com", "password": "secret12"}).json()["verify"] is True
     r = client.post("/auth/verify", json={"email": "gina@example.com", "code": sent[0]})
     assert r.json()["user"]["id"] == old_id
-    assert client.post("/auth/login", json={"email": "gina@example.com", "password": "secret1"}).json()["user"]["id"] == old_id
-    assert client.post("/auth/register", json={"email": "gina@example.com", "password": "other1"}).status_code == 409
+    assert client.post("/auth/login", json={"email": "gina@example.com", "password": "secret12"}).json()["user"]["id"] == old_id
+    assert client.post("/auth/register", json={"email": "gina@example.com", "password": "other123"}).status_code == 409
 
 
 
@@ -366,5 +368,5 @@ def test_the_mailbox_is_read_from_the_env_file_even_if_the_server_started_withou
     assert client.get("/health").json()["mail"] is True
     sent = []
     monkeypatch.setattr(mail, "verification_code", lambda to, code, minutes: sent.append(code))
-    r = client.post("/auth/register", json={"email": "hal@example.com", "password": "secret1"})
+    r = client.post("/auth/register", json={"email": "hal@example.com", "password": "secret12"})
     assert r.json() == {"verify": True, "email": "hal@example.com"} and len(sent) == 1

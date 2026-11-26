@@ -81,12 +81,12 @@ def test_manual_verification_and_mail_only_from_the_server(client, monkeypatch):
     assert status == {"configured": True, "user": "x@gmail.com"}  # без паролата
     sent = []
     monkeypatch.setattr(mail, "verification_code", lambda to, code, minutes: sent.append(code))
-    r = client.post("/auth/register", json={"email": "dan@example.com", "password": "secret1"})
+    r = client.post("/auth/register", json={"email": "dan@example.com", "password": "secret12"})
     assert r.json() == {"verify": True, "email": "dan@example.com"} and len(sent) == 1
     dan = client.get("/manage/users", params={"show": "unverified"}, headers=boss).json()["users"]
     assert [u["email"] for u in dan] == ["dan@example.com"] and dan[0]["verified"] is False
     assert client.patch(f"/manage/users/{dan[0]['id']}", json={"verified": True}, headers=boss).json()["verified"] is True
-    assert "token" in client.post("/auth/login", json={"email": "dan@example.com", "password": "secret1"}).json()
+    assert "token" in client.post("/auth/login", json={"email": "dan@example.com", "password": "secret12"}).json()
     monkeypatch.setattr(mail, "test", lambda to: sent.append(to))
     assert client.post("/manage/mail/test", headers=boss).json() == {"sent_to": "boss@example.com"}
 

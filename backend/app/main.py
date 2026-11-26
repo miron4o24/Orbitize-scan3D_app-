@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from typing import Annotated, Literal
 
 import trimesh
+from PIL import Image
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
@@ -63,7 +64,12 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="3D scan backend", lifespan=lifespan)
+# Описанието на API-то (/docs, /openapi.json) не е публично: показва на всеки всички пътища. API_DOCS=1 за разработка.
+_docs = os.environ.get("API_DOCS", "").strip().lower() in ("1", "true", "yes", "on")
+app = FastAPI(title="3D scan backend", lifespan=lifespan, docs_url="/docs" if _docs else None,
+              redoc_url=None, openapi_url="/openapi.json" if _docs else None)  # fmt: skip
+# Бомби от пиксели: малък файл, който се разпъва до гигабайти в паметта. Над 2x това PIL отказва (DecompressionBombError).
+Image.MAX_IMAGE_PIXELS = 60_000_000
 app.state.worker = worker
 # Уебсайтът (папката website/, на IIS на собствен адрес) вика API-то от браузъра: позволени са само неговите адреси.
 # Сесийният ключ е в заглавието Authorization (не бисквитка), затова без credentials. WEB_ORIGINS в .env: адресите,
@@ -77,6 +83,28 @@ app.add_middleware(
     expose_headers=["Content-Length", "Content-Disposition"],
     max_age=3600,
 )
+# Заглавки за сигурност на всеки отговор. Страниците с HTML (споделен модел, AR) слагат собствена политика (CSP) с
+# еднократен nonce; за всичко останало (JSON, файлове) браузърът не изпълнява и не вгражда нищо.
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+    "Strict-Transport-Security": "max-age=31536000",
+    "Cross-Origin-Opener-Policy": "same-origin",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+}
+DEFAULT_CSP = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    for k, v in SECURITY_HEADERS.items():
+        response.headers.setdefault(k, v)
+    response.headers.setdefault("Content-Security-Policy", DEFAULT_CSP)
+    return response
+
+
 app.include_router(A.router)
 app.include_router(admin.router)
 app.include_router(community.router)
@@ -783,8 +811,9 @@ def ar_checked(job_id: str, tenths: int, expires: int, sig: str):
 @app.get("/ar/{job_id}/{tenths}/{expires}/{sig}/view")
 def ar_page(job_id: str, tenths: int, expires: int, sig: str, title: str = Query("", max_length=100), real: bool = True):
     ar_checked(job_id, tenths, expires, sig)
-    return Response(AR.page(title, tenths / 10, real), media_type="text/html; charset=utf-8",
-                    headers={"Cache-Control": "no-store"})  # fmt: skip
+    nonce = A.secrets.token_urlsafe(16)
+    return Response(AR.page(title, tenths / 10, real, nonce), media_type="text/html; charset=utf-8",
+                    headers={"Cache-Control": "no-store", "Content-Security-Policy": AR.CSP.format(nonce=nonce)})  # fmt: skip
 
 
 @app.api_route("/ar/{job_id}/{tenths}/{expires}/{sig}/model.glb", methods=["GET", "HEAD"])

@@ -9,7 +9,10 @@ import { errorText, health, type Health } from '@/lib/api';
 import { confirmEmail, createAccount, sendCodeAgain, signInWithPassword } from '@/lib/auth';
 import { font, makeStyles, radius, space, text, useColors } from '@/theme';
 
-const PASSWORD_MIN = 6; // правилото на сървъра (accounts.PASSWORD_MIN)
+// Правилото на сървъра (accounts.password_ok): поне 8 знака, поне една буква и една цифра.
+const PASSWORD_MIN = 8;
+const passwordOk = (p: string) =>
+  p.length >= PASSWORD_MIN && [...p].some((ch) => ch.toLowerCase() !== ch.toUpperCase()) && /\d/.test(p);
 
 export default function SignIn() {
   const c = useColors();
@@ -39,7 +42,7 @@ export default function SignIn() {
 
   const register = mode === 'register';
   const emailOk = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.trim());
-  const ready = emailOk && password.length >= (register ? PASSWORD_MIN : 1);
+  const ready = emailOk && (register ? passwordOk(password) : password.length > 0);
 
   async function submit() {
     if (!ready || busy) return;
@@ -187,7 +190,7 @@ export default function SignIn() {
                 ref={passwordRef}
                 value={password}
                 onChangeText={setPassword}
-                placeholder={register ? `Парола (поне ${PASSWORD_MIN} знака)` : 'Парола'}
+                placeholder={register ? `Парола (поне ${PASSWORD_MIN} знака, буква и цифра)` : 'Парола'}
                 secureTextEntry={!showPassword}
                 autoCapitalize="none"
                 autoCorrect={false}

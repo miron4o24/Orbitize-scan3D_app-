@@ -125,7 +125,7 @@ PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title} · View in your room</title>
-<script type="module" src="https://cdn.jsdelivr.net/npm/@google/model-viewer@4.1.0/dist/model-viewer.min.js"></script>
+<script type="module" nonce="{nonce}" src="https://cdn.jsdelivr.net/npm/@google/model-viewer@4.1.0/dist/model-viewer.min.js"></script>
 <style>
   :root {{ color-scheme: light; --bg: #f5f7fb; --card: #fff; --text: #0f172a; --muted: #64748b; --accent: #2563eb;
           --danger: #b91c1c; }}
@@ -158,7 +158,7 @@ PAGE = """<!doctype html>
     <button id="ar" disabled>View in your room</button>
   </div>
 </main>
-<script type="module">
+<script type="module" nonce="{nonce}">
 const mv = document.getElementById('mv'), button = document.getElementById('ar'), msg = document.getElementById('msg');
 const say = (text, error) => {{ msg.textContent = text; msg.className = error ? 'error' : ''; }};
 mv.addEventListener('progress', (e) => {{ document.getElementById('bar').style.width = e.detail.totalProgress * 100 + '%'; }});
@@ -185,7 +185,13 @@ button.addEventListener('click', () => mv.activateAR());
 </script></body></html>"""
 
 
-def page(title: str, longest_mm: float, real_size: bool) -> str:
+CSP = ("default-src 'none'; script-src 'nonce-{nonce}' https://cdn.jsdelivr.net 'wasm-unsafe-eval'; "
+       "style-src 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; "
+       "connect-src 'self' blob: data: https://www.gstatic.com; worker-src blob:; base-uri 'none'; form-action 'none'; "
+       "frame-ancestors 'none'")
+
+
+def page(title: str, longest_mm: float, real_size: bool, nonce: str = "") -> str:
     size = f"Real size: {longest_mm:g} mm on its longest side" if real_size else "Pinch in AR to make it bigger or smaller"
     return PAGE.format(title=html.escape(title or "3D scan"), size=html.escape(size),
-                       scale="fixed" if real_size else "auto")  # fmt: skip
+                       scale="fixed" if real_size else "auto", nonce=nonce)  # fmt: skip

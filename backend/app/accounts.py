@@ -8,10 +8,12 @@ import hashlib
 import logging
 import hmac
 import html
+import ipaddress
 import os
 import re
 import secrets
 import shutil
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,6 +37,10 @@ MAX_UPLOADING_PER_USER = 3  # започнати сканирания, коит�
 MAX_AVATAR_BYTES = 2 * 1024 * 1024
 AVATARS = Path(os.environ.get("AVATAR_DIR", jobs.DATA.parent / "avatars")).resolve()
 SESSION_TOUCH_S = 3600  # last_used се записва най-често през този интервал
+# Сесия изтича, ако не е ползвана SESSION_IDLE_S, и най-късно SESSION_MAX_S след входа: изгубен или откраднат телефон
+# не остава влязъл завинаги.
+SESSION_IDLE_S = 60 * 86400
+SESSION_MAX_S = 365 * 86400
 
 router = APIRouter()
 
@@ -70,6 +76,9 @@ def principal(authorization: str = Header("")) -> Principal:
             row = c.execute(sa.select(db.sessions, db.users.c.blocked)
                             .join(db.users, db.users.c.id == db.sessions.c.user_id)
                             .where(db.sessions.c.token_hash == hashed(token))).first()  # fmt: skip
+            if row and (now - row.last_used > SESSION_IDLE_S or now - row.created > SESSION_MAX_S):
+                c.execute(sa.delete(db.sessions).where(db.sessions.c.token_hash == row.token_hash))
+                row = None
             if row and row.blocked:  # сесиите се изтриват при блокиране; това е за всеки случай
                 raise HTTPException(403, BLOCKED)
             if row:
@@ -138,6 +147,11 @@ def can_see(p: Principal, status: dict) -> bool:
 # --- Вход с Google --------------------------------------------------------------------------------------------------
 
 
+def google_enabled() -> bool:
+    """Входът с Google е махнат от приложението и сайта: пътят /auth/google работи само ако GOOGLE_SIGNIN=1 в .env."""
+    return os.environ.get("GOOGLE_SIGNIN", "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def google_client_ids() -> list[str]:
     ids = os.environ.get("GOOGLE_CLIENT_ID", "") + "," + (db.get_setting(GOOGLE_SETTING) or "")
     return [i.strip() for i in ids.split(",") if i.strip()]
@@ -162,6 +176,8 @@ class GoogleSignIn(BaseModel):
 
 @router.post("/auth/google")
 def sign_in_google(body: GoogleSignIn):
+    if not google_enabled():
+        raise HTTPException(404, "Not Found")
     e = need_db()
     audiences = google_client_ids()
     if not audiences:
@@ -198,10 +214,85 @@ def sign_in_google(body: GoogleSignIn):
 
 log = logging.getLogger(__name__)
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-PASSWORD_MIN = 6
+PASSWORD_MIN = 8
+PASSWORD_RULE = f"Паролата трябва да е поне {PASSWORD_MIN} знака и да има поне една буква и една цифра."
 MAX_FAILED = 10  # грешни пароли за имейл в рамките на FAILED_WINDOW_S, след което има пауза
 FAILED_WINDOW_S = 15 * 60
-_failed: dict[str, list[float]] = {}
+
+
+class Limit:
+    """Най-много `n` събития за `window` секунди на ключ (имейл, IP адрес или "all"). В паметта на сървъра; речникът
+    се чисти, за да не расте безкрайно от случайни ключове."""
+
+    MAX_KEYS = 50_000
+
+    def __init__(self, n: int, window: float):
+        self.n, self.window = n, window
+        self.hits: dict[str, list[float]] = {}
+        self.lock = threading.Lock()
+
+    def _recent(self, key: str, now: float) -> list[float]:
+        return [t for t in self.hits.get(key, []) if now - t < self.window]
+
+    def over(self, key: str | None) -> bool:
+        if key is None:
+            return False
+        with self.lock:
+            return len(self._recent(key, time.time())) >= self.n
+
+    def add(self, key: str | None) -> None:
+        if key is None:
+            return
+        now = time.time()
+        with self.lock:
+            if len(self.hits) >= self.MAX_KEYS:
+                self.hits = {k: r for k, v in self.hits.items() if (r := [t for t in v if now - t < self.window])}
+                while len(self.hits) >= self.MAX_KEYS:  # все още пълен: най-старите ключове отпадат
+                    self.hits.pop(next(iter(self.hits)))
+            self.hits[key] = self._recent(key, now) + [now]
+
+    def clear(self, key: str) -> None:
+        with self.lock:
+            self.hits.pop(key, None)
+
+
+_failed = Limit(MAX_FAILED, FAILED_WINDOW_S)  # грешни пароли за имейл
+_failed_ip = Limit(30, FAILED_WINDOW_S)  # грешни пароли от един IP адрес (за много имейли)
+_codes_ip = Limit(20, FAILED_WINDOW_S)  # грешни кодове от един IP адрес
+_mails_ip = Limit(5, 3600)  # писма с код, поискани от един IP адрес
+_mails_to = Limit(5, 3600)  # писма с код до един имейл
+_mails_all = Limit(200, 3600)  # всички писма: пощенската кутия не става източник на спам
+TOO_MANY = "Твърде много опити. Изчакайте малко и опитайте пак."
+
+
+def reset_limits() -> None:
+    """Тестове: всяко ограничение започва отначало."""
+    for lim in (_failed, _failed_ip, _codes_ip, _mails_ip, _mails_to, _mails_all):
+        lim.hits.clear()
+    _code_tries.clear()
+
+
+def client_ip(request: Request | None) -> str | None:
+    """IP адресът на посетителя. Зад Tailscale Funnel или обратен прокси на същата машина заявката идва от localhost,
+    а адресът е последният в X-Forwarded-For (сложен от прокси сървъра). None, ако не се знае: тогава ограниченията по
+    IP не важат (тези по имейл и общите важат)."""
+    host = request.client.host if request is not None and request.client else None
+    try:
+        ip = ipaddress.ip_address(host or "")
+    except ValueError:
+        return None
+    if ip.is_loopback:
+        fwd = request.headers.get("x-forwarded-for", "").split(",")[-1].strip()
+        try:
+            return str(ipaddress.ip_address(fwd))
+        except ValueError:
+            return None
+    return str(ip)
+
+
+def password_ok(password: str) -> bool:
+    return (len(password) >= PASSWORD_MIN and any(ch.isalpha() for ch in password)
+            and any(ch.isdigit() for ch in password))  # fmt: skip
 # Потвърждение на имейла при регистрация: 6-цифрен код по имейл (app/mail.py), валиден CODE_MINUTES, най-много
 # CODE_TRIES грешни опита, ново писмо не по-често от RESEND_S. Без настроен SMTP (.env) регистрацията се отказва.
 CODE_MINUTES = 30
@@ -262,8 +353,13 @@ def code_hash(user_id: str, code: str) -> str:
     return hashlib.sha256(f"{user_id}:{code}".encode()).hexdigest()
 
 
-def send_code(c, user_id: str, email: str) -> None:
-    """Нов код за профила (в същата транзакция `c`) и писмото с него. HTTPException 503, ако писмото не тръгне."""
+def send_code(c, user_id: str, email: str, ip: str | None = None) -> None:
+    """Нов код за профила (в същата транзакция `c`) и писмото с него. HTTPException 503, ако писмото не тръгне, 429 над
+    ограниченията за писма (от един IP адрес, до един имейл, общо)."""
+    to = email.strip().lower()
+    if _mails_ip.over(ip) or _mails_to.over(to) or _mails_all.over("all"):
+        raise HTTPException(429, "Изпратихме твърде много писма с код. Изчакайте малко и опитайте пак.")
+    _mails_ip.add(ip), _mails_to.add(to), _mails_all.add("all")
     code = f"{secrets.randbelow(1_000_000):06d}"
     now = int(time.time())
     c.execute(sa.update(db.users).where(db.users.c.id == user_id).values(
@@ -291,7 +387,7 @@ def waiting(user) -> bool:
 
 
 @router.post("/auth/register")
-def register(body: Register):
+def register(body: Register, request: Request):
     """Нов профил с имейл и парола. Входът е възможен едва след кода от писмото (/auth/verify): без пощенска кутия на
     сървъра (SMTP_* в .env) регистрация няма. Непотвърден профил със същия имейл се презаписва с новите данни и
     получава нов код, така че грешно въведена парола или изгубено писмо не заключват имейла. При неуспешно писмо
@@ -299,8 +395,8 @@ def register(body: Register):
     email = body.email.strip()
     if not EMAIL_RE.match(email):
         raise HTTPException(400, "Въведете валиден имейл.")
-    if len(body.password) < PASSWORD_MIN:
-        raise HTTPException(400, f"Паролата трябва да е поне {PASSWORD_MIN} знака.")
+    if not password_ok(body.password):
+        raise HTTPException(400, PASSWORD_RULE)
     if not mail.configured():
         log.error("registration refused: SMTP_* is not set in .env, so no verification mail can be sent")
         raise HTTPException(503, "Регистрацията временно не работи (няма поща за кода). Опитайте по-късно.")
@@ -326,37 +422,41 @@ def register(body: Register):
             c.execute(sa.insert(db.users).values(id=user_id, google_sub=email_key(email), email=email, name=name[:100],
                                                  avatar=False, created=int(time.time()),
                                                  password_hash=hash_password(body.password)))  # fmt: skip
-        send_code(c, user_id, old.email if old is not None else email)  # при неуспешно писмо 503 и транзакцията се връща: профил не остава
+        send_code(c, user_id, old.email if old is not None else email, client_ip(request))  # при неуспешно писмо 503 и транзакцията се връща: профил не остава
     return {"verify": True, "email": email}
 
 
+_DUMMY_HASH = hash_password(secrets.token_hex(16))  # за непознат имейл: отговорът е толкова бавен, колкото за познат
+
+
 @router.post("/auth/login")
-def login(body: Login):
-    key = email_key(body.email)
-    now = time.time()
-    recent = [t for t in _failed.get(key, []) if now - t < FAILED_WINDOW_S]
-    if len(recent) >= MAX_FAILED:
+def login(body: Login, request: Request):
+    key, ip = email_key(body.email), client_ip(request)
+    if _failed.over(key) or _failed_ip.over(ip):
         raise HTTPException(429, "Твърде много грешни пароли. Изчакайте 15 минути и опитайте пак.")
     with need_db().begin() as c:
         user = by_email(c, body.email)
-        if user is None or not password_matches(body.password, user.password_hash):
-            _failed[key] = recent + [now]
+        ok = password_matches(body.password, user.password_hash if user is not None and user.password_hash else _DUMMY_HASH)
+        if user is None or not user.password_hash or not ok:
+            _failed.add(key), _failed_ip.add(ip)
             raise HTTPException(401, "Грешен имейл или парола.")
-        _failed.pop(key, None)
+        _failed.clear(key)
         if user.blocked:
             raise HTTPException(403, BLOCKED)
         if waiting(user):  # паролата е вярна, но имейлът още не е потвърден: ново писмо, ако старото е отдавна
             if not user.verify_sent or time.time() - user.verify_sent > RESEND_S:
-                send_code(c, user.id, user.email)
+                send_code(c, user.id, user.email, ip)
             return {"verify": True, "email": user.email}
         token = new_session(c, user.id)
     return {"token": token, "user": profile(user.id)}
 
 
 @router.post("/auth/verify")
-def verify_email(body: Verify):
+def verify_email(body: Verify, request: Request):
     """Кодът от писмото: потвърждава имейла и влиза в профила."""
-    code = re.sub(r"\D", "", body.code)
+    code, ip = re.sub(r"\D", "", body.code), client_ip(request)
+    if _codes_ip.over(ip):
+        raise HTTPException(429, TOO_MANY)
     with need_db().begin() as c:
         user = by_email(c, body.email)
         if user is None or not waiting(user):
@@ -369,6 +469,7 @@ def verify_email(body: Verify):
             raise HTTPException(429, "Твърде много грешни опита. Поискайте нов код.")
         if not hmac.compare_digest(code_hash(user.id, code), user.verify_code):
             _code_tries[user.id] = _code_tries.get(user.id, 0) + 1
+            _codes_ip.add(ip)
             raise HTTPException(400, "Грешен код. Проверете писмото и опитайте отново.")
         _code_tries.pop(user.id, None)
         c.execute(sa.update(db.users).where(db.users.c.id == user.id)
@@ -378,7 +479,7 @@ def verify_email(body: Verify):
 
 
 @router.post("/auth/resend")
-def resend_code(body: Resend):
+def resend_code(body: Resend, request: Request):
     """Ново писмо с код (не по-често от RESEND_S)."""
     with need_db().begin() as c:
         user = by_email(c, body.email)
@@ -387,7 +488,7 @@ def resend_code(body: Resend):
         left = RESEND_S - (time.time() - (user.verify_sent or 0))
         if left > 0:
             raise HTTPException(429, f"Изчакайте още {int(left) + 1} секунди за ново писмо.")
-        send_code(c, user.id, user.email)
+        send_code(c, user.id, user.email, client_ip(request))
     return {"ok": True}
 
 
@@ -486,6 +587,30 @@ def patch_me(body: ProfilePatch, p: Principal = Depends(signed_in)):
     return profile(p.user_id)
 
 
+AVATAR_SIDE = 512
+MAX_PIXELS = 50_000_000  # повече е бомба от пиксели (малък файл, огромно изображение в паметта)
+
+
+def reencode_jpeg(data: bytes, side: int) -> bytes:
+    """Снимката, декодирана и записана наново като JPEG с най-дълга страна `side`: само пикселите остават (без EXIF с
+    GPS, без скрит код). HTTPException 400, ако не е снимка или е твърде голяма."""
+    import io
+
+    from PIL import Image, ImageOps
+
+    try:
+        with Image.open(io.BytesIO(data)) as im:
+            if im.width * im.height > MAX_PIXELS:
+                raise HTTPException(400, "Снимката е твърде голяма.")
+            im = ImageOps.exif_transpose(im).convert("RGB")
+            im.thumbnail((side, side), Image.LANCZOS)
+            out = io.BytesIO()
+            im.save(out, "JPEG", quality=88)
+    except (OSError, ValueError, Image.DecompressionBombError) as e:
+        raise HTTPException(400, "Файлът не е снимка.") from e
+    return out.getvalue()
+
+
 @router.put("/me/avatar")
 async def put_avatar(request: Request, p: Principal = Depends(signed_in)):
     body = bytearray()
@@ -495,9 +620,10 @@ async def put_avatar(request: Request, p: Principal = Depends(signed_in)):
             raise HTTPException(413, "Снимката е твърде голяма (до 2 MB).")
     if body[:3] != b"\xff\xd8\xff":
         raise HTTPException(400, "Файлът не е снимка (JPEG).")
+    clean = reencode_jpeg(bytes(body), AVATAR_SIDE)  # без EXIF (място на снимане, телефон) и без чужди байтове
     AVATARS.mkdir(parents=True, exist_ok=True)
     tmp = avatar_path(p.user_id).with_suffix(".tmp")
-    tmp.write_bytes(body)
+    tmp.write_bytes(clean)
     os.replace(tmp, avatar_path(p.user_id))
     with need_db().begin() as c:
         c.execute(sa.update(db.users).where(db.users.c.id == p.user_id).values(avatar=True))
@@ -631,7 +757,7 @@ def claim_scans(body: Claim, p: Principal = Depends(signed_in)):
     е създал."""
     claimed = []
     for job_id in dict.fromkeys(body.job_ids):
-        s = jobs.read(job_id) if len(job_id) == 32 and job_id.isalnum() else None
+        s = jobs.read(job_id) if re.fullmatch(r"[0-9a-f]{32}", job_id) else None
         if s is None or s.get("owner"):
             continue
         jobs.write(job_id, owner=p.user_id)
@@ -707,11 +833,11 @@ SHARE_PAGE = """<!doctype html>
   <p>Scanned by {owner} · {size}</p>
   <p class="hint">Drag to turn it, pinch or scroll to zoom.</p>
 </main>
-<script type="importmap">
+<script type="importmap" nonce="{nonce}">
 {{"imports": {{"three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.module.js",
               "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"}}}}
 </script>
-<script type="module">
+<script type="module" nonce="{nonce}">
 import * as THREE from 'three';
 import {{ GLTFLoader }} from 'three/addons/loaders/GLTFLoader.js';
 import {{ OrbitControls }} from 'three/addons/controls/OrbitControls.js';
@@ -743,6 +869,11 @@ renderer.setAnimationLoop(() => {{ controls.update(); renderer.render(scene, cam
 </script></body></html>"""
 
 
+SHARE_CSP = ("default-src 'none'; script-src 'nonce-{nonce}' https://cdn.jsdelivr.net; style-src 'unsafe-inline'; "
+              "img-src 'self' data: blob:; connect-src 'self' blob: data:; base-uri 'none'; form-action 'none'; "
+              "frame-ancestors 'none'")
+
+
 def base_url(request: Request) -> str:
     """Адресът, използван от посетителя. Зад Tailscale Funnel заявката пристига по обикновен HTTP на localhost, но
     публичният адрес е HTTPS."""
@@ -760,14 +891,16 @@ def share_page(slug: str, request: Request):
     report = (jobs.read(row.job_id) or {}).get("report") or {}
     dims = report.get("dimensions_mm")
     size = "proportions " + " : ".join(f"{d / max(dims):.2f}" for d in dims) if dims else ""
+    nonce = secrets.token_urlsafe(16)
     page = SHARE_PAGE.format(
+        nonce=nonce,
         title=html.escape(row.title or "3D scan"),
         owner=html.escape(row.owner_name),
         size=html.escape(size),
         slug=html.escape(slug),
         base=html.escape(base_url(request)),
     )
-    return Response(page, media_type="text/html; charset=utf-8")
+    return Response(page, media_type="text/html; charset=utf-8", headers={"Content-Security-Policy": SHARE_CSP.format(nonce=nonce)})
 
 
 @router.get("/s/{slug}/model.glb")
@@ -842,11 +975,12 @@ def health_info() -> dict:
     """Идентификаторът на уеб клиента е публичен (има го във всяка компилация с вход); приложението го чете оттук,
     затова създаването на клиента в Google не изисква нова компилация."""
     ok = db.engine() is not None
-    ids = google_client_ids() if ok else []
+    ids = google_client_ids() if ok and google_enabled() else []
     # accounts: входът с имейл и парола работи (нужна е само базата данни). version: коя версия работи на сървъра
     # (проверява се отдалечено след инсталиране). stress, progress, pro: тестът за здравина (app/stress.py), точките
     # (app/progress.py) и AI моделите на Pro (app/ai.py) са налични, затова приложението ги показва. mail: има ли
     # пощенска кутия за кодовете при регистрация (само да/не, без адреса).
-    return {"accounts": ok, "database": db.status(), "google_client_id": ids[0] if ids else None,
+    status = db.status()  # подробността на грешката (адрес, потребител на базата) е само за администратора
+    return {"accounts": ok, "database": "error" if status.startswith("error") else status, "google_client_id": ids[0] if ids else None,
             "version": "2026-11-25-mail", "stress": True, "progress": True, "pro": True,
             "mail": mail.configured()}  # fmt: skip

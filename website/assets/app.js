@@ -114,7 +114,7 @@
     ["There is already an account with this email", "Вече има профил с този имейл. Влезте в него."],
     ["This email already has an account through Google", "Този имейл вече има профил чрез Google. Използвайте „Вход с Google“."],
     ["Enter a valid email address", "Въведете валиден имейл адрес."],
-    ["The password needs at least", "Паролата трябва да е поне 6 знака."],
+    ["The password needs at least", "Паролата трябва да е поне 8 знака и да има поне една буква и една цифра."],
     ["Too many wrong passwords", "Твърде много грешни пароли. Изчакайте 15 минути и опитайте отново."],
     ["Not signed in", "Не сте влезли или входът е изтекъл. Влезте отново."],
     ["This account no longer exists", "Този профил вече не съществува."],

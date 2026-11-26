@@ -5,7 +5,7 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'env.ps1')
 Set-Location $root
 $env:PYTHONUNBUFFERED = '1'
-$uvicorn = "`"$python`" -m uvicorn app.main:app --host 127.0.0.1 --port $env:PORT"
+$uvicorn = "`"$python`" -m uvicorn app.main:app --host 127.0.0.1 --port $env:PORT --no-server-header"
 
 if ($Console) {
   cmd /c $uvicorn
