@@ -5,7 +5,7 @@ window.ORBITIZE = {
   appName: "Orbitize",
   apiUrl: "https://ustyle.tail7978cf.ts.net",
   // The newest Android build (EAS). Change it after every new build.
-  apkUrl: "https://expo.dev/artifacts/eas/Lai24j3yYb_MEgLpS_Sh0UEDY3tciInYn9nnQrUgPqs.apk",
+  apkUrl: "https://expo.dev/artifacts/eas/pfCUnp8y0YrChVRDsVUvJYhnU65DTLBQ0EC3j7962G4.apk",
   googleClientId: "814464272568-p3lknkud9vg4alfcn1beq695bjtffc8u.apps.googleusercontent.com",
   // Shown on the Privacy and Terms pages. Fill it in before asking Google to verify the sign-in.
   contactEmail: "",
