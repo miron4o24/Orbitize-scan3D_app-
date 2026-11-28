@@ -129,3 +129,20 @@ def test_share_page_scripts_need_the_nonce(client, monkeypatch):
     assert r.text.count(f'nonce="{nonce}"') == 2 and r.text.count("<script") == 2
     assert "<script>alert(1)" not in r.text and "&lt;script&gt;" in r.text
     assert nonce not in client.get(f"/s/{slug}").text  # нов при всяко отваряне
+
+
+def test_server_script_sets_a_new_password_and_signs_out(client, monkeypatch):
+    import pytest
+
+    from app import set_password as SP
+
+    accounts, sent = mailbox(monkeypatch)
+    client.post("/auth/register", json={"email": "t@example.com", "password": "abcdefg1"})
+    client.post("/auth/verify", json={"email": "t@example.com", "code": sent[-1][1]})
+    token = client.post("/auth/login", json={"email": "t@example.com", "password": "abcdefg1"}).json()["token"]
+    with pytest.raises(SystemExit):
+        SP.set_password("t@example.com", "123456789")  # същото правило като при регистрация
+    SP.set_password(" T@example.com ", "Orbitize2026")
+    assert client.get("/me", headers={"Authorization": f"Bearer {token}"}).status_code == 401
+    assert client.post("/auth/login", json={"email": "t@example.com", "password": "abcdefg1"}).status_code == 401
+    assert client.post("/auth/login", json={"email": "t@example.com", "password": "Orbitize2026"}).status_code == 200
