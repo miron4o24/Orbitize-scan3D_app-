@@ -28,6 +28,24 @@ def _txt(s, n=120) -> str:
     return re.sub(r"[\r\n\t]+", " ", str(s or ""))[:n]
 
 
+MAX_MM = 5000.0  # по-голям размер (или NaN, безкрайност) не е детайл, а опит да се претовари строенето
+
+
+def number(v) -> float | None:
+    """Размер от описанието: None или крайно число до MAX_MM мм по абсолютна стойност."""
+    if v is None:
+        return None
+    if isinstance(v, bool) or not isinstance(v, (int, float, str)):
+        raise D.DesignError("Непознат размер.")
+    try:
+        x = float(v)
+    except ValueError:
+        raise D.DesignError("Непознат размер.") from None
+    if not math.isfinite(x) or abs(x) > MAX_MM:
+        raise D.DesignError(f"Размерите трябва да са до {MAX_MM:g} мм.")
+    return x
+
+
 def clean(raw: dict) -> dict:
     """Описанието, проверено по форма (имена, видове, препратки). DesignError при нещо непознато."""
     if not isinstance(raw, dict) or raw.get("kind") not in ("block", "turned"):
@@ -43,8 +61,8 @@ def clean(raw: dict) -> dict:
     for i, dim in (raw.get("dims") or {}).items():
         if not D.DIM_ID.match(i) or i in RESERVED or keyword.iskeyword(i) or not isinstance(dim, dict):
             raise D.DesignError("Непознат размер.")
-        v, est = dim.get("v"), dim.get("est")
-        d["dims"][i] = {"v": None if v is None else float(v), "est": None if est is None else float(est),
+        v, est = number(dim.get("v")), number(dim.get("est"))
+        d["dims"][i] = {"v": v, "est": est,
                         "src": dim.get("src") if dim.get("src") in ("measured", "photo", "skipped") else "photo",
                         "name": _txt(dim.get("name"), 60), "ask": _txt(dim.get("ask")), "hint": _txt(dim.get("hint")),
                         "kind": dim.get("kind") if dim.get("kind") in ("length", "position", "diameter", "radius")
@@ -184,7 +202,7 @@ def clean_shape(shape, corners) -> tuple[list, list]:
     return pts, cs
 
 
-FRAC = re.compile(r"^[xyz]~(0(\.\d{1,6})?|1(\.0{1,6})?)$")
+FRAC = re.compile(r"^[xyz]~(0(\.\d{1,6})?|1(\.0{1,6})?)\Z")
 
 
 def level_ok(d: dict, lvl, axis: str) -> bool:
@@ -726,3 +744,20 @@ def glb(stl: Path, dest: Path, shape=None):
     upright.apply_transform(M.Y_UP)  # glTF е с Y нагоре: прегледът и историята показват детайла еднакво
     dest.write_bytes(M.glb(upright))
     return whole
+
+
+# --- Отделен процес -------------------------------------------------------------------------------------------------
+# Сървърът строи детайла в отделен процес (service.isolated): грешка или срив в OpenCascade при странно описание, или
+# твърде дълго строене, спира само този процес, а не сървъра. python -m app.cad.build <заявка.json> <папка>.
+
+if __name__ == "__main__":
+    import sys
+
+    req, dest = Path(sys.argv[1]), Path(sys.argv[2])
+    task = json.loads(req.read_text(encoding="utf-8"))
+    try:
+        build(task["design"], dest, task.get("adjusted"))
+    except D.DesignError as e:
+        dest.mkdir(parents=True, exist_ok=True)
+        (dest / "error.json").write_text(json.dumps({"error": str(e)}, ensure_ascii=False), encoding="utf-8")
+        sys.exit(3)

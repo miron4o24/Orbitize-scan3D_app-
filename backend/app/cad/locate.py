@@ -67,9 +67,11 @@ def models(threads: int):
             from transformers import AutoProcessor, Florence2ForConditionalGeneration, Sam2Model, Sam2Processor
 
             torch.set_num_threads(threads)
-            _models = (Florence2ForConditionalGeneration.from_pretrained(FLORENCE).eval(),
-                       AutoProcessor.from_pretrained(FLORENCE),
-                       Sam2Model.from_pretrained(SAM2).eval(), Sam2Processor.from_pretrained(SAM2))  # fmt: skip
+            # Само от локалните папки (models.ps1 ги изтегля с проверени SHA-256): никога от интернет и никога код от тях.
+            local = {"local_files_only": True, "trust_remote_code": False}
+            _models = (Florence2ForConditionalGeneration.from_pretrained(FLORENCE, **local).eval(),
+                       AutoProcessor.from_pretrained(FLORENCE, **local),
+                       Sam2Model.from_pretrained(SAM2, **local).eval(), Sam2Processor.from_pretrained(SAM2, **local))  # fmt: skip
         return _models
 
 

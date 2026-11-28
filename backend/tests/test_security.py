@@ -146,3 +146,60 @@ def test_server_script_sets_a_new_password_and_signs_out(client, monkeypatch):
     assert client.get("/me", headers={"Authorization": f"Bearer {token}"}).status_code == 401
     assert client.post("/auth/login", json={"email": "t@example.com", "password": "abcdefg1"}).status_code == 401
     assert client.post("/auth/login", json={"email": "t@example.com", "password": "Orbitize2026"}).status_code == 200
+
+
+def test_cad_design_numbers_and_names_are_strict():
+    import math as _m
+
+    import pytest
+
+    from app.cad import build as B
+    from app.cad import design as D
+
+    base = {"kind": "block", "dims": {k: {"v": 10.0} for k in ("L", "W", "H")}}
+    for bad in (float("nan"), float("inf"), 1e9, -1e9, "1e400", True, [1]):
+        with pytest.raises(D.DesignError):
+            B.clean(base | {"dims": base["dims"] | {"L": {"v": bad}}})
+    assert B.clean(base)["dims"]["L"]["v"] == 10.0 and not _m.isnan(B.clean(base)["dims"]["W"]["v"])
+    with pytest.raises(D.DesignError):  # нов ред в края на име щеше да мине с "$"
+        B.clean(base | {"dims": base["dims"] | {"x\n": {"v": 1.0}}})
+    assert not D.DIM_ID.match("L\n") and D.DIM_ID.match("L")
+
+
+def test_cad_build_runs_in_a_separate_process_with_a_time_limit(tmp_path, monkeypatch):
+    import pytest
+
+    from app.cad import design as D
+    from app.cad import service as SV
+
+    with pytest.raises(D.DesignError, match="Липсват общите размери"):  # грешката от отделния процес стига до човека
+        SV.isolated({"kind": "block"}, tmp_path / "a")
+    monkeypatch.setattr(SV, "BUILD_TIMEOUT_S", 0.01)
+    with pytest.raises(D.DesignError, match="твърде сложен"):
+        SV.isolated({"kind": "block"}, tmp_path / "b")
+
+
+def test_heavy_requests_and_registrations_are_limited(client, monkeypatch):
+    from app import accounts
+
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", CLIENT_ID)
+    monkeypatch.setattr(accounts, "_heavy", accounts.Limit(2, 600))
+    h, _ = sign_in(client)
+    got = [client.post("/outline", content=b"not a photo", headers=h).status_code for _ in range(3)]
+    assert got == [400, 400, 429]
+    monkeypatch.setattr(accounts, "client_ip", lambda request: "203.0.113.20")
+    got = [client.post("/auth/register", json={"email": "bad", "password": "abcdefg1"}).status_code for _ in range(31)]
+    assert got[:30] == [400] * 30 and got[30] == 429
+
+
+def test_users_do_not_see_server_paths_in_the_log(client, monkeypatch):
+    from app import jobs
+    from tests.test_accounts import ADMIN
+
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", CLIENT_ID)
+    h, _ = sign_in(client)
+    job = client.post("/jobs", headers=h).json()["id"]
+    (jobs.job_dir(job) / "log.txt").write_text("colmap D:\\Orbitize\\backend\\data\\jobs\\x\\db.db /home/u/tools/colmap\n")
+    mine = client.get(f"/jobs/{job}/log", headers=h).text
+    assert "Orbitize" not in mine and "/home" not in mine and "…/db.db" in mine and "…/colmap" in mine
+    assert "D:\\Orbitize" in client.get(f"/jobs/{job}/log", headers=ADMIN).text

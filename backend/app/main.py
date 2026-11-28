@@ -1,5 +1,6 @@
 import io
 import json
+import logging
 import math
 import os
 import re
@@ -38,6 +39,9 @@ from .cad import service as CAD
 API_TOKEN = os.environ.get("API_TOKEN", "")
 if len(API_TOKEN) < 8:
     raise RuntimeError("Set API_TOKEN (at least 8 characters).")
+if len(API_TOKEN) < 32:  # ключът на сървъра дава пълен достъп: къс ключ се познава по-лесно
+    logging.getLogger("uvicorn.error").warning("API_TOKEN is short (%d characters); use at least 32: openssl rand -hex 24",
+                                               len(API_TOKEN))  # fmt: skip
 
 MIN_PHOTOS, MAX_PHOTOS = 8, 120
 MAX_PHOTO_BYTES = 15 * 1024 * 1024
@@ -47,8 +51,8 @@ MAX_MOTION_SAMPLES = 60_000  # по 60 в секунда за над 15 мину
 # Сървърът е публичен, затова ограничаваме какво всеки може да го накара да пази или изчислява.
 MAX_JOBS = int(os.environ.get("MAX_JOBS", "30"))
 MAX_QUEUED = int(os.environ.get("MAX_QUEUED", "5"))
-ID_RE = re.compile(r"^[0-9a-f]{32}$")
-NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}\.jpe?g$")  # блокира и излизане извън папката
+ID_RE = re.compile(r"^[0-9a-f]{32}\Z")
+NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}\.jpe?g\Z")  # блокира и излизане извън папката
 
 worker = jobs.Worker()
 
@@ -149,10 +153,21 @@ def get_job(job_id: str, p: Principal = Depends(principal)):
     return jobs.public(job_id) | {"ahead": worker.ahead(job_id, s.get("params")) if s["state"] == "queued" else None}
 
 
+# Пълни пътища на сървъра в дневника (папки, потребител, инструменти): за потребителя остава само името на файла.
+SERVER_PATH = re.compile(r"""(?:(?<![A-Za-z])[A-Za-z]:[\\/]|\\\\|(?<![\w.~/:])/(?=[A-Za-z_]))[^\s"'<>|]*""")
+
+
+def hide_paths(text: str) -> str:
+    return SERVER_PATH.sub(lambda m: "…/" + re.split(r"[\\/]", m.group(0).rstrip("\\/"))[-1], text)
+
+
 @app.get("/jobs/{job_id}/log")
 def get_log(job_id: str, lines: int = Query(60, ge=1, le=2000), p: Principal = Depends(principal)):
     existing(job_id, p)
-    return Response(jobs.log_tail(job_id, lines), media_type="text/plain; charset=utf-8")
+    text = jobs.log_tail(job_id, lines)
+    if not (p.admin or (p.user_id and A.is_staff(p.user_id))):
+        text = hide_paths(text)
+    return Response(text, media_type="text/plain; charset=utf-8")
 
 
 @app.get("/jobs/{job_id}/thumb.jpg")
@@ -284,7 +299,7 @@ class StartParams(BaseModel):
 
 
 @app.post("/outline")
-async def outline(request: Request, p: Principal = Depends(principal)):
+async def outline(request: Request, p: Principal = Depends(A.heavy)):
     """Очертанието на предмета от снимката преди запис за AI модел, за точките на екрана за заснемане
     (app/silhouette.py). Нищо не се пази. {"found": False}, когато предметът не се намира или моделът липсва."""
     if int(request.headers.get("content-length") or 0) > MAX_PHOTO_BYTES:
@@ -309,7 +324,7 @@ NO_SCAN = "Стандартното сканиране вече го няма. �
 
 
 @app.post("/jobs/{job_id}/start")
-def start_job(job_id: str, params: StartParams, p: Principal = Depends(principal)):
+def start_job(job_id: str, params: StartParams, p: Principal = Depends(A.heavy)):
     # Завършено сканиране може да се обработи отново (например след обновяване на сървъра): кадрите, избрани от
     # видеото, се пазят.
     s = existing(job_id, p)
@@ -370,7 +385,7 @@ class NameplateParams(BaseModel):
 
 
 @app.post("/jobs/{job_id}/nameplate")
-def nameplate_job(job_id: str, params: NameplateParams, p: Principal = Depends(principal)):
+def nameplate_job(job_id: str, params: NameplateParams, p: Principal = Depends(A.heavy)):
     """Нов модел, създаден от този, стоящ върху плочка с име (app/edit.py); този остава непроменен."""
     if existing(job_id, p)["state"] != "done":
         raise HTTPException(409, "Моделът още не е готов.")
@@ -435,7 +450,7 @@ def cad_call(fn, *args):
 
 
 @app.post("/jobs/{job_id}/cad/read")
-def cad_read(job_id: str, body: CadRead | None = None, p: Principal = Depends(principal)):
+def cad_read(job_id: str, body: CadRead | None = None, p: Principal = Depends(A.heavy)):
     """Без размери: чете снимките и връща общите размери за мерене (всеки с линия върху снимка). С измерените общи
     размери: описанието на детайла - разпознатото и въпросите с оценките от снимките."""
     job = cad_job(job_id, p)
@@ -447,7 +462,7 @@ def cad_read(job_id: str, body: CadRead | None = None, p: Principal = Depends(pr
 
 
 @app.post("/jobs/{job_id}/cad/prepare")
-def cad_prepare(job_id: str, p: Principal = Depends(principal)):
+def cad_prepare(job_id: str, p: Principal = Depends(A.heavy)):
     """Чете очертанията на вече качените снимки, докато човекът снима следващата: накрая четенето е веднага."""
     job = cad_job(job_id, p)
     return {"ready": sorted(cad_call(CAD.shots, job))}
@@ -460,7 +475,7 @@ def cad_edit(job_id: str, body: CadEdit, p: Principal = Depends(principal)):
 
 
 @app.get("/jobs/{job_id}/cad/question/{dim}.png")
-def cad_question(job_id: str, dim: str, p: Principal = Depends(principal)):
+def cad_question(job_id: str, dim: str, p: Principal = Depends(A.heavy)):
     job = cad_job(job_id, p)
     if not CD.DIM_ID.match(dim):
         raise HTTPException(404, "Няма такъв размер.")
@@ -469,7 +484,7 @@ def cad_question(job_id: str, dim: str, p: Principal = Depends(principal)):
 
 
 @app.get("/jobs/{job_id}/cad/photo/{view}.jpg")
-def cad_photo(job_id: str, view: str, p: Principal = Depends(principal)):
+def cad_photo(job_id: str, view: str, p: Principal = Depends(A.heavy)):
     """Снимката (top, front, back, right, left, bottom) с очертанието от текущото описание."""
     job = cad_job(job_id, p)
     if view not in CAD.VIEWS:
@@ -479,7 +494,7 @@ def cad_photo(job_id: str, view: str, p: Principal = Depends(principal)):
 
 
 @app.get("/jobs/{job_id}/cad/outline/{view}.jpg")
-def cad_outline_jpg(job_id: str, view: str, p: Principal = Depends(principal)):
+def cad_outline_jpg(job_id: str, view: str, p: Principal = Depends(A.heavy)):
     """Снимката с очертанието, изрязано от нея (за проверка; докосване върху нея поправя очертанието)."""
     job = cad_job(job_id, p)
     return Response(cad_call(CAD.outline_jpg, job, view), media_type="image/jpeg",
@@ -508,7 +523,7 @@ class CadOutline(BaseModel):
 
 
 @app.post("/jobs/{job_id}/cad/outline/{view}")
-def cad_outline(job_id: str, view: str, body: CadOutline, p: Principal = Depends(principal)):
+def cad_outline(job_id: str, view: str, body: CadOutline, p: Principal = Depends(A.heavy)):
     """Очертанието на снимката наново, по докоснатите точки (MobileSAM). След това приложението чете наново."""
     job = cad_job(job_id, p)
     cad_call(CAD.retrace, job, view, body.points)
@@ -516,7 +531,7 @@ def cad_outline(job_id: str, view: str, body: CadOutline, p: Principal = Depends
 
 
 @app.get("/jobs/{job_id}/cad/preview.glb")
-def cad_preview(job_id: str, p: Principal = Depends(principal)):
+def cad_preview(job_id: str, p: Principal = Depends(A.heavy)):
     """Детайлът по оценките от снимките, преди мерките: за проверка, че е разчетен правилно (посоки, стъпала)."""
     job = cad_job(job_id, p)
     path = cad_call(CAD.preview, job)
@@ -524,7 +539,7 @@ def cad_preview(job_id: str, p: Principal = Depends(principal)):
 
 
 @app.post("/jobs/{job_id}/cad/build")
-def cad_build(job_id: str, body: CadBuild, p: Principal = Depends(principal)):
+def cad_build(job_id: str, body: CadBuild, p: Principal = Depends(A.heavy)):
     """Строи детайла от измерените числа; задачата става готова (в историята, с модела за прегледа)."""
     job = cad_job(job_id, p)
     report = cad_call(CAD.build, job, body.design)
@@ -649,7 +664,7 @@ def done_model(job_id: str, p: Principal) -> trimesh.Trimesh:
 
 
 @app.post("/jobs/{job_id}/print/plan")
-def print_plan(job_id: str, bed: Bed, p: Principal = Depends(principal)):
+def print_plan(job_id: str, bed: Bed, p: Principal = Depends(A.heavy)):
     try:
         return PR.plan(done_model(job_id, p), bed.longest_mm, bed.size())
     except M.MeshError as e:
@@ -659,7 +674,7 @@ def print_plan(job_id: str, bed: Bed, p: Principal = Depends(principal)):
 @app.get("/jobs/{job_id}/print.zip")
 def print_zip(job_id: str, longest_mm: float = Query(100.0, gt=0, le=2000), bed_x: float = Query(220.0, ge=50, le=1000),
               bed_y: float = Query(220.0, ge=50, le=1000), bed_z: float = Query(250.0, ge=50, le=1000),
-              p: Principal = Depends(principal)):  # fmt: skip
+              p: Principal = Depends(A.heavy)):  # fmt: skip
     """Моделът в най-добрата посока, разрязан на части, които се побират на плочата, като файлове STL."""
     try:
         pieces = PR.parts(done_model(job_id, p), longest_mm, (bed_x, bed_y, bed_z))
@@ -691,7 +706,7 @@ def make_spin(job_id: str):
 
 
 @app.post("/jobs/{job_id}/spin")
-def start_spin(job_id: str, p: Principal = Depends(principal)):
+def start_spin(job_id: str, p: Principal = Depends(A.heavy)):
     """Създава видеото, ако го няма; приложението пита отново до `ready`, после го изтегля."""
     if existing(job_id, p)["state"] != "done":
         raise HTTPException(409, "Моделът още не е готов.")
@@ -723,14 +738,14 @@ def get_spin(job_id: str, p: Principal = Depends(principal)):
 
 
 @app.get("/jobs/{job_id}/stress/{case}")
-def get_stress(job_id: str, case: str, p: Principal = Depends(principal)):
+def get_stress(job_id: str, case: str, p: Principal = Depends(A.heavy)):
     if existing(job_id, p)["state"] != "done":
         raise HTTPException(409, "Моделът още не е готов.")
     return ST.summary_response(job_id, case, p.user_id)
 
 
 @app.get("/jobs/{job_id}/stress/{case}/model.glb")
-def get_stress_model(job_id: str, case: str, p: Principal = Depends(principal)):
+def get_stress_model(job_id: str, case: str, p: Principal = Depends(A.heavy)):
     if existing(job_id, p)["state"] != "done":
         raise HTTPException(409, "Моделът още не е готов.")
     return ST.model_response(job_id, case)

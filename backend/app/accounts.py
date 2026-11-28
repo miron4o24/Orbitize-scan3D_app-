@@ -213,7 +213,7 @@ def sign_in_google(body: GoogleSignIn):
 # има пощенска кутия (app/mail.py). Паролите се пазят като хешове със scrypt.
 
 log = logging.getLogger(__name__)
-EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+\Z")
 PASSWORD_MIN = 8
 PASSWORD_RULE = f"Паролата трябва да е поне {PASSWORD_MIN} знака и да има поне една буква и една цифра."
 MAX_FAILED = 10  # грешни пароли за имейл в рамките на FAILED_WINDOW_S, след което има пауза
@@ -262,12 +262,25 @@ _codes_ip = Limit(20, FAILED_WINDOW_S)  # грешни кодове от еди�
 _mails_ip = Limit(5, 3600)  # писма с код, поискани от един IP адрес
 _mails_to = Limit(5, 3600)  # писма с код до един имейл
 _mails_all = Limit(200, 3600)  # всички писма: пощенската кутия не става източник на спам
+_register_ip = Limit(30, FAILED_WINDOW_S)  # опити за регистрация от един IP адрес (иначе "вече има профил" издава имейлите)
+_heavy = Limit(150, 600)  # тежки заявки (ИИ, CAD, печат) на профил: един профил не може да натовари сървъра
+TOO_BUSY = "Твърде много заявки за кратко време. Изчакайте няколко минути."
+
+
+def heavy(p: "Principal" = Depends(principal)) -> "Principal":
+    """Зависимост за пътищата, които натоварват процесора: до 150 заявки за 10 минути на профил (ключът на сървъра
+    няма ограничение). Нормалната работа (едно сканиране, един детайл в инженерния режим) е далеч под това."""
+    if p.user_id:
+        if _heavy.over(p.user_id):
+            raise HTTPException(429, TOO_BUSY)
+        _heavy.add(p.user_id)
+    return p
 TOO_MANY = "Твърде много опити. Изчакайте малко и опитайте пак."
 
 
 def reset_limits() -> None:
     """Тестове: всяко ограничение започва отначало."""
-    for lim in (_failed, _failed_ip, _codes_ip, _mails_ip, _mails_to, _mails_all):
+    for lim in (_failed, _failed_ip, _codes_ip, _mails_ip, _mails_to, _mails_all, _register_ip, _heavy):
         lim.hits.clear()
     _code_tries.clear()
 
@@ -393,6 +406,10 @@ def register(body: Register, request: Request):
     получава нов код, така че грешно въведена парола или изгубено писмо не заключват имейла. При неуспешно писмо
     (503) транзакцията се връща и профил не остава."""
     email = body.email.strip()
+    ip = client_ip(request)
+    if _register_ip.over(ip):
+        raise HTTPException(429, TOO_MANY)
+    _register_ip.add(ip)
     if not EMAIL_RE.match(email):
         raise HTTPException(400, "Въведете валиден имейл.")
     if not password_ok(body.password):

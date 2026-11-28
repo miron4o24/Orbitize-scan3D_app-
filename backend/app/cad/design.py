@@ -747,7 +747,7 @@ def unused_cleanup(d: dict) -> None:
 
 # --- Промени от приложението ---------------------------------------------------------------------------------------
 
-DIM_ID = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,15}$")
+DIM_ID = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,15}\Z")
 
 
 def set_values(d: dict, values: dict) -> dict:

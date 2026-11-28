@@ -15,7 +15,7 @@ from . import db
 log = logging.getLogger("uvicorn.error")
 
 EXPO_PUSH = "https://exp.host/--/api/v2/push/send"
-TOKEN_RE = re.compile(r"^Expo(nent)?PushToken\[[^\]\s]{1,180}\]$")
+TOKEN_RE = re.compile(r"^Expo(nent)?PushToken\[[^\]\s]{1,180}\]\Z")
 CHANNEL = "scans"  # каналът за Android на приложението (lib/push.ts)
 
 

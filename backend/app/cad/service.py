@@ -17,6 +17,8 @@ import logging
 import math
 import os
 import shutil
+import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -37,6 +39,11 @@ FILES = {"part.step": "model/step", "part.py": "text/x-python; charset=utf-8", "
 _session = None
 _session_lock = threading.Lock()
 _busy = threading.BoundedSemaphore(2)  # най-много две четения на снимки наведнъж (процесорът е общ със сканиранията)
+# Строенето на детайла (build.py) е в отделен процес с ограничено време, най-много две наведнъж: описанието идва от
+# приложението и сървърът не бива да спира или да се претовари заради него.
+_builds = threading.BoundedSemaphore(2)
+BUILD_TIMEOUT_S = 180
+BUILD_WAIT_S = 90
 _job_locks: dict[str, threading.Lock] = {}
 
 
@@ -1047,13 +1054,40 @@ def png(im) -> bytes:
     return buf.getvalue()
 
 
+def isolated(d: dict, work: Path, adjusted: list[str] | None = None) -> dict:
+    """build.build(d, work, adjusted) в отделен процес: срив, зацикляне или твърде много памет в OpenCascade спира
+    само него. Връща отчета; DesignError със съобщение за човека при грешка в описанието или неуспех."""
+    work.mkdir(parents=True, exist_ok=True)
+    req = work.with_name(work.name + ".json")
+    req.write_text(json.dumps({"design": d, "adjusted": list(adjusted or [])}, ensure_ascii=False), encoding="utf-8")
+    if not _builds.acquire(timeout=BUILD_WAIT_S):
+        req.unlink(missing_ok=True)
+        raise D.DesignError("Сървърът строи други детайли в момента. Опитайте след малко.")
+    try:
+        from .. import jobs as J
+
+        r = subprocess.run([sys.executable, "-m", "app.cad.build", str(req), str(work)], cwd=Path(__file__).parents[2],
+                           capture_output=True, text=True, errors="replace", timeout=BUILD_TIMEOUT_S,
+                           **J.low_priority(True))  # fmt: skip
+    except subprocess.TimeoutExpired:
+        raise D.DesignError("Детайлът е твърде сложен за построяване. Опростете го и опитайте отново.") from None
+    finally:
+        _builds.release()
+        req.unlink(missing_ok=True)
+    if r.returncode == 3 and (work / "error.json").exists():
+        raise D.DesignError(json.loads((work / "error.json").read_text(encoding="utf-8"))["error"])
+    if r.returncode != 0 or not (work / "report.json").exists():
+        log.warning("cad build failed (%s): %s", r.returncode, r.stderr[-2000:])
+        raise D.DesignError("Моделът не се построи с тези размери: проверете дали отворите и изрезите са в детайла.")
+    return json.loads((work / "report.json").read_text(encoding="utf-8"))
+
+
 def build(job: Path, raw: dict) -> dict:
     """Строи детайла, записва файловете и модела за приложението (model.ply с най-дълга страна 100, като всеки модел;
     истинският размер е real_mm). Връща отчета на задачата."""
     import trimesh
 
     from .. import mesh as M
-    from .build import build as make
     from .build import clean
 
     d = clean(raw)
@@ -1065,7 +1099,7 @@ def build(job: Path, raw: dict) -> dict:
     with lock(job):
         work = job / "cad" / "build.tmp"
         shutil.rmtree(work, ignore_errors=True)
-        report = make(d, work, adjusted)
+        report = isolated(d, work, adjusted)
         d["dims"] = json.loads((work / "design.json").read_text(encoding="utf-8"))["dims"]  # с намаленото заобляне
         R.drawing(d).save(work / "drawing.png", optimize=True)
         out = job / "cad" / "out"
@@ -1125,7 +1159,6 @@ def preview(job: Path) -> Path:
     import copy
     import hashlib
 
-    from .build import build as make
     from .build import clean
 
     d = draft(job)
@@ -1143,7 +1176,7 @@ def preview(job: Path) -> Path:
     with lock(job):
         work = job / "cad" / "preview.tmp"
         shutil.rmtree(work, ignore_errors=True)
-        make(clean(p), work)
+        isolated(clean(p), work)
         (work / "stamp").write_text(stamp)
         shutil.rmtree(out, ignore_errors=True)
         os.replace(work, out)

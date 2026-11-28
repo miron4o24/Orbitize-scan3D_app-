@@ -20,11 +20,11 @@ from . import db, jobs, progress
 from . import mesh as M
 from . import stress as ST
 from . import texture as TX
-from .accounts import Principal, avatar_path, need_db, owned_row, signed_in, staff_only
+from .accounts import Principal, avatar_path, heavy, need_db, owned_row, signed_in, staff_only
 
 PAGE = 20
 HIDE_AFTER_REPORTS = 3
-ID_RE = re.compile(r"^[0-9a-f]{32}$")  # номера на задача и потребител
+ID_RE = re.compile(r"^[0-9a-f]{32}\Z")  # номера на задача и потребител
 
 router = APIRouter()
 
@@ -129,12 +129,14 @@ def post_model(job_id: str, p: Principal = Depends(signed_in)):
 @router.get("/community/{job_id}/stress/{case}")
 def post_stress(job_id: str, case: str, p: Principal = Depends(signed_in)):
     """Всеки може да направи тест за здравина на публикация (app/stress.py), както може и да я изтегли."""
+    heavy(p)
     one(job_id, p.user_id)
     return ST.summary_response(job_id, case, p.user_id)
 
 
 @router.get("/community/{job_id}/stress/{case}/model.glb")
 def post_stress_model(job_id: str, case: str, p: Principal = Depends(signed_in)):
+    heavy(p)
     one(job_id, p.user_id)
     return ST.model_response(job_id, case)
 
