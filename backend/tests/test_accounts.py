@@ -204,13 +204,13 @@ def test_account_limits(client, monkeypatch):
 
 
 def test_every_account_can_use_everything(client, monkeypatch):
-    """Pro и безплатният план са премахнати: обикновен профил прави AI модели и AR колкото иска, без Pro."""
+    """Pro и безплатният план са премахнати: обикновен профил прави ИИ модели колкото иска, без Pro."""
     from app import ai
 
     client.put("/admin/settings", json={"google_client_id": CLIENT_ID}, headers=ADMIN)
     h, user = sign_in(client)
     assert user["pro"] is True and "limits" not in user and "billing" not in user and not user["owner"]
-    monkeypatch.setattr(ai, "available", lambda: {"single": True, "claude": False, "photo": False})
+    monkeypatch.setattr(ai, "available", lambda: {"single": True})
 
     def fake_ai(job, method, flat_base, set_state, sh, step, tune=None):
         set_state("reconstructing")
@@ -229,9 +229,8 @@ def test_every_account_can_use_everything(client, monkeypatch):
     while any(client.get(f"/jobs/{j}", headers=h).json()["state"] != "done" for j in made):
         assert time.time() < end
         time.sleep(0.05)
-    more = [finished_scan(client, h) for _ in range(2)]
-    for job_id in made + more:  # безплатният план имаше AR за 3 модела
-        assert client.post(f"/jobs/{job_id}/ar", json={"longest_mm": 100}, headers=h).status_code == 200
+    for job_id in made:  # добавената реалност (AR) е махната
+        assert client.post(f"/jobs/{job_id}/ar", json={"longest_mm": 100}, headers=h).status_code in (404, 405)
     assert client.get("/owner/users", headers=h).status_code == 404  # страницата за Pro я няма
 
 
@@ -370,3 +369,20 @@ def test_the_mailbox_is_read_from_the_env_file_even_if_the_server_started_withou
     monkeypatch.setattr(mail, "verification_code", lambda to, code, minutes: sent.append(code))
     r = client.post("/auth/register", json={"email": "hal@example.com", "password": "secret12"})
     assert r.json() == {"verify": True, "email": "hal@example.com"} and len(sent) == 1
+
+
+def test_nameplate_under_a_model_still_works_and_text_changes_are_gone(client):
+    """Табелката с име остава (app/edit.py); текстовите промени и добавената реалност са махнати."""
+    client.put("/admin/settings", json={"google_client_id": CLIENT_ID}, headers=ADMIN)
+    h, _ = sign_in(client)
+    source = finished_scan(client, h)
+    assert client.post(f"/jobs/{source}/edit", json={"prompt": "make it red"}, headers=h).status_code in (404, 405)
+    r = client.post(f"/jobs/{source}/nameplate", json={"text": "Иван", "shape": "round", "longest_mm": 80}, headers=h)
+    assert r.status_code == 200, r.text
+    new = r.json()["id"]
+    end = time.time() + 120
+    while (job := client.get(f"/jobs/{new}", headers=h).json())["state"] not in ("done", "failed"):
+        assert time.time() < end
+        time.sleep(0.2)
+    assert job["state"] == "done", job
+    assert job["report"]["edit"]["changes"] == ["Табелка с надпис „Иван“"]

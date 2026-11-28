@@ -1,5 +1,3 @@
-import hashlib
-import hmac
 import io
 import json
 import math
@@ -7,7 +5,6 @@ import os
 import re
 import shutil
 import threading
-import time
 import zipfile
 from contextlib import asynccontextmanager
 from typing import Annotated, Literal
@@ -22,7 +19,6 @@ from pydantic import BaseModel, Field
 from . import accounts as A
 from . import admin
 from . import ai as AI
-from . import ar as AR
 from . import community
 from . import edit as ED
 from . import jobs
@@ -364,39 +360,6 @@ def add_frames_of(source: dict, source_id: str, job_id: str):
     more.mkdir()
     for i, f in enumerate(frames):
         shutil.copy(f, more / f"old_{i + 1:04d}.jpg")
-
-
-class EditParams(BaseModel):
-    prompt: str = Field(min_length=2, max_length=500)  # какво да се промени, на английски
-    longest_mm: float = Field(100.0, gt=0, le=2000)  # реалният размер на модела в приложението: промяната работи с реални мм
-    title: str = Field("", max_length=100)  # името на новия модел
-    # Мястото, което потребителят е докоснал върху модела в приложението ("smooth here", "make this red"): дялове
-    # (0-1) от ограничаващата кутия на модела в осите на GLB (app/edit.py spot_point).
-    spot: list[Annotated[float, Field(ge=-0.05, le=1.05)]] | None = Field(None, min_length=3, max_length=3)
-
-
-@app.post("/jobs/{job_id}/edit")
-def edit_job(job_id: str, params: EditParams, p: Principal = Depends(principal)):
-    """Нов модел, създаден от този чрез текстова промяна (app/edit.py); този остава непроменен. Връща новата
-    задача, която приложението следи като сканиране."""
-    if existing(job_id, p)["state"] != "done":
-        raise HTTPException(409, "Моделът още не е готов.")
-    if jobs.count() >= MAX_JOBS:
-        raise HTTPException(503, "Услугата е натоварена в момента. Опитайте след малко.")
-    if worker.ai_q.qsize() >= MAX_QUEUED:
-        raise HTTPException(503, "Твърде много сканирания чакат в момента. Опитайте по-късно.")
-    new = jobs.create(owner=p.user_id)
-    try:
-        if p.user_id:
-            A.add_scan(new, p.user_id, params.title.strip())
-        ED.copy_source(jobs.job_dir(job_id), jobs.job_dir(new))
-    except Exception:
-        shutil.rmtree(jobs.job_dir(new), ignore_errors=True)
-        A.forget_scan(new)
-        raise
-    worker.submit(new, {"method": "edit", "source": job_id, "prompt": params.prompt.strip(),
-                        "longest_mm": params.longest_mm, "spot": params.spot})  # fmt: skip
-    return jobs.public(new)
 
 
 class NameplateParams(BaseModel):
@@ -772,56 +735,4 @@ def get_stress_model(job_id: str, case: str, p: Principal = Depends(principal)):
         raise HTTPException(409, "Моделът още не е готов.")
     return ST.model_response(job_id, case)
 
-
-# --- Добавена реалност (app/ar.py)
-# -----------------------------------------------------------------------------------
-
-AR_KEY = hmac.new(API_TOKEN.encode(), b"ar links", hashlib.sha256).digest()
-AR_LINK_SECONDS = 6 * 3600
-
-
-def ar_signature(job_id: str, tenths: int, expires: int) -> str:
-    return hmac.new(AR_KEY, f"{job_id}/{tenths}/{expires}".encode(), hashlib.sha256).hexdigest()[:32]
-
-
-class ArParams(BaseModel):
-    longest_mm: float = Field(100.0, gt=0, le=2000)
-
-
-@app.post("/jobs/{job_id}/ar")
-def ar_link(job_id: str, params: ArParams, request: Request, p: Principal = Depends(principal)):
-    """Линкове към модела в реален размер за AR: `page` (app/ar.py, отваря се в Chrome) и `url`, самият GLB. Браузърът
-    ги зарежда без ключа на приложението, затова са подписани и изтичат. Файлът се създава тук, така че чака
-    приложението, а не браузърът."""
-    if existing(job_id, p)["state"] != "done":
-        raise HTTPException(409, "Моделът още не е готов.")
-    tenths = round(params.longest_mm * 10)
-    AR.cached(jobs.job_dir(job_id), tenths)
-    expires = int(time.time()) + AR_LINK_SECONDS
-    base = f"{A.base_url(request)}/ar/{job_id}/{tenths}/{expires}/{ar_signature(job_id, tenths, expires)}"
-    return {"page": f"{base}/view", "url": f"{base}/model.glb", "expires": expires}
-
-
-def ar_checked(job_id: str, tenths: int, expires: int, sig: str):
-    ok = ID_RE.match(job_id) and hmac.compare_digest(sig, ar_signature(job_id, tenths, expires))
-    if not ok or expires < time.time() or (jobs.read(job_id) or {}).get("state") != "done":
-        raise HTTPException(404, "Линкът е изтекъл. Отворете модела отново в приложението.")
-
-
-@app.get("/ar/{job_id}/{tenths}/{expires}/{sig}/view")
-def ar_page(job_id: str, tenths: int, expires: int, sig: str, title: str = Query("", max_length=100), real: bool = True):
-    ar_checked(job_id, tenths, expires, sig)
-    nonce = A.secrets.token_urlsafe(16)
-    return Response(AR.page(title, tenths / 10, real, nonce), media_type="text/html; charset=utf-8",
-                    headers={"Cache-Control": "no-store", "Content-Security-Policy": AR.CSP.format(nonce=nonce)})  # fmt: skip
-
-
-@app.api_route("/ar/{job_id}/{tenths}/{expires}/{sig}/model.glb", methods=["GET", "HEAD"])
-def ar_model(job_id: str, tenths: int, expires: int, sig: str, request: Request):
-    ar_checked(job_id, tenths, expires, sig)
-    path = AR.cached(jobs.job_dir(job_id), tenths)
-    headers = {"Cache-Control": "private, max-age=3600", "Vary": "Accept-Encoding"}
-    if "gzip" in request.headers.get("accept-encoding", ""):
-        path, headers["Content-Encoding"] = AR.zipped(path), "gzip"
-    return Response(path.read_bytes(), media_type=M.MEDIA_TYPES["glb"], headers=headers)
 

@@ -11,26 +11,11 @@ $DEPTH_BASE_SHA256 = 'DAB40F67D5EAD5E0ED52ACFAE41A717A708B02BC57F6CB761C5DE828F2
 $SAM_BASE = 'https://huggingface.co/Acly/MobileSAM/resolve/0d3b403339b4674a82493d5e97964dd78089ddc8'
 $SAM_ENCODER_SHA256 = '580F5FB648EA1062C0AABC26217AED56921985F03F0CBBD852BBA81D760CC749'
 $SAM_DECODER_SHA256 = '8976B90A87BA50A6A72217A5FF994F7D25CE16F2229FCC1ED259E1294C622FFE'
-# Pro's free AI model from one frame (app/single3d.py): TripoSR's weights and code, pinned.
+# The AI model's fallback from one frame (app/single3d.py): TripoSR's weights and code, pinned.
 $TRIPOSR_BASE = 'https://huggingface.co/stabilityai/TripoSR/resolve/5b521936b01fbe1890f6f9baed0254ab6351c04a'
 $TRIPOSR_CKPT_SHA256 = '429E2C6B22A0923967459DE24D67F05962B235F79CDE6B032AA7ED2FFCD970EE'
 $TRIPOSR_CONFIG_SHA256 = '74CA708CE086BF68E97709EA6B3D91F14717921C04691E84043F0EB8FCC68E62'
 $TRIPOSR_COMMIT = '107cefdc244c39106fa830359024f6a2f1c78871'
-# Pro's text changes (app/edit_llm.py): Qwen2.5-1.5B-Instruct, pinned; file name -> SHA-256.
-$QWEN_BASE = 'https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct/resolve/989aa7980e4cf806f80c7fef2b1adb7bc71aa306'
-$QWEN_FILES = [ordered]@{
-  'config.json' = '98D2FF8CC47488D08A2B0B3ACF4EB99EF210779B42BD48605F6B8E36ACDBF670'
-  'generation_config.json' = 'E558847A8B4402616F1273797B015104DC266FE4B520056FCA88823BA8F8EBE6'
-  'merges.txt' = '599BAB54075088774B1733FDE865D5BD747CBCC7A547C5BC12610E874E26F5E3'
-  'tokenizer.json' = 'C0382117EA329CDF097041132F6D735924B697924D6F6FC3945713E96CE87539'
-  'tokenizer_config.json' = '5B5D4F65D0ACD3B2D56A35B56D374A36CBC1C8FA5CF3B3FEBBBFABF22F359583'
-  'vocab.json' = 'CA10D7E9FB3ED18575DD1E277A2579C16D108E32F27439684AFA0E10B1440910'
-  'model.safetensors' = 'DD924A11B4C220F385B51FFA522DAEA7C9F3D850E31B162BB5661DF483C6D3EE'
-}
-# Pro's colour changes (app/recolor.py): CLIPSeg (CIDAS/clipseg-rd64-refined, Apache-2.0) as ONNX, pinned.
-$CLIPSEG_BASE = 'https://huggingface.co/Xenova/clipseg-rd64-refined/resolve/924dc94f85f58739f353f94258b33bc47eae4862'
-$CLIPSEG_MODEL_SHA256 = '25C50E9A236FA16F309AAFD54D363ADB7CEE9CC7EAD8D93CF31A2610F8AF4B37'
-$CLIPSEG_TOKENIZER_SHA256 = '342739D4A4B111D4B1BDA83A96F5C518E1B162CC597252AC89DED17681791D31'
 # Engineering mode (app/cad/locate.py): Florence-2 base (MIT) finds which thing in the photo is the part, SAM 2.1 large
 # (Apache-2.0) cuts it out. Pinned revisions; file name -> SHA-256.
 $FLORENCE_BASE = 'https://huggingface.co/florence-community/Florence-2-base/resolve/00921df66db728a9ceb750f5eca43e5c203a2051'
@@ -96,15 +81,10 @@ function Install-Models {
   Write-Host "`n==> AI outline sharpener (45 MB, MobileSAM: cuts the object out where the 3D shape points)" -ForegroundColor Cyan
   Install-Model (Join-Path $modelDir 'sam\mobile_sam_image_encoder.onnx') "$SAM_BASE/mobile_sam_image_encoder.onnx" $SAM_ENCODER_SHA256
   Install-Model (Join-Path $modelDir 'sam\sam_mask_decoder_multi.onnx') "$SAM_BASE/sam_mask_decoder_multi.onnx" $SAM_DECODER_SHA256
-  Write-Host "`n==> Pro's AI from one picture (1.7 GB, TripoSR: a 3D model from a single frame, free)" -ForegroundColor Cyan
+  Write-Host "`n==> AI model's fallback from one picture (1.7 GB, TripoSR: a 3D model from a single frame, free)" -ForegroundColor Cyan
   Install-Model (Join-Path $modelDir 'triposr\weights\config.yaml') "$TRIPOSR_BASE/config.yaml" $TRIPOSR_CONFIG_SHA256
   Install-Model (Join-Path $modelDir 'triposr\weights\model.ckpt') "$TRIPOSR_BASE/model.ckpt" $TRIPOSR_CKPT_SHA256
   Install-TripoSRCode
-  Write-Host "`n==> Pro's text changes (3.1 GB, Qwen2.5-1.5B-Instruct: reads what the user wants changed, free)" -ForegroundColor Cyan
-  foreach ($f in $QWEN_FILES.Keys) { Install-Model (Join-Path $modelDir "qwen\$f") "$QWEN_BASE/$f" $QWEN_FILES[$f] }
-  Write-Host "`n==> Pro's colour changes (550 MB, CLIPSeg: finds the part to recolour, e.g. the hair, free)" -ForegroundColor Cyan
-  Install-Model (Join-Path $modelDir 'clipseg\model.onnx') "$CLIPSEG_BASE/onnx/model.onnx" $CLIPSEG_MODEL_SHA256
-  Install-Model (Join-Path $modelDir 'clipseg\tokenizer.json') "$CLIPSEG_BASE/tokenizer.json" $CLIPSEG_TOKENIZER_SHA256
   Write-Host "`n==> Engineering mode's object finder (460 MB, Florence-2 base: which thing in the photo is the part)" -ForegroundColor Cyan
   foreach ($f in $FLORENCE_FILES.Keys) { Install-Model (Join-Path $modelDir "florence2\base\$f") "$FLORENCE_BASE/$f" $FLORENCE_FILES[$f] }
   Write-Host "`n==> Engineering mode's outline cutter (900 MB, SAM 2.1 large: the part's exact edge)" -ForegroundColor Cyan

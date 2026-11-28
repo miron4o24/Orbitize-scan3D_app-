@@ -61,11 +61,7 @@ const SUBSTEPS: Record<string, string> = {
   texturing: 'Оцветяване със снимките',
   'shape from motion sensors': 'Изграждане на формата',
   // AI модели
-  'claude designing': 'Проектиране на предмета',
-  'claude checking': 'Проверка на модела',
-  'choosing frames': 'Избор на най-добрите кадри',
   'ai modelling': 'AI изгражда модела',
-  'downloading the model': 'Получаване на модела',
   'understanding the request': 'Разчитане на промяната',
   'finding the part': 'Намиране на частта от модела',
 };
@@ -140,19 +136,6 @@ const PRO_PLANS: Record<ProMethod, [string, number][]> = {
     ['fusing depth', 40],
     ['cleaning', 20],
     ['texturing', 20],
-  ],
-  claude: [
-    ['reading video', 5],
-    ['claude designing', 90],
-    ['claude checking', 90],
-    ['cleaning', 5],
-  ],
-  photo: [
-    ['reading video', 5],
-    ['choosing frames', 20],
-    ['ai modelling', 150],
-    ['downloading the model', 10],
-    ['cleaning', 5],
   ],
 };
 

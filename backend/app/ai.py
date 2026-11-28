@@ -1,37 +1,22 @@
-"""AI моделите на Pro: модел от всяко видео (или снимки), вместо обработката на сканиране (app/pipeline.py). single:
-безплатен, на процесора на сървъра: кадрите се разполагат в 3D (COLMAP), AI изрязва предмета от тях, а измерената
-между тях дълбочина и AI дълбочината се сливат в тези очертания и снимките стават текстура (app/outline.py).
-Предположението на TripoSR от един кадър (app/single3d.py, гърбът е предположен), когато кадрите не могат да се
-разположат. Двата метода по-долу изискват платени услуги и остават изключени, докато не се зададат ключовете им.
-claude: езиков модел гледа няколко кадъра и проектира предмета от плътни части (кутии, цилиндри, изтеглени очертания,
-завъртени профили...), всяка добавена или изрязана по ред. Частите се изграждат и съединяват тук в една затворена
-мрежа, рисуват се (app/render.py) и се показват веднъж за корекция. Чисто, с плоски страни и верен размер за
-изработени предмети (кутии, скоби, чаши, копчета, стойки); фигура или животно излиза като груб заместител. photo:
-услугата image-to-3D на Meshy (платена) оформя всеки предмет от до четири кадъра около него; това, което никой кадър
-не показва, се предполага, а размерите са само пропорции. Ключовете са на приложението, а не на потребителите:
-ANTHROPIC_API_KEY / MESHY_API_KEY от средата, иначе се задават с API ключа (PUT /admin/ai; пазят се в таблицата с
-настройки на базата данни и никога не се връщат)."""
+"""ИИ моделът от видео (или снимки), вместо обработката на сканиране (app/pipeline.py), изцяло на сървъра, без
+външни услуги: кадрите се разполагат в 3D (COLMAP), ИИ изрязва предмета от тях, а измерената между тях дълбочина и ИИ
+дълбочината се сливат в тези очертания и снимките стават текстура (app/outline.py). Резервен път, когато кадрите не
+могат да се разположат: TripoSR от един кадър (app/single3d.py, локален модел; гърбът е предположен)."""
 
-import base64
-import io
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
-import time
 from pathlib import Path
 from typing import Callable
 
 import numpy as np
-import requests
 import trimesh
 from PIL import Image, ImageOps
 from scipy import ndimage
-from scipy.spatial import cKDTree
 
-from . import db
 from . import mesh as M
 from . import outline as OL
 from . import pipeline as P
@@ -39,47 +24,14 @@ from . import segment as S
 from . import single3d
 from . import texture as TX
 
-METHODS = ("single", "claude", "photo")
-SERVICES = {"anthropic": "ANTHROPIC_API_KEY", "meshy": "MESHY_API_KEY"}
-NEEDS = {"claude": "anthropic", "photo": "meshy"}
-
-MODEL = os.environ.get("AI_CLAUDE_MODEL", "claude-opus-5-5")
-EFFORT = os.environ.get("AI_EFFORT", "high")
-CANDIDATES = 120  # кадри, прочетени от видеото; изпращат се най-резките от равномерно разпределени групи
-CLAUDE_FRAMES = 6
-MESHY_FRAMES = 4  # най-много, колкото приема multi-image-to-3d на Meshy
-SEND_SIDE = 1280  # кадрите се изпращат с този размер (дълга страна)
-REVIEWS = int(os.environ.get("AI_REVIEWS", "1"))  # кръгове "ето нарисувания ти модел, поправи го"
-SECTIONS = 96  # сегменти около кръгли части: гладко при размера за печат
-MESHY = "https://api.meshy.ai/openapi/v1"
-MESHY_WAIT_S = 20 * 60
-
-
-# --- Ключове --------------------------------------------------------------------------------------------------------
-
-
-def key(service: str) -> str | None:
-    return os.environ.get(SERVICES[service]) or db.get_setting(f"ai_key_{service}") or None
-
-
-def set_key(service: str, value: str):
-    db.set_setting(f"ai_key_{service}", value)  # "" го премахва
-
-
-def key_status() -> dict:
-    out = {}
-    for service, env in SERVICES.items():
-        k = key(service)
-        out[service] = {"set": bool(k), "from": ("server" if os.environ.get(env) else "app") if k else None,
-                        "ends": k[-4:] if k else None}  # fmt: skip
-    return out
+METHODS = ("single",)
+CANDIDATES = 120  # кадри, прочетени от видеото за резервния път
 
 
 def available() -> dict:
-    """Какво може да използва Pro на този сървър; express: сканирането за около 5 минути (app/pipeline.py), edit:
-    текстови промени (app/edit.py; простите заявки работят без езиковия му модел), и двете винаги са налични."""
-    paid = {method: bool(key(service)) for method, service in NEEDS.items()}
-    return {"express": True, "edit": True, "single": single3d.ready()} | paid
+    """Какво може да се използва на този сървър; express: сканирането (app/pipeline.py), edit: нов модел от
+    съществуващ (табелка с име, app/edit.py)."""
+    return {"express": True, "edit": True, "single": single3d.ready()}
 
 
 # --- Кадри ----------------------------------------------------------------------------------------------------------
@@ -118,360 +70,6 @@ def spread(found: list[Path], count: int) -> list[Path]:
     """Най-рязкият кадър от всяка от `count` равни групи: предметът отвсякъде, без размазване."""
     groups = np.array_split(np.arange(len(found)), min(count, len(found)))
     return [found[max(g, key=lambda i: sharpness(found[i]))] for g in groups if len(g)]
-
-
-def jpeg(path: Path, side: int = SEND_SIDE) -> bytes:
-    with Image.open(path) as im:
-        im = ImageOps.exif_transpose(im).convert("RGB")
-        im.thumbnail((side, side), Image.LANCZOS)
-        buf = io.BytesIO()
-        im.save(buf, "JPEG", quality=85)
-    return buf.getvalue()
-
-
-def image_block(data: bytes, media: str = "image/jpeg") -> dict:
-    return {"type": "image", "source": {"type": "base64", "media_type": media, "data": base64.b64encode(data).decode()}}
-
-
-# --- Езиков модел ---------------------------------------------------------------------------------------------------
-
-NUM = {"type": "number"}
-NUMS = {"type": "array", "items": NUM}
-PART = {
-    "type": "object",
-    "additionalProperties": False,
-    "properties": {
-        "note": {"type": "string"},
-        "op": {"type": "string", "enum": ["add", "cut"]},
-        "shape": {"type": "string", "enum": ["box", "rounded_box", "cylinder", "cone", "sphere", "torus", "extrude",
-                                             "revolve"]},  # fmt: skip
-        "size": NUMS,
-        "radius": NUM,
-        "radius2": NUM,
-        "height": NUM,
-        "points": {"type": "array", "items": NUMS},
-        "position": NUMS,
-        "rotation": NUMS,
-        "color": {"type": "string"},
-    },
-    "required": ["note", "op", "shape", "size", "radius", "radius2", "height", "points", "position", "rotation",
-                 "color"],  # fmt: skip
-}
-DESIGN = {
-    "type": "object",
-    "additionalProperties": False,
-    "properties": {
-        "object": {"type": "string"},
-        "suitable": {"type": "boolean"},
-        "parts": {"type": "array", "items": PART},
-    },
-    "required": ["object", "suitable", "parts"],
-}
-
-SYSTEM = """You design 3D-printable models of real objects from photos of them, as a CAD designer would.
-
-The photos are frames of one video (or photos) of a single object, usually filmed while walking around it. Find the \
-main object (ignore the table, hands and the room) and build it from solid parts, in millimetres, at its real size: \
-judge the size from what is around it (a hand, a table, a door, text, a plug) or from what the object is.
-
-Coordinates: Z is up, the object stands on the plane z = 0 (its lowest point at z = 0), X is its width, Y its depth, \
-centred on x = 0, y = 0.
-
-Parts are applied in order: "add" joins a part to the model so far, "cut" removes it from the model so far (holes, \
-slots, hollows, a cup's inside, a groove). Every added part must touch or overlap the rest: the model is one piece. \
-Fill every field of every part; fields a shape does not use are 0, [] or [0, 0, 0].
-
-Shapes, before rotation and position (the part's own origin goes to `position`):
-- box: `size` [x, y, z], centred on its origin.
-- rounded_box: a box with all its edges rounded by `radius` (less than half the smallest side).
-- cylinder: `radius`, `height`, axis along Z, centred on its origin.
-- cone: bottom radius `radius`, top radius `radius2` (0: a point), `height`, axis along Z, centred on its origin.
-- sphere: `radius`; or an ellipsoid when `size` holds three radii [rx, ry, rz].
-- torus: a ring around the Z axis: `radius` from the axis to the tube's centre, `radius2` the tube's radius.
-- extrude: `points` [[x, y], ...] an outline in the XY plane (around its origin, no crossing edges), pulled up \
-`height` along Z, centred on z = 0.
-- revolve: `points` [[r, z], ...] a closed profile in the r-z half plane (r >= 0 is the distance from the axis), \
-turned once round the Z axis: vases, cups, bottles, knobs, turned legs. Its origin is on the axis at z = 0.
-`rotation` [rx, ry, rz] degrees about X, then Y, then Z, about the part's own origin, then moved to `position`.
-`color` "#rrggbb": the part's colour in the photos. `note`: a few words on what the part is.
-
-Make it look like the object: right proportions first, then every feature visible in the photos (bevels as \
-rounded boxes, holes, slots, ribs, rims, text-free). Prefer extrude and revolve for outlines and turned shapes, and \
-use as many parts as the object needs (often 5-60). Hollow things (cups, boxes, vases) get their inside cut, with \
-walls at least 1.6 mm thick so they print.
-
-"object": what it is, in Bulgarian, 1-4 words (it becomes the model's title). "suitable": false when the object \
-cannot be told well from solid parts (a figure, an animal, a face, a plant): still give your best simple stand-in."""
-
-FIRST = ("These are frames of the object, from around it. Design it. Answer with the design only.")
-REVIEW = ("This is your design, built and drawn from the front right and a little from above (grey where no colour). "
-          "Compare it with the photos: proportions and size, missing, extra or misplaced parts, holes that did not "
-          "cut through, parts that do not touch. Answer with the complete corrected design (all parts, not only the "
-          "changes), or the same design if it already matches.")  # fmt: skip
-
-
-def ask_claude(client, messages: list) -> tuple[dict, list]:
-    """Един проект: разчетеният отговор и репликата на асистента за пазене в разговора."""
-    import anthropic
-
-    try:
-        with client.beta.messages.stream(
-            model=MODEL,
-            max_tokens=64000,
-            system=SYSTEM,
-            messages=messages,
-            thinking={"type": "adaptive"},
-            output_config={"effort": EFFORT, "format": {"type": "json_schema", "schema": DESIGN}},
-            betas=["server-side-fallback-2026-07-01"],
-            fallbacks="default",  # погрешен отказ от класификатора се изпълнява отново на друг модел, а не като неуспешен модел
-        ) as stream:
-            msg = stream.get_final_message()
-    except anthropic.AuthenticationError:
-        raise P.Failed("Услугата Claude временно не работи. Опитайте по-късно.")
-    except anthropic.RateLimitError:
-        raise P.Failed("Claude е претоварен в момента. Опитайте отново след малко.")
-    except anthropic.APIStatusError as e:
-        raise P.Failed(f"Claude върна грешка ({e.status_code}). Опитайте отново.")
-    except anthropic.APIConnectionError:
-        raise P.Failed("Сървърът не можа да се свърже с Claude. Опитайте отново.")
-    if msg.stop_reason == "refusal":
-        raise P.Failed("Claude отказа да моделира това видео.")
-    if msg.stop_reason == "max_tokens":
-        raise P.Failed("Предметът е твърде сложен за Claude. Опитайте „AI от снимки“.")
-    text = next((b.text for b in msg.content if b.type == "text"), "")
-    try:
-        design = json.loads(text)
-    except json.JSONDecodeError:
-        raise P.Failed("Claude не върна модел. Опитайте отново.")
-    return design, [{"role": "assistant", "content": msg.content}]
-
-
-def vec(v, n: int, fill: float = 0.0) -> np.ndarray:
-    out = [float(x) for x in (v or [])[:n] if isinstance(x, (int, float))]
-    return np.array(out + [fill] * (n - len(out)))
-
-
-def part_mesh(p: dict) -> trimesh.Trimesh | None:
-    """Една поставена част; None, когато размерите ѝ не дават плътно тяло."""
-    shape = p.get("shape")
-    size = np.clip(vec(p.get("size"), 3), 0, 5000)
-    r, r2, h = (float(np.clip(p.get(k) or 0, 0, 5000)) for k in ("radius", "radius2", "height"))
-    pts = np.array([vec(q, 2) for q in (p.get("points") or [])]).reshape(-1, 2)
-    if shape == "box" and size.min() > 0:
-        m = trimesh.creation.box(extents=size)
-    elif shape == "rounded_box" and size.min() > 0:
-        r = min(r, size.min() / 2 * 0.98)
-        if r <= 0:
-            m = trimesh.creation.box(extents=size)
-        else:
-            ball = trimesh.creation.icosphere(subdivisions=3, radius=r)
-            corners = np.array([[x, y, z] for x in (-1, 1) for y in (-1, 1) for z in (-1, 1)]) * (size / 2 - r)
-            m = trimesh.util.concatenate([ball.copy().apply_translation(c) for c in corners]).convex_hull
-    elif shape == "cylinder" and r > 0 and h > 0:
-        m = trimesh.creation.cylinder(radius=r, height=h, sections=SECTIONS)
-    elif shape == "cone" and h > 0 and max(r, r2) > 0:
-        m = M.revolve(np.array([[0, 0], [r, 0], [r2, h], [0, h]]), SECTIONS).apply_translation([0, 0, -h / 2])
-    elif shape == "sphere" and (r > 0 or size.min() > 0):
-        m = trimesh.creation.icosphere(subdivisions=4, radius=1.0)
-        m.apply_scale(size if size.min() > 0 else [r, r, r])
-    elif shape == "torus" and r > 0 and 0 < r2 < r:
-        t = np.linspace(0, 2 * np.pi, 48, endpoint=False)
-        m = M.revolve(np.c_[r + r2 * np.cos(t), r2 * np.sin(t)], SECTIONS)
-    elif shape == "extrude" and len(pts) >= 3 and h > 0:
-        from shapely.geometry import Polygon
-
-        poly = Polygon(pts).buffer(0)  # самопресичащо се очертание, направено валидно
-        if poly.geom_type != "Polygon" or poly.area <= 0:
-            if poly.geom_type != "MultiPolygon":
-                return None
-            poly = max(poly.geoms, key=lambda g: g.area)
-        m = trimesh.creation.extrude_polygon(poly, h).apply_translation([0, 0, -h / 2])
-    elif shape == "revolve" and len(pts) >= 3:
-        m = M.revolve(pts, SECTIONS)
-    else:
-        return None
-    if not m.is_volume:
-        return None
-    rot = np.radians(vec(p.get("rotation"), 3))
-    m.apply_transform(trimesh.transformations.euler_matrix(*rot, "sxyz"))
-    m.apply_translation(vec(p.get("position"), 3))
-    return m
-
-
-def colour(text: str) -> np.ndarray:
-    m = re.fullmatch(r"#?([0-9a-fA-F]{6})", (text or "").strip())
-    return np.array([int(m[1][i : i + 2], 16) for i in (0, 2, 4)] + [255]) if m else np.array([170, 170, 170, 255])
-
-
-def build(design: dict) -> tuple[trimesh.Trimesh, int]:
-    """Частите, съединени по ред (съединенията прави manifold3d); оцветени по най-близката добавена част. Също колко
-    части не са могли да се изградят."""
-    model, added, skipped = None, [], 0
-    for p in design.get("parts") or []:
-        m = part_mesh(p)
-        if m is None:
-            skipped += 1
-            continue
-        if p.get("op") == "cut":
-            if model is not None:
-                model = trimesh.boolean.difference([model, m], engine="manifold")
-        else:
-            model = m if model is None else trimesh.boolean.union([model, m], engine="manifold")
-            added.append((m, colour(p.get("color"))))
-    if model is None or model.is_empty or not len(model.faces):
-        raise P.Failed("Claude не успя да изгради модел от това видео. Опитайте отново или с „AI от снимки“.")
-    pts, labels = [], []
-    for i, (m, _) in enumerate(added):
-        s, _ = trimesh.sample.sample_surface(m, 3000, seed=0)
-        pts.append(s)
-        labels.append(np.full(len(s), i))
-    _, near = cKDTree(np.concatenate(pts)).query(model.vertices)
-    palette = np.array([c for _, c in added], np.uint8)
-    model.visual.vertex_colors = palette[np.concatenate(labels)[near]]
-    return model, skipped
-
-
-def drawing(work: Path, model: trimesh.Trimesh) -> bytes:
-    from . import render
-
-    d = work / "draft"
-    d.mkdir(parents=True, exist_ok=True)
-    out = M.make_printable(model.copy(), float(model.bounds[0, 2]), False, smoothing=0)
-    out.export(d / "model.ply")
-    buf = io.BytesIO()
-    render.picture(d).save(buf, "PNG")
-    return buf.getvalue()
-
-
-def by_claude(job: Path, work: Path, found: list[Path], step: Callable[[str], None]) -> tuple[trimesh.Trimesh, dict]:
-    import anthropic
-
-    client = anthropic.Anthropic(api_key=key("anthropic"), timeout=900.0, max_retries=2)
-    picked = spread(found, CLAUDE_FRAMES)
-    messages = [{"role": "user", "content": [image_block(jpeg(f)) for f in picked] + [{"type": "text", "text": FIRST}]}]
-    step("claude designing")
-    design, turn = ask_claude(client, messages)
-    model, skipped = build(design)
-    P.note(job, f"claude: {design.get('object')!r}, {len(design.get('parts') or [])} parts ({skipped} not buildable),"
-           f" suitable: {design.get('suitable')}")  # fmt: skip
-    for _ in range(REVIEWS):
-        step("claude checking")
-        messages += turn + [{"role": "user", "content": [image_block(drawing(work, model), "image/png"),
-                                                         {"type": "text", "text": REVIEW}]}]  # fmt: skip
-        try:
-            fixed, turn = ask_claude(client, messages)
-            model, skipped = build(fixed)
-            design = fixed
-            P.note(job, f"claude review: {len(design.get('parts') or [])} parts ({skipped} not buildable)")
-        except P.Failed as e:  # първият проект остава
-            P.note(job, f"claude review failed ({e}); keeping the first design")
-            break
-    real = float(model.extents.max())
-    return model, {"object": str(design.get("object") or "")[:60], "suitable": bool(design.get("suitable")),
-                   "real_mm": round(real, 1) if 5 <= real <= 2000 else None}  # fmt: skip
-
-
-# --- Meshy ----------------------------------------------------------------------------------------------------------
-
-PICK = {
-    "type": "object",
-    "additionalProperties": False,
-    "properties": {"frames": {"type": "array", "items": {"type": "integer"}}, "object": {"type": "string"}},
-    "required": ["frames", "object"],
-}
-
-
-def claude_picks(found: list[Path]) -> tuple[list[Path], str] | None:
-    """Езиковият модел избира кадрите, които най-добре показват предмета от различни страни; None без ключ или при
-    какъвто и да е проблем (кадрите тогава се разпределят равномерно)."""
-    if not key("anthropic"):
-        return None
-    import anthropic
-
-    shown = spread(found, 16)
-    content = []
-    for i, f in enumerate(shown):
-        content += [{"type": "text", "text": f"Frame {i}:"}, image_block(jpeg(f, 512))]
-    content.append({"type": "text", "text": (
-        f"These frames are from a video of one object. Pick up to {MESHY_FRAMES} frame numbers for building a 3D model "
-        "of the main object: sharp, the whole object in view, and from different sides (front, sides, back, a "
-        "little from above), best first. Also name the object in Bulgarian, 1-4 words.")})  # fmt: skip
-    try:
-        client = anthropic.Anthropic(api_key=key("anthropic"), timeout=300.0, max_retries=2)
-        msg = client.beta.messages.create(
-            model=MODEL, max_tokens=16000, messages=[{"role": "user", "content": content}],
-            output_config={"effort": "low", "format": {"type": "json_schema", "schema": PICK}},
-            betas=["server-side-fallback-2026-07-01"], fallbacks="default",
-        )  # fmt: skip
-        if msg.stop_reason != "end_turn":
-            return None
-        got = json.loads(next(b.text for b in msg.content if b.type == "text"))
-        idx = [i for i in dict.fromkeys(got["frames"]) if 0 <= i < len(shown)][:MESHY_FRAMES]
-        return ([shown[i] for i in idx], str(got["object"])[:60]) if idx else None
-    except (anthropic.APIError, json.JSONDecodeError, KeyError, StopIteration):
-        return None
-
-
-def meshy(path: str, method: str = "GET", body: dict | None = None) -> dict:
-    r = requests.request(method, f"{MESHY}/{path}", json=body, timeout=120,
-                         headers={"Authorization": f"Bearer {key('meshy')}"})  # fmt: skip
-    if r.status_code == 401:
-        raise P.Failed("Услугата „AI от снимки“ временно не работи. Опитайте по-късно.")
-    if r.status_code == 402:
-        raise P.Failed("Услугата „AI от снимки“ временно не работи. Опитайте по-късно.")
-    if r.status_code == 429:
-        raise P.Failed("Meshy е претоварен в момента. Опитайте отново след малко.")
-    if not r.ok:
-        raise P.Failed(f"Meshy върна грешка ({r.status_code}). Опитайте отново.")
-    return r.json()
-
-
-def by_photo(job: Path, found: list[Path], step: Callable[[str], None]) -> tuple[trimesh.Trimesh, dict]:
-    step("choosing frames")
-    picks = claude_picks(found)
-    picked, name = picks if picks else (spread(found, MESHY_FRAMES), "")
-    P.note(job, f"meshy: {len(picked)} frames ({'picked by Claude' if picks else 'spread evenly'}): "
-           + ", ".join(p.name for p in picked))  # fmt: skip
-    urls = ["data:image/jpeg;base64," + base64.b64encode(jpeg(p, 2048)).decode() for p in picked]
-    kind = "multi-image-to-3d" if len(urls) > 1 else "image-to-3d"
-    body = {"should_texture": True, "target_formats": ["glb"]}
-    body |= {"image_urls": urls} if len(urls) > 1 else {"image_url": urls[0]}
-    task = meshy(kind, "POST", body)["result"]
-    P.note(job, f"meshy: task {task}")
-    started = time.time()
-    while True:
-        step("ai modelling")
-        t = meshy(f"{kind}/{task}")
-        if t["status"] == "SUCCEEDED":
-            break
-        if t["status"] in ("FAILED", "CANCELED"):
-            reason = (t.get("task_error") or {}).get("message") or t["status"]
-            P.note(job, f"meshy: {reason}")
-            raise P.Failed("AI не успя да изгради модел от тези кадри. Опитайте с видео, в което предметът се вижда целият.")
-        if time.time() - started > MESHY_WAIT_S:
-            raise P.Failed("AI не завърши за 20 минути. Опитайте отново по-късно.")
-        time.sleep(5)
-    step("downloading the model")
-    r = requests.get(t["model_urls"]["glb"], timeout=300)
-    r.raise_for_status()
-    scene = trimesh.load(io.BytesIO(r.content), file_type="glb", force="scene")
-    pieces = []
-    for node in scene.graph.nodes_geometry:
-        transform, name_ = scene.graph[node]
-        g = scene.geometry[name_].copy()
-        if not isinstance(g, trimesh.Trimesh):
-            continue
-        try:
-            g.visual = g.visual.to_color()  # текстурата като цветове на върховете: това показват екранът за преглед и рисунката
-        except Exception:
-            pass
-        g.apply_transform(transform)
-        pieces.append(g)
-    if not pieces:
-        raise P.Failed("AI върна празен модел. Опитайте отново.")
-    model = trimesh.util.concatenate(pieces)
-    model.apply_transform(trimesh.transformations.rotation_matrix(np.pi / 2, [1, 0, 0]))  # glTF с Y нагоре -> Z нагоре
-    return model, {"object": name, "suitable": True, "real_mm": None}
 
 
 # --- Безплатният AI модел: AI очертания и дълбочина от цялото видео (app/outline.py)
@@ -732,14 +330,4 @@ def run(job: Path, method: str, flat_base: bool, set_state: Callable[[str], None
     set_state("reconstructing")
     if method == "single":
         return single(job, work, flat_base, set_state, sh, tune)
-    found = frames(job, sh)
-    P.note(job, f"ai ({method}): {len(found)} frames")
-    if method == "claude":
-        model, info = by_claude(job, work, found, step)
-        set_state("cleaning")
-        out = M.make_printable(model, float(model.bounds[0, 2]), False, smoothing=0)  # проектиран да стои върху z = 0
-    else:
-        model, info = by_photo(job, found, step)
-        set_state("cleaning")
-        out = M.make_printable(model, float(model.bounds[0, 2]), flat_base)
-    return P.finish(job, out) | {"photos_used": len(found), "photos_total": len(found), "ai": method} | info
+    raise P.Failed("Непознат начин за модел.")

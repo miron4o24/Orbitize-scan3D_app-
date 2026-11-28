@@ -7,14 +7,12 @@ import { getSession } from './session';
 // По-старите сканирания може да са "quick" (по-малко и по-малки кадри, около 10 мин); новите никога не са.
 export type Quality = 'quick' | 'detailed';
 
-// AI моделите (сървър app/ai.py, app/pipeline.py EXPRESS_*). Сега може да се стартира само "single"; останалите са тук за
-// вече направени с тях сканирания и за текстови промени ("edit").
+// ИИ моделът (сървър app/ai.py, app/pipeline.py EXPRESS_*). Може да се стартира само "single"; express е тук за вече
+// направени с него сканирания, а edit за табелката с име.
 export const PRO_INFO: Record<ProMethod, { label: string; time: string; minutes: number }> = {
   express: { label: 'Експресно', time: '~5 мин', minutes: 5 },
-  edit: { label: 'Промяна на модела', time: '~1–3 мин', minutes: 2 },
-  single: { label: 'AI модел', time: '~15 мин', minutes: 15 },
-  claude: { label: 'Claude дизайн', time: '~3 мин', minutes: 3 },
-  photo: { label: 'AI от снимки', time: '~3 мин', minutes: 3 },
+  edit: { label: 'Табелка с име', time: '~1–3 мин', minutes: 2 },
+  single: { label: 'ИИ модел', time: '~12 мин', minutes: 12 },
 };
 
 // Инженерният режим (сървър app/cad): безплатен, детайлът се строи от измерените размери.

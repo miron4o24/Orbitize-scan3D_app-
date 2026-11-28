@@ -204,7 +204,7 @@ def cleanup():
                 (d / "photos").mkdir(exist_ok=True)
 
 
-PRO_METHODS = ("express", "edit", *ai.METHODS)  # edit: текстова промяна на модел (app/edit.py)
+PRO_METHODS = ("express", "edit", *ai.METHODS)  # edit: табелка с име под модела (app/edit.py)
 
 
 def is_pro(params: dict | None) -> bool:

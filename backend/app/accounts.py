@@ -946,31 +946,6 @@ def put_settings(body: Settings):
     return get_settings()
 
 
-# Ключовете на AI услугите са на приложението, а не на потребителите: задават се само с API ключа (никога от
-# приложението), пазят се в таблицата с настройки на базата данни и никога не се връщат. ANTHROPIC_API_KEY /
-# MESHY_API_KEY от средата са с предимство пред тях.
-class AiKeys(BaseModel):
-    """Ключ за запазване; "" премахва запазения (незададено поле го оставя както е)."""
-
-    anthropic: str | None = Field(None, max_length=500)
-    meshy: str | None = Field(None, max_length=500)
-
-
-@router.get("/admin/ai", dependencies=[Depends(admin_only)])
-def admin_ai():
-    return AI.key_status()
-
-
-@router.put("/admin/ai", dependencies=[Depends(admin_only)])
-def admin_set_ai(body: AiKeys):
-    need_db()
-    for service in ("anthropic", "meshy"):
-        value = getattr(body, service)
-        if value is not None:
-            AI.set_key(service, value.strip())
-    return AI.key_status()
-
-
 def health_info() -> dict:
     """Идентификаторът на уеб клиента е публичен (има го във всяка компилация с вход); приложението го чете оттук,
     затова създаването на клиента в Google не изисква нова компилация."""
