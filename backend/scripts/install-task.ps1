@@ -32,6 +32,15 @@ foreach ($c in Get-NetTCPConnection -LocalPort $env:PORT -State Listen -ErrorAct
 Start-Sleep 2
 Register-ScheduledTask -TaskName 'scan3d' -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
 Start-ScheduledTask -TaskName 'scan3d'
+# Daily backup at 03:30 and a health check every 5 minutes (backup.ps1, watch.ps1), also as SYSTEM.
+foreach ($t in @(@{ Name = 'scan3d-backup'; File = 'backup.ps1'; Trigger = (New-ScheduledTaskTrigger -Daily -At 3:30am) },
+                 @{ Name = 'scan3d-watch'; File = 'watch.ps1'; Trigger = (New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(5) `
+                    -RepetitionInterval (New-TimeSpan -Minutes 5)) })) {
+  $a = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$(Join-Path $PSScriptRoot $t.File)`""
+  $st = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Hours 2) -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+  Register-ScheduledTask -TaskName $t.Name -Action $a -Trigger $t.Trigger -Principal $principal -Settings $st -Force | Out-Null
+}
+Write-Host 'Tasks "scan3d-backup" (daily 03:30) and "scan3d-watch" (every 5 minutes) registered.'
 Write-Host 'Task "scan3d" registered and started. Waiting for the server...'
 
 for ($i = 0; $i -lt 60; $i++) {

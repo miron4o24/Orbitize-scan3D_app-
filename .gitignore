@@ -49,6 +49,8 @@ backend/e2e-out/
 backend/tools/
 backend/logs/
 backend/data/
+backend/backups/
+backend/avatars/
 orbitize-backend.zip
 __pycache__/
 .pytest_cache/

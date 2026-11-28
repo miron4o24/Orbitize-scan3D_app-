@@ -42,9 +42,9 @@ test('blurring a texture lowers sharpness below the threshold', () => {
 
 test('dark and overexposed frames warn but are kept', () => {
   const dark = judge(image((x, y) => 10 + 25 * noise(x, y)));
-  assert.ok(dark.warnings.some((w) => w.startsWith('Too dark')));
+  assert.ok(dark.warnings.some((w) => w.startsWith('Твърде тъмно')));
   const bright = judge(image((x, y) => (noise(x, y) > 0.5 ? 255 : 120)));
-  assert.ok(bright.warnings.some((w) => w.startsWith('Overexposed')));
+  assert.ok(bright.warnings.some((w) => w.startsWith('Твърде светло')));
   assert.equal(bright.reject, false);
 });
 
